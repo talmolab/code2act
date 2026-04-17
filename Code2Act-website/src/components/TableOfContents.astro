@@ -1,0 +1,127 @@
+---
+interface Props {
+  sections: { id: string; label: string }[];
+}
+const { sections } = Astro.props;
+---
+
+<nav id="toc" class="toc-nav">
+  <ul>
+    {sections.map((s) => (
+      <li>
+        <a href={`#${s.id}`} data-toc-link={s.id}>{s.label}</a>
+      </li>
+    ))}
+  </ul>
+</nav>
+
+<style>
+  .toc-nav {
+    position: fixed;
+    top: 50%;
+    left: max(0.75rem, calc((100vw - 50rem) / 2 - 13rem));
+    transform: translateY(-50%);
+    width: 11rem;
+    max-height: 80vh;
+    overflow-y: auto;
+    z-index: 50;
+    padding: 0.5rem 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.8s ease;
+  }
+
+  .toc-nav.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .toc-nav ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    border-left: 2px solid #e5e7eb;
+  }
+
+  .toc-nav li {
+    margin: 0;
+    padding: 0;
+  }
+
+  .toc-nav a {
+    display: block;
+    padding: 0.25rem 0.5rem 0.25rem 0.75rem;
+    font-size: 0.72rem;
+    line-height: 1.3;
+    color: #9ca3af;
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    margin-left: -2px;
+    transition: color 0.2s, border-color 0.2s;
+  }
+
+  .toc-nav a:hover {
+    color: #374151;
+    text-decoration: none;
+  }
+
+  .toc-nav a.active {
+    color: #2563eb;
+    border-left-color: #2563eb;
+    font-weight: 600;
+  }
+
+  /* Hide on screens narrower than ~1200px (not enough room for sidebar) */
+  @media (max-width: 75rem) {
+    .toc-nav {
+      display: none;
+    }
+  }
+</style>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const toc = document.getElementById("toc")!;
+    const links = document.querySelectorAll<HTMLAnchorElement>("[data-toc-link]");
+    const sections = Array.from(links).map((link) => {
+      const id = link.getAttribute("data-toc-link")!;
+      return { id, el: document.getElementById(id), link };
+    }).filter((s) => s.el !== null);
+
+    if (sections.length === 0) return;
+
+    // Fade in after scrolling fully past the abstract (highlighted section)
+    const abstractSection = document.querySelector(".full-bleed");
+    if (abstractSection) {
+      const abstractObserver = new IntersectionObserver(
+        ([entry]) => {
+          if (entry.isIntersecting) {
+            toc.classList.remove("visible");
+          } else {
+            toc.classList.add("visible");
+          }
+        },
+        { threshold: 0 }
+      );
+      abstractObserver.observe(abstractSection);
+    }
+
+    // Scroll-spy for active section
+    const sectionObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          const id = entry.target.id;
+          const match = sections.find((s) => s.id === id);
+          if (!match) return;
+          if (entry.isIntersecting) {
+            links.forEach((l) => l.classList.remove("active"));
+            match.link.classList.add("active");
+          }
+        });
+      },
+      { rootMargin: "-20% 0px -60% 0px" }
+    );
+
+    sections.forEach((s) => sectionObserver.observe(s.el!));
+  });
+</script>
