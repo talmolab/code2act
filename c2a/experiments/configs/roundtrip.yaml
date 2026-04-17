@@ -1,0 +1,50 @@
+# =============================================================================
+# Round-Trip Code Consistency Experiment
+# =============================================================================
+# Tests whether Code2Act behavior, re-encoded by KPMS, recovers original codes.
+# Runs on two datasets (inference test set + generalization) with three
+# conditions each (reference ceiling, mimic-mjx, code2act).
+# =============================================================================
+
+# =============================================================================
+# KPMS Model
+# =============================================================================
+kpms:
+  model_dir: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/s50_k1e+04_l10_arhmm/seed1
+  model_name: keypoint_arhmm_states50_seed1
+  num_iters: 200
+
+# =============================================================================
+# FK Setup
+# =============================================================================
+stac_xml: ${oc.env:C2A_ROOT,.}/c2a/assets/rodent.xml
+# H5 for FK site config (config/offsets/kp_names) — use reference for inference,
+# new data for generalization (each has its own optimized offsets)
+
+# =============================================================================
+# 250-Frame Dataset (generalization_short — 20 segments × 250 frames, ignore_done)
+# =============================================================================
+inference:
+  code2act_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization_short/generalization_code2act.npz
+  mimic_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization_short/generalization_mimic_mjx.npz
+  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization_short/generalization_codes.npz
+  reference_h5: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization_short/segmented_new_data.h5
+  clip_length: 250
+  fk_h5: ${oc.env:C2A_GENERALIZATION_H5,./data/external/transform_art_2020_12_22_1.h5}
+
+# =============================================================================
+# Generalization Dataset (20 segments × 1000 frames)
+# =============================================================================
+generalization:
+  code2act_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization/generalization_code2act.npz
+  mimic_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization/generalization_mimic_mjx.npz
+  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization/generalization_codes.npz
+  reference_h5: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization/segmented_new_data.h5
+  clip_length: 1000
+  fk_h5: ${oc.env:C2A_GENERALIZATION_H5,./data/external/transform_art_2020_12_22_1.h5}
+
+# =============================================================================
+# Output
+# =============================================================================
+output:
+  base_dir: ./outputs/moseq_roundtrip

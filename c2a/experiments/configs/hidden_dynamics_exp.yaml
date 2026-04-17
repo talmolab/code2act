@@ -1,0 +1,24 @@
+# =============================================================================
+# RNN Hidden State Dynamics Experiment
+# =============================================================================
+# Selects walk and immobility clips with a sustained single-code bout
+# (>= min_bout frames), runs rollouts collecting GRU hidden states and
+# qpos, extracts the sustained segment, and renders ghost videos.
+# =============================================================================
+
+checkpoint:
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260407_031233_484020/
+  step: null
+
+data:
+  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/best_codes.npz
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+
+K: 10
+max_steps: 250
+min_bouts: 3
+seed: 42
+
+output:
+  base_dir: ./outputs/moseq_hidden_dynamics

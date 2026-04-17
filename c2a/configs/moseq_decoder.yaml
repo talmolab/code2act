@@ -1,0 +1,286 @@
+# =============================================================================
+# MoSeq Decoder-Only RL Configuration (Pipeline A)
+# =============================================================================
+# Trains a decoder-only policy where behavioral codes come from Keypoint-MoSeq
+# instead of the VQ-VAE encoder. Compares pre-computed tokenizer (KPMS) against
+# the learned tokenizer (VQ-VAE) for motor control.
+# =============================================================================
+
+# =============================================================================
+# VNL Environment Configuration (same as vqvae_minimal.yaml)
+# =============================================================================
+env_config:
+  mujoco_impl: "jax"
+
+  solver: "newton"
+  iterations: 5
+  ls_iterations: 5
+  naconmax: 131072
+  njmax: 128
+  noslip_iterations: 0
+
+  sim_dt: 0.002
+  ctrl_dt: 0.01
+  mocap_hz: 50
+
+  clip_length: 250
+  clip_set: "all"
+  reference_length: 5
+  reference_stride: 1
+  start_frame_range: [0, 20]
+  qvel_init: "zeros"
+  keep_clips_idx: null
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+
+  domain_randomization:
+    use_domain_randomization: true
+    floor_friction: [0.5, 1.0]
+    static_friction_scale: [0.8, 1.2]
+    armature_scale: [0.8, 1.2]
+    com_jitter: [0.0, 0.005]
+    link_mass_scale: [0.9, 1.1]
+    torso_mass_jitter: [0.0, 0.05]
+    qpos0_jitter: [0.0, 0.01]
+
+  reward_terms:
+    root_pos:
+      exp_scale: 0.035
+      weight: 1.0
+    root_quat:
+      exp_scale: 20.0
+      weight: 1.0
+    joints:
+      exp_scale: 1.41
+      weight: 1.0
+    joints_vel:
+      exp_scale: 1.0
+      weight: 0.5
+    bodies_pos:
+      exp_scale: 0.25
+      weight: 0.0
+    end_eff:
+      exp_scale: 0.03
+      weight: 1.0
+    torso_z_range:
+      healthy_z_range: [0.0325, 0.5]
+      weight: 1.0
+    control_cost:
+      weight: 0.02
+    control_diff_cost:
+      weight: 0.02
+    energy_cost:
+      max_value: 50.0
+      weight: 0.01
+
+  termination_criteria:
+    root_too_far:
+      max_distance: 0.2
+    root_too_rotated:
+      max_degrees: 90.0
+    pose_error:
+      max_l2_error: 6.0
+    nan_termination: {}
+
+# =============================================================================
+# Rendering Configuration
+# =============================================================================
+render_config:
+  render_camera_name: close_profile
+  render_fps: 50
+  render_interval: 5
+  render_per_code_videos: false
+  eval_rollouts_for_transition: 16
+  num_eval_rollout_videos: 3
+
+# =============================================================================
+# KPMS Configuration
+# =============================================================================
+kpms_config:
+  # Path to pre-computed KPMS codes (.npz file from generate_codes.py)
+  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/best_codes.npz
+
+# =============================================================================
+# Network Architecture - MoSeq Decoder-Only
+# =============================================================================
+network_config:
+  arch_name: moseq_decoder
+
+  # Code embedding (KPMS best_codes.npz has 50 unique codes: 0-49)
+  num_codes: 50
+  code_embed_dim: 16
+  code_stack_size: 5             # stack N consecutive codes [t, t+1, ..., t+N-1] (1 = current only)
+
+  # Decoder MLP (same sizes as VQ-VAE decoder)
+  decoder_layer_sizes: [512, 512, 256, 256]
+  critic_layer_sizes: [512, 512, 256, 256]
+
+  # Continuous encoder (reference trajectory -> continuous latent)
+  use_continuous_encoder: true
+  encoder_layer_sizes: [512, 512, 256]
+  continuous_latent_dim: 16
+  encoder_uses_proprio: true        # concat [task_obs, proprio] as encoder input (matches mimic encoder)
+  kl_weight: 0.05               # base KL weight (used if kl_schedule is "none")
+  z_e_dropout_rate: 0.01         # prob of zeroing z_e per timestep (0 = off)
+
+  # RNN Decoder (GRU-based recurrent decoder for temporal coherence)
+  use_rnn_decoder: true
+  rnn_cell_type: gru
+  rnn_hidden_sizes: [512, 512, 256, 256]
+
+  # z_e placement: action head only (GRU sees code+proprio only)
+  # NOTE: auto-overridden to false when use_distillation_head=true
+  z_e_at_action_head: false
+
+  # Per-code hidden state reinitialization at code transitions
+  reinit_hidden_on_code: false
+  learned_hidden_init: false          # learned per-code init (vs zeros)
+
+  # --- Distillation Head (Prior Distillation Pipeline) ---
+  # When enabled, a distill head MLP reads h_t and predicts the frozen
+  # pre-trained encoder's latent distribution via KL loss.  z_e is
+  # automatically excluded from the action path.
+  use_distillation_head: true
+  distillation_head_layer_sizes: [512, 512, 256, 256]
+  distill_kl_weight: 1.0                    # weight for KL(encoder_sg || distill_head)
+  # Pre-trained encoder checkpoint — same-pipeline MoSeq checkpoint with
+  # trained continuous encoder [512, 256, 256], latent_dim=4.
+  distillation_encoder_checkpoint: ${oc.env:C2A_ROOT,.}/trained_mimic_ckpts/260413_040706_764936/
+  distill_logvar_min: null
+  distill_logvar_max: null
+
+  # Pre-trained VAE decoder as readout (replaces single-Dense action head)
+  # h_t → VAE head MLP → (mu, logvar) → sample z → [z, proprio] → VAE decoder → action
+  # When use_distillation_head is also on, the same (mu, logvar) serve as the
+  # distill prediction for KL alignment.  Head MLP uses distillation_head_layer_sizes.
+  use_pretrained_decoder: true
+  decoder_layer_sizes_vae: [512, 256, 256, 256]  # Must match mimic_encoder.yaml
+
+  # KL schedule: controls kl_weight over training steps
+  # Higher KL = z_e pushed toward unit Gaussian = less informative = GRU must use codes
+  # "ramp": linear from start_value to end_value over [start_frac, end_frac] of training
+  # "cosine_anneal": cosine annealing cycling between start_value and end_value
+  # "none": kl_weight = constant (from kl_weight above)
+  kl_schedule: "cosine_anneal"
+  kl_schedule_config:
+    start_value: 0.01            # KL weight at start of schedule (low = z_e informative)
+    end_value: 0.05               # KL weight at end of schedule (high = z_e crushed)
+    start_frac: 0.0              # fraction of training where schedule begins
+    end_frac: 0.5                # fraction of training where schedule ends (ramp only)
+    num_cycles: 4                # number of cosine cycles (cosine_anneal only)
+
+# =============================================================================
+# Training Setup
+# =============================================================================
+train_setup:
+  agent_name: rodent
+  run_name: moseq_decoder_test
+
+  checkpoint_to_restore: null
+  restore_from_run_state: null
+
+  freeze_decoder: true
+
+  train_test_split_info: null
+  train_subset_ratio: 0.7
+
+  eval_every: 20_000_000
+  episode_length: 200
+  reset_every: 20_000_000
+
+  train_config:
+    num_envs: 2048
+    num_timesteps: 5_000_000_000
+    batch_size: 512
+    num_minibatches: 16
+    num_updates_per_batch: 4
+    learning_rate: 1e-4
+    clipping_epsilon: 0.2
+    discounting: 0.95
+    action_repeat: 1
+    entropy_cost: 1e-2
+    reward_scaling: 1
+    normalize_observations: true
+    unroll_length: 40
+    seed: 0
+    get_activation: false
+    deterministic_eval: true
+
+# =============================================================================
+# Logging Configuration
+# =============================================================================
+logging_config:
+  project_name: moseq_experiments
+  group_name: decoder_rl
+  exp_name: moseq_decoder
+  clip_id: 0
+  model_path: ${oc.env:C2A_ROOT,.}/model_checkpoints
+
+# =============================================================================
+# Walker Configuration (same as vqvae_minimal.yaml)
+# =============================================================================
+walker_config:
+  walker_name: "rodent"
+  torque_actuators: true
+  rescale_factor: 0.9
+
+  joint_names:
+    - vertebra_1_extend
+    - hip_L_supinate
+    - hip_L_abduct
+    - hip_L_extend
+    - knee_L
+    - ankle_L
+    - toe_L
+    - hip_R_supinate
+    - hip_R_abduct
+    - hip_R_extend
+    - knee_R
+    - ankle_R
+    - toe_R
+    - vertebra_C11_extend
+    - vertebra_cervical_1_bend
+    - vertebra_axis_twist
+    - atlas
+    - mandible
+    - scapula_L_supinate
+    - scapula_L_abduct
+    - scapula_L_extend
+    - shoulder_L
+    - shoulder_sup_L
+    - elbow_L
+    - wrist_L
+    - scapula_R_supinate
+    - scapula_R_abduct
+    - scapula_R_extend
+    - shoulder_R
+    - shoulder_sup_R
+    - elbow_R
+    - wrist_R
+    - finger_R
+
+  body_names:
+    - torso
+    - pelvis
+    - upper_leg_L
+    - lower_leg_L
+    - foot_L
+    - upper_leg_R
+    - lower_leg_R
+    - foot_R
+    - skull
+    - jaw
+    - scapula_L
+    - upper_arm_L
+    - lower_arm_L
+    - finger_L
+    - scapula_R
+    - upper_arm_R
+    - lower_arm_R
+    - finger_R
+
+  end_eff_names:
+    - foot_L
+    - foot_R
+    - hand_L
+    - hand_R
+    - skull

@@ -1,0 +1,671 @@
+"""Experiment 2: Temporal order & killer demo (code-sequence experiments).
+
+Compares code2act (KPMS decoder) against mimic-mjx (oracle VAE) to
+demonstrate that codes are causally used: shuffling codes degrades
+code2act but has no effect on mimic-mjx (which ignores codes).
+
+Usage:
+    cd moseq_jax
+    python -m experiments.run_code_sequence
+"""
+
+import os
+
+os.environ["MUJOCO_GL"] = "egl"
+os.environ["PYOPENGL_PLATFORM"] = "egl"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+import logging
+import sys
+from pathlib import Path
+
+
+from c2a.paths import get_c2a_root, get_repo_root
+import hydra
+import jax
+import matplotlib.pyplot as plt
+import numpy as np
+from omegaconf import DictConfig
+
+MOSEQ_DIR = get_c2a_root()
+REPO_ROOT = get_repo_root()
+from track_mjx.config import utils
+from vnl_playground.tasks.rodent.imitation import ReferenceClips
+from c2a.moseq_env_wrapper import MoSeqImitation
+
+from c2a.experiments.shared.checkpoint_utils import (
+    load_moseq_checkpoint,
+    load_mimic_checkpoint,
+    make_inference_fn,
+    make_mimic_inference_fn,
+    run_rollout,
+)
+from c2a.experiments.shared.clip_selection import load_balanced_splits, select_clips_by_behavior
+from c2a.experiments.shared.code_sequences import (
+    make_correct_sequences,
+    make_shuffled_step_sequences,
+    make_shuffled_trajectory_sequences,
+)
+from c2a.experiments.shared.metrics import compute_pairwise_joint_divergence
+from c2a.experiments.shared.plotting import (
+    set_nature_style,
+    get_trajectory_colors,
+    get_code_colormap,
+    CONDITION_COLORS,
+    BEHAVIOR_COLORS,
+    NATURE_COLORS,
+)
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+CONDITION_STYLES = {
+    "correct": {"color": CONDITION_COLORS["correct"], "linestyle": "-"},
+    "shuffled_step": {"color": CONDITION_COLORS["shuffled_step"], "linestyle": "-"},
+    "shuffled_trajectory": {"color": CONDITION_COLORS["shuffled_trajectory"], "linestyle": "-"},
+}
+
+
+def plot_divergence_curves(
+    curves: dict[str, tuple[np.ndarray, np.ndarray]],
+    mimic_baseline: tuple[np.ndarray, np.ndarray] | None = None,
+    title: str = "Joint divergence over time",
+) -> plt.Figure:
+    """Divergence curves with std bands: code2act conditions + mimic-mjx baseline.
+
+    Args:
+        curves: ``{condition_name: (mean, std)}`` for code2act conditions.
+        mimic_baseline: Optional ``(mean, std)`` for mimic-mjx oracle.
+        title: Plot title.
+    """
+    set_nature_style()
+    fig, ax = plt.subplots(figsize=(3.5, 2.5))
+
+    for cond, (mean_curve, std_curve) in curves.items():
+        style = CONDITION_STYLES.get(cond, {"color": "#999999", "linestyle": "-"})
+        label = f"Code2Act: {cond}"
+        ax.plot(mean_curve, color=style["color"], linestyle="-", label=label, linewidth=1.2)
+        ax.fill_between(
+            range(len(mean_curve)),
+            mean_curve - std_curve, mean_curve + std_curve,
+            alpha=0.15, color=style["color"],
+        )
+
+    if mimic_baseline is not None:
+        m_mean, m_std = mimic_baseline
+        ax.plot(m_mean, color=NATURE_COLORS["gray"], linestyle="--",
+                label="Mimic-MJX (oracle)", linewidth=1.2)
+        ax.fill_between(
+            range(len(m_mean)),
+            m_mean - m_std, m_mean + m_std,
+            alpha=0.1, color=NATURE_COLORS["gray"],
+        )
+
+    ax.set_xlabel("Timestep")
+    ax.set_ylabel("Mean pairwise joint L2")
+    ax.set_title(title)
+    ax.legend(frameon=False, fontsize=5.5, ncol=2)
+    plt.tight_layout()
+    return fig
+
+
+def plot_root_displacement(
+    panels: dict[str, list[np.ndarray]],
+    title: str = "Root displacement",
+) -> plt.Figure:
+    """All behaviors on one plot. Colors=behavior, shapes=XY vs Z, mean+std."""
+    set_nature_style()
+    fig, ax = plt.subplots(figsize=(3.5, 2.5))
+
+    for beh, trajs in panels.items():
+        color = BEHAVIOR_COLORS.get(beh, "#999999")
+
+        # Compute cumulative XY displacement per trajectory
+        xy_curves = []
+        z_curves = []
+        for qpos in trajs:
+            min_len = len(qpos)
+            xy = qpos[:, :2]
+            xy_disp = np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))
+            xy_disp = np.concatenate([[0], xy_disp])
+            xy_curves.append(xy_disp)
+
+            z_disp = np.cumsum(np.abs(np.diff(qpos[:, 2])))
+            z_disp = np.concatenate([[0], z_disp])
+            z_curves.append(z_disp)
+
+        # Pad to same length
+        max_len = max(len(c) for c in xy_curves)
+        xy_padded = np.array([np.pad(c, (0, max_len - len(c)), mode="edge") for c in xy_curves])
+        z_padded = np.array([np.pad(c, (0, max_len - len(c)), mode="edge") for c in z_curves])
+
+        # XY displacement: solid line
+        xy_mean, xy_std = xy_padded.mean(axis=0), xy_padded.std(axis=0)
+        ax.plot(xy_mean, color=color, linestyle="-", linewidth=1.2, label=f"{beh} XY")
+        ax.fill_between(range(max_len), xy_mean - xy_std, xy_mean + xy_std, alpha=0.15, color=color)
+
+        # Z displacement: dashed line
+        z_mean, z_std = z_padded.mean(axis=0), z_padded.std(axis=0)
+        ax.plot(z_mean, color=color, linestyle="--", linewidth=1.2, label=f"{beh} Z")
+        ax.fill_between(range(max_len), z_mean - z_std, z_mean + z_std, alpha=0.1, color=color)
+
+    ax.set_xlabel("Timestep")
+    ax.set_ylabel("Cumulative displacement")
+    ax.set_title(title)
+    ax.legend(frameon=False, fontsize=5.5, ncol=2)
+    plt.tight_layout()
+    return fig
+
+
+def plot_kinematic_signatures(
+    panels: dict[str, list[np.ndarray]],
+    ctrl_dt: float = 0.01,
+    title: str = "Kinematic signatures",
+) -> plt.Figure:
+    """Three-panel bar chart: XY speed, root Z height, joint velocity per behavior.
+
+    Each bar = mean over clips for one behavior, with individual clip dots and
+    error bars.  Directly shows that walk = fast XY, rear = high Z, groom = still.
+
+    Args:
+        panels: ``{behavior_name: [qpos_array, ...]}`` where each qpos is
+            ``(T, 74)`` at control rate.
+        ctrl_dt: Control timestep in seconds (for speed units).
+        title: Suptitle for the figure.
+    """
+    set_nature_style()
+    fig, axes = plt.subplots(1, 3, figsize=(7, 2.5))
+
+    behaviors = list(panels.keys())
+    colors = [BEHAVIOR_COLORS.get(b, "#999999") for b in behaviors]
+    x = np.arange(len(behaviors))
+
+    # Ensure float arrays (saved npz may have dtype=object)
+    panels_f = {
+        beh: [np.asarray(q, dtype=np.float64) for q in trajs]
+        for beh, trajs in panels.items()
+    }
+
+    # --- Panel 1: Mean XY speed (m/s) ---
+    xy_speeds = {}
+    for beh, trajs in panels_f.items():
+        speeds = []
+        for qpos in trajs:
+            xy = qpos[:, :2]
+            dists = np.linalg.norm(np.diff(xy, axis=0), axis=1)
+            speeds.append(np.mean(dists) / ctrl_dt)
+        xy_speeds[beh] = np.array(speeds)
+
+    means = [xy_speeds[b].mean() for b in behaviors]
+    stds = [xy_speeds[b].std() for b in behaviors]
+    axes[0].bar(x, means, yerr=stds, color=colors, alpha=0.8, capsize=3, width=0.6)
+    for i, beh in enumerate(behaviors):
+        jitter = np.random.default_rng(0).uniform(-0.15, 0.15, size=len(xy_speeds[beh]))
+        axes[0].scatter(
+            x[i] + jitter, xy_speeds[beh], color=colors[i],
+            s=8, alpha=0.4, edgecolors="none", zorder=3,
+        )
+    axes[0].set_ylabel("XY speed (m/s)")
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(behaviors)
+    axes[0].set_title("Locomotion")
+
+    # --- Panel 2: Mean root Z height ---
+    z_heights = {}
+    for beh, trajs in panels_f.items():
+        heights = []
+        for qpos in trajs:
+            heights.append(np.mean(qpos[:, 2]))
+        z_heights[beh] = np.array(heights)
+
+    means = [z_heights[b].mean() for b in behaviors]
+    stds = [z_heights[b].std() for b in behaviors]
+    axes[1].bar(x, means, yerr=stds, color=colors, alpha=0.8, capsize=3, width=0.6)
+    for i, beh in enumerate(behaviors):
+        jitter = np.random.default_rng(1).uniform(-0.15, 0.15, size=len(z_heights[beh]))
+        axes[1].scatter(
+            x[i] + jitter, z_heights[beh], color=colors[i],
+            s=8, alpha=0.4, edgecolors="none", zorder=3,
+        )
+    axes[1].set_ylabel("Root Z height (m)")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(behaviors)
+    axes[1].set_title("Posture")
+
+    # --- Panel 3: Mean joint angular velocity ---
+    joint_vels = {}
+    for beh, trajs in panels_f.items():
+        vels = []
+        for qpos in trajs:
+            # Joint angles start at index 7 (after root pos 3 + root quat 4)
+            joints = qpos[:, 7:]
+            angular_vel = np.abs(np.diff(joints, axis=0)) / ctrl_dt
+            vels.append(np.mean(angular_vel))
+        joint_vels[beh] = np.array(vels)
+
+    means = [joint_vels[b].mean() for b in behaviors]
+    stds = [joint_vels[b].std() for b in behaviors]
+    axes[2].bar(x, means, yerr=stds, color=colors, alpha=0.8, capsize=3, width=0.6)
+    for i, beh in enumerate(behaviors):
+        jitter = np.random.default_rng(2).uniform(-0.15, 0.15, size=len(joint_vels[beh]))
+        axes[2].scatter(
+            x[i] + jitter, joint_vels[beh], color=colors[i],
+            s=8, alpha=0.4, edgecolors="none", zorder=3,
+        )
+    axes[2].set_ylabel("Joint angular vel (rad/s)")
+    axes[2].set_xticks(x)
+    axes[2].set_xticklabels(behaviors)
+    axes[2].set_title("Joint Motion")
+
+    fig.suptitle(title, fontsize=9, y=1.02)
+    plt.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Temporal order experiment
+# ---------------------------------------------------------------------------
+
+
+def run_temporal_order(
+    cfg: DictConfig,
+    env,
+    inf_fn_code2act,
+    inf_fn_mimic,
+    params_code2act: tuple,
+    params_mimic: tuple,
+    ppo_networks,
+    mimic_ppo,
+    use_rnn: bool,
+    codes: np.ndarray,
+    splits: dict,
+    num_codes: int,
+    output_dir: Path,
+    jit_reset=None,
+    jit_step=None,
+) -> None:
+    """Run temporal order experiment (Claim 3).
+
+    Shuffling codes degrades code2act but NOT mimic-mjx, proving codes
+    are causally used by the decoder.
+    """
+    log.info("\n=== Temporal Order Experiment ===")
+    K = int(cfg.temporal_order.K)
+    max_steps = int(cfg.temporal_order.max_steps)
+    seed = int(cfg.temporal_order.seed)
+
+    # Select K clips (balanced)
+    selected = select_clips_by_behavior(splits, "test", k_per_behavior=K // 3, seed=seed)
+    clip_indices = []
+    for beh in ["groom", "walk", "rear"]:
+        clip_indices.extend(selected.get(beh, []))
+    clip_indices = clip_indices[:K]
+
+    # Generate code sequences
+    correct_seqs = make_correct_sequences(codes, clip_indices, max_steps)
+    shuffled_step_seqs = make_shuffled_step_sequences(K, max_steps, num_codes, seed=seed)
+    shuffled_traj_seqs = make_shuffled_trajectory_sequences(correct_seqs, seed=seed)
+
+    conditions = {
+        "correct": correct_seqs,
+        "shuffled_step": shuffled_step_seqs,
+        "shuffled_trajectory": shuffled_traj_seqs,
+    }
+
+    # Run code2act rollouts for each condition
+    divergence_curves: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
+    for cond_name, cond_seqs in conditions.items():
+        log.info(f"  Code2Act — condition: {cond_name}")
+
+        trajectories_qpos = []
+        trajectories_codes = []
+
+        for ki in range(K):
+            key = jax.random.PRNGKey(seed + ki * 100)
+            result = run_rollout(
+                env, inf_fn_code2act, params_code2act, ppo_networks, use_rnn, key,
+                max_steps=max_steps,
+                code_override=cond_seqs[ki],
+                jit_reset=jit_reset, jit_step=jit_step,
+                model_type="code2act",
+            )
+            trajectories_qpos.append(result["qpos"][:-1])
+            trajectories_codes.append(result["code_indices"])
+
+        # Compute divergence (mean + std)
+        div_mean, div_std = compute_pairwise_joint_divergence(trajectories_qpos)
+        divergence_curves[cond_name] = (div_mean, div_std)
+
+        # Save per-condition trajectory data
+        np.savez_compressed(
+            output_dir / f"temporal_{cond_name}_code2act.npz",
+            qpos=np.array(trajectories_qpos, dtype=object),
+            code_indices=np.array(trajectories_codes, dtype=object),
+            divergence_mean=div_mean, divergence_std=div_std,
+            code_sequences=np.array(cond_seqs[:K], dtype=object),
+        )
+
+        # Ghost video for code2act (correct condition only)
+        if cond_name == "correct" and len(trajectories_qpos) >= 2:
+            try:
+                from experiments.shared.ghost_rendering import (
+                    build_ghost_model,
+                    render_ghost_video,
+                )
+
+                code_colors = get_code_colormap(num_codes)
+                traj_colors = get_trajectory_colors(len(trajectories_qpos))
+                ghost_model, base_nq = build_ghost_model(
+                    env,
+                    num_ghosts=len(trajectories_qpos) - 1,
+                    ghost_colors=traj_colors[1:],
+                    camera_distance=float(cfg.rendering.camera_distance),
+                    camera_elevation=float(cfg.rendering.camera_elevation),
+                    camera_azimuth=float(cfg.rendering.camera_azimuth),
+                    camera_fovy=float(cfg.rendering.camera_fovy),
+                )
+                ghost_path = output_dir / f"temporal_{cond_name}_code2act.mp4"
+                render_ghost_video(
+                    ghost_model, base_nq, trajectories_qpos, trajectories_codes,
+                    traj_colors, ghost_path,
+                    title=f"{cond_name} (code2act)",
+                    fps=int(cfg.rendering.fps),
+                    width=int(cfg.rendering.width),
+                    height=int(cfg.rendering.height),
+                    code_colors=code_colors,
+                )
+            except Exception as e:
+                log.warning(f"    Ghost rendering failed: {e}")
+
+    # Run mimic-mjx baseline (single run, no code_override — it ignores codes)
+    log.info("  Mimic-MJX oracle baseline")
+    mimic_qpos = []
+    for ki in range(K):
+        key = jax.random.PRNGKey(seed + ki * 100)
+        result = run_rollout(
+            env, inf_fn_mimic, params_mimic, mimic_ppo, False, key,
+            max_steps=max_steps,
+            jit_reset=jit_reset, jit_step=jit_step,
+            model_type="mimic_mjx",
+        )
+        mimic_qpos.append(result["qpos"][:-1])
+    mimic_baseline = compute_pairwise_joint_divergence(mimic_qpos)
+
+    # Save mimic baseline data
+    np.savez_compressed(
+        output_dir / "temporal_mimic_baseline.npz",
+        qpos=np.array(mimic_qpos, dtype=object),
+        divergence_mean=mimic_baseline[0], divergence_std=mimic_baseline[1],
+    )
+
+    # Save all divergence curves together for easy replotting
+    div_save = {}
+    for cond_name, (dm, ds) in divergence_curves.items():
+        div_save[f"{cond_name}_mean"] = dm
+        div_save[f"{cond_name}_std"] = ds
+    div_save["mimic_mean"] = mimic_baseline[0]
+    div_save["mimic_std"] = mimic_baseline[1]
+    np.savez_compressed(output_dir / "temporal_divergence_all.npz", **div_save)
+
+    # Plot divergence curves with mimic-mjx baseline
+    fig = plot_divergence_curves(divergence_curves, mimic_baseline=mimic_baseline)
+    fig.savefig(output_dir / "temporal_order_divergence.png", dpi=300)
+    plt.close(fig)
+    log.info("  Divergence plot saved")
+
+
+# ---------------------------------------------------------------------------
+# Killer demo experiment
+# ---------------------------------------------------------------------------
+
+
+def run_killer_demo(
+    cfg: DictConfig,
+    env,
+    inf_fn,
+    params: tuple,
+    ppo_networks,
+    use_rnn: bool,
+    codes: np.ndarray,
+    clips: ReferenceClips,
+    splits: dict,
+    num_codes: int,
+    output_dir: Path,
+    jit_reset=None,
+    jit_step=None,
+) -> None:
+    """Run killer demo experiment (Claim 5) — code2act only.
+
+    Two instantiation conditions (high-z / low-z starting position),
+    each tested with groom / walk / rear code sequences.  All bodies
+    within a height condition start at the *same* position — only the
+    codes differ.
+    """
+    log.info("\n=== Killer Demo Experiment ===")
+    K = int(cfg.killer_demo.K)
+    max_steps = int(cfg.killer_demo.max_steps)
+    seed = int(cfg.killer_demo.seed)
+
+    code_colors = get_code_colormap(num_codes)
+
+    # ------------------------------------------------------------------
+    # Determine anchor clips (proper env.reset to frame 0)
+    # ------------------------------------------------------------------
+    # Low: a clip whose starting z is near the median (typical ground pose)
+    # High: a clip whose starting z is near the 90th percentile (rearing)
+    all_z0 = clips.qpos[:, 0, 2]  # root Z at frame 0
+    low_clip_idx = int(np.argmin(np.abs(all_z0 - np.median(all_z0))))
+    high_z_target = float(np.percentile(all_z0, 90))
+    high_clip_idx = int(np.argmin(np.abs(all_z0 - high_z_target)))
+
+    height_anchor_clip = {"high": high_clip_idx, "low": low_clip_idx}
+    log.info(
+        f"  Anchor clips: low=clip {low_clip_idx} (z={all_z0[low_clip_idx]:.4f}), "
+        f"high=clip {high_clip_idx} (z={all_z0[high_clip_idx]:.4f})"
+    )
+
+    # ------------------------------------------------------------------
+    # Build code sequences per behavior (shared across heights)
+    # ------------------------------------------------------------------
+    beh_code_seqs: dict[str, list[np.ndarray]] = {}
+    beh_indices_map: dict[str, list[int]] = {}
+
+    for beh in cfg.killer_demo.behaviors:
+        selected = select_clips_by_behavior(splits, "test", k_per_behavior=K, seed=seed)
+        beh_indices = selected.get(beh, [])[:K]
+        if len(beh_indices) < 2:
+            log.warning(f"  Only {len(beh_indices)} clips for {beh}, skipping")
+            continue
+        beh_code_seqs[beh] = make_correct_sequences(codes, beh_indices, max_steps)
+        beh_indices_map[beh] = beh_indices
+
+    # ------------------------------------------------------------------
+    # Run rollouts: height (outer) → behavior (inner)
+    # ------------------------------------------------------------------
+    height_beh_trajs: dict[str, dict[str, list[np.ndarray]]] = {}
+
+    for height in cfg.killer_demo.start_heights:
+        anchor_clip = height_anchor_clip[height]
+        log.info(f"\n  --- Height: {height} (anchor clip {anchor_clip}, z={all_z0[anchor_clip]:.4f}) ---")
+        height_beh_trajs[height] = {}
+
+        for beh in beh_code_seqs:
+            log.info(f"    Behavior: {beh}")
+            code_seqs = beh_code_seqs[beh]
+            beh_indices = beh_indices_map[beh]
+
+            trajectories_qpos = []
+            trajectories_codes = []
+
+            for ki in range(len(beh_indices)):
+                key = jax.random.PRNGKey(seed + ki * 1000)
+                result = run_rollout(
+                    env, inf_fn, params, ppo_networks, use_rnn, key,
+                    max_steps=max_steps,
+                    code_override=code_seqs[ki],
+                    reset_clip_idx=anchor_clip,
+                    jit_reset=jit_reset, jit_step=jit_step,
+                    ignore_done=True,
+                )
+                trajectories_qpos.append(result["qpos"][:-1])
+                trajectories_codes.append(result["code_indices"])
+
+            height_beh_trajs[height][beh] = trajectories_qpos
+
+            # Save killer demo trajectories per behavior+height
+            np.savez_compressed(
+                output_dir / f"killer_{beh}_{height}.npz",
+                qpos=np.array(trajectories_qpos, dtype=object),
+                code_indices=np.array(trajectories_codes, dtype=object),
+                code_sequences=np.array(code_seqs, dtype=object),
+                behavior=beh, height=height,
+                anchor_clip=anchor_clip,
+            )
+
+            # Ghost video — only near-full-length trajectories (>= 90% of max)
+            full_len = max(len(q) for q in trajectories_qpos)
+            min_len_threshold = int(full_len * 0.9)
+            full_qpos = [q for q in trajectories_qpos if len(q) >= min_len_threshold]
+            full_codes = [
+                c for q, c in zip(trajectories_qpos, trajectories_codes)
+                if len(q) >= min_len_threshold
+            ]
+            n_skipped = len(trajectories_qpos) - len(full_qpos)
+            if n_skipped > 0:
+                log.info(
+                    f"      Skipping {n_skipped}/{len(trajectories_qpos)} "
+                    f"early-terminated trajectories for rendering"
+                )
+
+            if len(full_qpos) >= 2:
+                try:
+                    from experiments.shared.ghost_rendering import (
+                        build_ghost_model,
+                        render_ghost_video,
+                    )
+
+                    traj_colors = get_trajectory_colors(len(full_qpos))
+                    ghost_model, base_nq = build_ghost_model(
+                        env,
+                        num_ghosts=len(full_qpos) - 1,
+                        ghost_colors=traj_colors[1:],
+                        camera_distance=float(cfg.rendering.camera_distance),
+                        camera_elevation=float(cfg.rendering.camera_elevation),
+                        camera_azimuth=float(cfg.rendering.camera_azimuth),
+                        camera_fovy=float(cfg.rendering.camera_fovy),
+                    )
+                    ghost_path = output_dir / f"killer_{beh}_{height}.mp4"
+                    render_ghost_video(
+                        ghost_model, base_nq, full_qpos, full_codes,
+                        traj_colors, ghost_path,
+                        title=f"Killer: {beh} ({height} start)",
+                        fps=int(cfg.rendering.fps),
+                        width=int(cfg.rendering.width),
+                        height=int(cfg.rendering.height),
+                        code_colors=code_colors,
+                    )
+                except Exception as e:
+                    log.warning(f"      Ghost rendering failed: {e}")
+
+    # Combined displacement plot per height (all behaviors, mean+std)
+    ctrl_dt = float(cfg.env_config.ctrl_dt)
+    for height, beh_trajs in height_beh_trajs.items():
+        fig = plot_root_displacement(beh_trajs, title=f"Root displacement ({height} start)")
+        fig.savefig(output_dir / f"killer_{height}_displacement.png", dpi=300)
+        plt.close(fig)
+        log.info(f"  Displacement plot saved for {height}")
+
+        fig = plot_kinematic_signatures(
+            beh_trajs, ctrl_dt=ctrl_dt,
+            title=f"Kinematic signatures ({height} start)",
+        )
+        for ext in ("png", "pdf"):
+            fig.savefig(
+                output_dir / f"killer_{height}_kinematic_signatures.{ext}",
+                dpi=300, bbox_inches="tight",
+            )
+        plt.close(fig)
+        log.info(f"  Kinematic signatures plot saved for {height}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+@hydra.main(version_base=None, config_path="configs", config_name="code_sequence_exp")
+def main(cfg: DictConfig) -> None:
+    log.info("=== Code Sequence Experiments (code2act vs mimic-mjx) ===")
+
+    output_dir = Path(cfg.output.base_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load code2act (MoSeq decoder) checkpoint
+    ckpt_cfg, norm_state, policy_params, ppo_networks = load_moseq_checkpoint(cfg.checkpoint.path)
+    use_rnn = bool(ckpt_cfg.network_config.get("use_rnn_decoder", False))
+    num_codes = int(ckpt_cfg.network_config.num_codes)
+    code2act_params = (norm_state, policy_params)
+
+    # Load mimic-mjx (oracle VAE) checkpoint
+    mimic_cfg, mimic_norm, mimic_policy, mimic_ppo = load_mimic_checkpoint(
+        cfg.mimic_checkpoint.path, step=cfg.mimic_checkpoint.get("step"),
+    )
+    mimic_params = (mimic_norm, mimic_policy)
+
+    # Load data
+    codes_data = np.load(cfg.data.codes_path)
+    test_codes = codes_data["test_codes"]
+    splits = load_balanced_splits(cfg.data.balanced_split_path)
+    test_indices = splits["balanced"]["test_indices"]
+
+    test_clips = ReferenceClips(
+        data_path=cfg.data.reference_data_path,
+        n_frames_per_clip=int(ckpt_cfg.env_config.clip_length),
+        keep_clips_idx=np.array(test_indices),
+    )
+
+    # Create env
+    _, _, env_cfg = utils.prepare_config(ckpt_cfg)
+    env_cfg.start_frame_range = [0, 0]
+    env_cfg.domain_randomization.use_domain_randomization = False
+    code_stack_size = int(ckpt_cfg.network_config.get("code_stack_size", 1))
+    env = MoSeqImitation(config=env_cfg, clips=test_clips, kpms_codes=test_codes,
+                         code_stack_size=code_stack_size)
+
+    # Pre-compile JIT functions ONCE (critical for performance)
+    jit_reset = jax.jit(env.reset)
+    jit_step = jax.jit(env.step)
+
+    # Build inference functions
+    inf_fn_code2act = make_inference_fn(
+        ppo_networks, use_rnn=use_rnn, deterministic=True,
+    )
+    inf_fn_mimic = make_mimic_inference_fn(mimic_ppo, deterministic=True)
+
+    # --- Temporal Order ---
+    run_temporal_order(
+        cfg, env, inf_fn_code2act, inf_fn_mimic,
+        code2act_params, mimic_params,
+        ppo_networks, mimic_ppo, use_rnn,
+        test_codes, splits, num_codes, output_dir,
+        jit_reset=jit_reset, jit_step=jit_step,
+    )
+
+    # --- Killer Demo (code2act only) ---
+    run_killer_demo(
+        cfg, env, inf_fn_code2act, code2act_params, ppo_networks, use_rnn,
+        test_codes, test_clips, splits, num_codes, output_dir,
+        jit_reset=jit_reset, jit_step=jit_step,
+    )
+
+    log.info("=== Code Sequence Experiments Complete ===")
+
+
+if __name__ == "__main__":
+    main()
