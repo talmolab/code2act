@@ -28,7 +28,7 @@ import numpy as np
 import orbax.checkpoint as ocp
 import wandb
 from mujoco_playground import wrapper as playground_wrappers
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from vnl_playground.tasks.rodent.imitation import ReferenceClips
 
 from track_mjx.config import utils
@@ -377,6 +377,24 @@ def main(cfg: DictConfig) -> None:
 
     # Prepare config
     cfg, cfg_dict, env_cfg_ml = utils.prepare_config(cfg)
+
+    # Reroute reference_data_path to c2a's local data dir. prepare_config sets
+    # it via Path(track_mjx.__file__).parent.parent.parent / "data/..." which
+    # points inside whatever track_mjx clone was pip-installed from. In c2a
+    # deployments where track_mjx lives as a sibling clone inside code2act/,
+    # that resolver lands in an empty `code2act/track-mjx/data/` instead of
+    # the real `code2act/data/`. Always prefer the c2a-local file when it exists.
+    _c2a_ref = get_repo_root() / "data" / "rodent" / "rodent_reference_clips.h5"
+    if _c2a_ref.exists():
+        if str(_c2a_ref) != cfg.env_config.reference_data_path:
+            logging.info(
+                f"Overriding reference_data_path: "
+                f"{cfg.env_config.reference_data_path} -> {_c2a_ref}"
+            )
+        OmegaConf.update(
+            cfg.env_config, "reference_data_path", str(_c2a_ref), merge=False
+        )
+        cfg_dict["env_config"]["reference_data_path"] = str(_c2a_ref)
 
     # Checkpoint manager
     mgr_options = ocp.CheckpointManagerOptions(

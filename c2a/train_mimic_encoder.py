@@ -34,7 +34,7 @@ import numpy as np
 import orbax.checkpoint as ocp
 import wandb
 from mujoco_playground import wrapper as playground_wrappers
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from vnl_playground.tasks.rodent.imitation import ReferenceClips
 
 from track_mjx.agent.flat_imitation import FlatImitation
@@ -66,6 +66,22 @@ def main(cfg: DictConfig) -> None:
 
     # Prepare config
     cfg, cfg_dict, env_cfg_ml = utils.prepare_config(cfg)
+
+    # Reroute reference_data_path to c2a's local data dir (see
+    # train_moseq_decoder.py for the full rationale — prepare_config resolves
+    # against track_mjx's install tree, which in c2a lives inside a sibling
+    # clone with no data/).
+    _c2a_ref = get_repo_root() / "data" / "rodent" / "rodent_reference_clips.h5"
+    if _c2a_ref.exists():
+        if str(_c2a_ref) != cfg.env_config.reference_data_path:
+            logging.info(
+                f"Overriding reference_data_path: "
+                f"{cfg.env_config.reference_data_path} -> {_c2a_ref}"
+            )
+        OmegaConf.update(
+            cfg.env_config, "reference_data_path", str(_c2a_ref), merge=False
+        )
+        cfg_dict["env_config"]["reference_data_path"] = str(_c2a_ref)
 
     # Checkpoint management
     run_id, checkpoint_path, existing_run_state = checkpointing.load_from_run_state(cfg)

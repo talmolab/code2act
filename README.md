@@ -48,7 +48,7 @@ source .venv/bin/activate
 # 3. Install track-mjx into this venv (brings in jax, brax, mjx, flax,
 #    orbax, hydra, wandb, vnl-playground, mujoco_playground, …)
 cd track-mjx
-uv pip install -e ".[cuda13]"     # or .[cuda12] / . for CPU-only
+uv pip install -e ".[cuda12]"
 cd ..
 
 # 4. Install keypoint_moseq for the KPMS fitting stages
