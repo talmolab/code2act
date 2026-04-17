@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "c2a"
 version = "0.1.0"
-description = "Code2Act: KPMS-driven RNN decoder pipeline built on top of track-mjx."
+description = "Code2Act: Switching non-Linear Dynamical Systems for modeling within-syllable neuromechanical control dynamics."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = {text = "BSD-3-Clause"}
