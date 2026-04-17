@@ -1,0 +1,52 @@
+# Environments
+.venv/
+track-mjx/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Outputs & caches
+outputs/
+wandb/
+tmp/
+c2a/outputs/
+c2a/tmp/
+c2a/wandb/
+c2a/figures/outputs/
+c2a/figures/node_modules/
+c2a/figures/package-lock.json
+
+# Data (too large for git)
+data/rodent/*.h5
+data/rodent/*.json
+data/rodent/*.npz
+
+# Checkpoints (too large for git)
+model_checkpoints/
+trained_mimic_ckpts/
+
+# Node (for website if installed locally)
+node_modules/
+
+# Notebooks
+.ipynb_checkpoints/

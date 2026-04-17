@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "c2a"
+version = "0.1.0"
+description = "Code2Act: KPMS-driven RNN decoder pipeline built on top of track-mjx."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = {text = "BSD-3-Clause"}
+authors = [
+    {name = "Kaiwen Bian", email = "kaiwen@talmolab.org"},
+    {name = "Talmo Pereira", email = "talmo@salk.edu"},
+]
+keywords = ["keypoint-moseq", "imitation learning", "reinforcement learning", "neuromechanics"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+# Core dependencies. The heavy chain (jax, brax, mujoco-mjx, flax, orbax,
+# hydra, wandb, vnl-playground, mujoco_playground, etc.) is brought in by
+# `track-mjx` itself, which users install from `./track-mjx/` (see README).
+# c2a-only additions beyond the track-mjx set:
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "pyyaml",
+    "omegaconf",
+    "h5py",
+    "imageio[ffmpeg]",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "black[jupyter]",
+]
+
+[project.urls]
+Homepage = "https://kbian.org/Code2Act-website/"
+Source = "https://github.com/talmolab/code2act"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["c2a*"]
+exclude = ["track-mjx*", "data*", "docs*", "bash_scripts*", "Code2Act-website*", "tests*", "model_checkpoints*", "trained_mimic_ckpts*"]
+
+[tool.setuptools.package-data]
+c2a = ["assets/*.xml"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311", "py312"]
