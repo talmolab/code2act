@@ -8,19 +8,13 @@ rendering and colour generation.
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
-
-from c2a.paths import get_c2a_root, get_repo_root
 from typing import Any
 
 import imageio
 import mujoco
 import numpy as np
 
-# Ensure repo root importable
-_REPO_ROOT = get_repo_root()
-if str(_REPO_ROOT) not in sys.path:
 from c2a.rendering_utils import (
     build_ghost_model,
     render_ghost_video,

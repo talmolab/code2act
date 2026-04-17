@@ -41,6 +41,7 @@ git clone <code2act-repo-url> && cd code2act
 git clone -b kevin/kpms-decoder https://github.com/talmolab/track-mjx.git
 
 # 2. Create the venv at the code2act root (not inside track-mjx/)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv
 source .venv/bin/activate
 
@@ -168,28 +169,6 @@ code2act/
 ├── data/rodent/                    # H5 reference clips (gitignored)
 ├── trained_mimic_ckpts/            # distillation-target checkpoints (gitignored)
 └── model_checkpoints/              # decoder RL checkpoints (gitignored)
-```
-
-## Citation
-
-If you use code2act in your research, please cite the MIMIC-MJX paper — the
-backbone infrastructure — and the Code2Act write-up:
-
-```bibtex
-@misc{zhang2025mimicmjxneuromechanicalemulationanimal,
-      title={MIMIC-MJX: Neuromechanical Emulation of Animal Behavior},
-      author={Charles Y. Zhang and Yuanjia Yang and Aidan Sirbu and
-              Elliott T. T. Abe and Emil Wärnberg and Eric J. Leonardis and
-              Diego E. Aldarondo and Adam Lee and Aaditya Prasad and
-              Jason Foat and Kaiwen Bian and Joshua Park and Rusham Bhatt and
-              Hutton Saunders and Akira Nagamori and
-              Ayesha R. Thanawalla and Kee Wui Huang and Fabian Plum and
-              Hendrik K. Beck and Steven W. Flavell and David Labonte and
-              Blake A. Richards and Bingni W. Brunton and Eiman Azim and
-              Bence P. Ölveczky and Talmo D. Pereira},
-      year={2025}, eprint={2511.20532}, archivePrefix={arXiv},
-      primaryClass={q-bio.NC}, url={https://arxiv.org/abs/2511.20532},
-}
 ```
 
 ## License

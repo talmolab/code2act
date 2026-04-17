@@ -33,6 +33,7 @@ c2a/outputs/
 c2a/tmp/
 c2a/wandb/
 c2a/figures/outputs/
+c2a/figures/data/
 c2a/figures/node_modules/
 c2a/figures/package-lock.json
 
