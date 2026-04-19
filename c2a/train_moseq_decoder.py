@@ -694,7 +694,22 @@ def main(cfg: DictConfig) -> None:
     # at params["encoder_module"] has identical structure — one-line drop-in.
     _post_init_params_fn = None
     if use_distillation_head and distillation_encoder_checkpoint is not None:
-        _encoder_ckpt_path = str(Path(distillation_encoder_checkpoint))
+        # Orbax requires absolute paths. Resolve relatives against the repo
+        # root (same rule as codes_path / balanced_split_path above). Without
+        # this, a config like `${oc.env:C2A_ROOT,.}/trained_mimic_ckpts/...`
+        # evaluates to a bare relative path whenever C2A_ROOT is unset, and
+        # Hydra's cwd change makes the directory unreachable by the time
+        # orbax tries to read it.
+        _enc_p = Path(distillation_encoder_checkpoint)
+        if not _enc_p.is_absolute():
+            _enc_p = get_repo_root() / _enc_p
+        if not _enc_p.exists():
+            raise FileNotFoundError(
+                f"network_config.distillation_encoder_checkpoint="
+                f"{distillation_encoder_checkpoint} does not resolve to an "
+                f"existing directory (tried {_enc_p})."
+            )
+        _encoder_ckpt_path = str(_enc_p.resolve())
         _encoder_step_prefix = str(
             cfg.network_config.get("distillation_encoder_step_prefix", "MimicEncoder")
         )

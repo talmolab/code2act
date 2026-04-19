@@ -1,6 +1,7 @@
 # Environments
 .venv/
 track-mjx/
+propel/
 Code2Act-website/
 venv/
 env/
@@ -52,3 +53,7 @@ node_modules/
 
 # Notebooks
 .ipynb_checkpoints/
+scratch/
+sessions/
+.propel/
+.claude/
