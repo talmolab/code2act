@@ -1,0 +1,23 @@
+# Minimal smoke-test config for the KPMS sweep — 1 fit at ~30s total.
+# Verifies end-to-end: keypoint load, fit, metrics incl. coverage, reconstruction
+# plot, sweep_results.json. NOT for research; use kpms_sweep.yaml or
+# pipeline_sweep.yaml for real runs.
+
+data:
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  stac_xml_path: ${oc.env:C2A_ROOT,.}/c2a/assets/rodent.xml
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  labeled_clip_range: [642, 741]
+
+sweep:
+  num_states: [10]
+  kappa: [1.0e+3]
+  latent_dim: [10]
+  model_type: ["arhmm"]
+  seeds_per_setting: 1
+  ar_iters: 10
+  full_iters: 10
+
+output:
+  base_dir: outputs/kpms_sweep_smoke

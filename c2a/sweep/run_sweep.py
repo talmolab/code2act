@@ -43,17 +43,26 @@ import yaml
 
 from c2a.kpms.config import KPMSHyperparams
 from c2a.kpms.fit_kpms import fit_kpms_keypoints
+from c2a.kpms.label_alignment import BEHAVIORS, load_behavior_frames
+from c2a.kpms.coverage_metrics import compute_coverage
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
 
 def _load_config(config_path: str | None = None) -> dict:
-    """Load sweep config from YAML."""
+    """Load sweep config from YAML and resolve ``${oc.env:...}`` expressions.
+
+    Uses OmegaConf so that ``${oc.env:C2A_ROOT,.}`` is substituted from the
+    environment at load time (the bash scripts export ``C2A_ROOT``). Returns
+    a plain ``dict`` so downstream code can continue using ``.get()`` etc.
+    """
+    from omegaconf import OmegaConf
+
     if config_path is None:
         config_path = str(MOSEQ_DIR / "configs" / "kpms_sweep.yaml")
-    with open(config_path) as f:
-        return yaml.safe_load(f)
+    cfg = OmegaConf.load(config_path)
+    return OmegaConf.to_container(cfg, resolve=True)
 
 
 def _setup_stac_model(
@@ -552,17 +561,31 @@ def _compute_metrics(
     original: np.ndarray,
     reconstructed: np.ndarray,
     n_states: int,
+    frame_labels: np.ndarray | None = None,
+    labeled_clip_indices: np.ndarray | None = None,
+    all_clip_indices: np.ndarray | None = None,
+    n_behaviors: int | None = None,
 ) -> dict:
-    """Compute reconstruction and syllable quality metrics.
+    """Compute reconstruction, syllable-quality, and (optional) behavior-coverage metrics.
 
     Args:
         fit_result: KPMSFitResult from fitting.
         original: Flattened original data ``[N, T, K*D]``.
         reconstructed: Flattened reconstructed data ``[N, T, K*D]``.
         n_states: Number of syllable states.
+        frame_labels: Optional per-clip human behavior labels, shape
+            ``[N_labeled, n_frames]``, dtype int32.  Pass together with
+            ``labeled_clip_indices``, ``all_clip_indices``, ``n_behaviors``
+            to enable coverage metrics (NMI + Hungarian purity).
+        labeled_clip_indices: Clip indices corresponding to ``frame_labels``.
+        all_clip_indices: Clip indices passed to KPMS in positional order
+            (i.e. matches ``fit_result.labels_list``).
+        n_behaviors: Number of behavior classes.
 
     Returns:
-        Dict with reconstruction_mse, syllable stats, and transition entropy.
+        Dict with reconstruction_mse, syllable stats, transition entropy, and
+        (if all coverage-args provided) nmi_global, purity_global,
+        n_labeled_clips_used, n_labeled_frames_used, coverage_mapping.
     """
     labels = fit_result.labels_list
 
@@ -593,7 +616,7 @@ def _compute_metrics(
     entropy = -np.nansum(trans_probs * np.log(trans_probs + 1e-10), axis=1)
     mean_entropy = float(np.mean(entropy[row_sums.squeeze() > 0]))
 
-    return {
+    result: dict = {
         "reconstruction_mse": mse,
         "active_syllables": active,
         "syllable_usage_ratio": active / n_states,
@@ -602,12 +625,35 @@ def _compute_metrics(
         "transition_entropy": mean_entropy,
     }
 
+    # Optional behavior-coverage metrics (NMI + Hungarian purity).
+    coverage_args = (
+        frame_labels,
+        labeled_clip_indices,
+        all_clip_indices,
+        n_behaviors,
+    )
+    if all(a is not None for a in coverage_args):
+        cov = compute_coverage(
+            syllables_list=fit_result.labels_list,
+            frame_labels=frame_labels,
+            labeled_clip_indices=labeled_clip_indices,
+            all_clip_indices=all_clip_indices,
+            n_syll=n_states,
+            n_beh=int(n_behaviors),
+        )
+        # ``cov`` is empty when no labeled clip intersects the fit set.
+        result.update(cov)
 
-def _log_sweep_summary_plots(
-    valid: list[dict], setting_seeds: dict[str, list[dict]]
+    return result
+
+
+def _save_sweep_summary_plots(
+    setting_seeds: dict[str, list[dict]],
+    output_dir: Path,
 ) -> None:
-    """Create and log summary plots to WandB."""
-    import wandb
+    """Save summary plots (usage ratio, transition entropy, scatter) as PNGs."""
+    plots_dir = output_dir / "summary_plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
 
     # Aggregate per-setting means
     settings = []
@@ -626,7 +672,7 @@ def _log_sweep_summary_plots(
     ax.set_ylabel("Usage Ratio")
     ax.set_title("Syllable Usage Ratio per Setting")
     fig.tight_layout()
-    wandb.log({"summary/usage_ratio_bar": wandb.Image(fig)}, commit=False)
+    fig.savefig(plots_dir / "usage_ratio_bar.png", dpi=150)
     plt.close(fig)
 
     # Bar chart: transition entropy per setting
@@ -637,7 +683,7 @@ def _log_sweep_summary_plots(
     ax.set_ylabel("Transition Entropy")
     ax.set_title("Transition Entropy per Setting")
     fig.tight_layout()
-    wandb.log({"summary/transition_entropy_bar": wandb.Image(fig)}, commit=False)
+    fig.savefig(plots_dir / "transition_entropy_bar.png", dpi=150)
     plt.close(fig)
 
     # Scatter: usage ratio vs transition entropy
@@ -649,8 +695,10 @@ def _log_sweep_summary_plots(
     ax.set_ylabel("Transition Entropy")
     ax.set_title("Usage Ratio vs Transition Entropy")
     fig.tight_layout()
-    wandb.log({"summary/usage_vs_entropy": wandb.Image(fig)}, commit=False)
+    fig.savefig(plots_dir / "usage_vs_entropy.png", dpi=150)
     plt.close(fig)
+
+    log.info(f"Saved sweep summary plots to {plots_dir}")
 
 
 def run_sweep(cfg: dict) -> dict:
@@ -674,47 +722,65 @@ def run_sweep(cfg: dict) -> dict:
     )
     log.info(f"Loaded keypoints: {keypoints.shape}, {len(kp_names)} keypoints")
 
-    # WandB init
-    wandb_enabled = False
-    if cfg.get("wandb", {}).get("enabled", False):
-        try:
-            import wandb
+    # Derive the positional clip-index array for coverage metrics. KPMS fits
+    # will produce ``fit_result.labels_list`` in the same order as
+    # ``keypoints``, which is the balanced-split sorted order (see
+    # ``_load_keypoints``) or the raw H5 order if no split is configured.
+    balanced_split_path = cfg["data"].get("balanced_split_path")
+    if balanced_split_path:
+        _bsp = Path(balanced_split_path)
+        if not _bsp.is_absolute():
+            _bsp = get_repo_root() / _bsp
+        with open(_bsp) as f:
+            _splits = json.load(f)
+        all_clip_indices = np.array(
+            sorted(
+                set(_splits["balanced"]["train_indices"])
+                | set(_splits["balanced"]["test_indices"])
+            ),
+            dtype=np.int32,
+        )
+    else:
+        all_clip_indices = np.arange(keypoints.shape[0], dtype=np.int32)
 
-            wandb.init(
-                project=cfg["wandb"].get("project", "moseq_experiments"),
-                entity=cfg["wandb"].get("entity"),
-                group=cfg["wandb"].get("group", "kpms_sweep"),
-                name=f"kpms_sweep_{datetime.now().strftime('%y%m%d_%H%M%S')}",
-                config=cfg["sweep"],
+    # Load human behavior labels (optional). When present, every fit will
+    # report NMI + Hungarian purity alongside the existing MSE-based metrics.
+    # Model selection stays on MSE — coverage is reported, not selected on.
+    frame_labels = None
+    labeled_clip_indices = None
+    n_behaviors = None
+    labels_path = cfg["data"].get("labels_path")
+    if labels_path:
+        _lp = Path(labels_path)
+        if not _lp.is_absolute():
+            _lp = get_repo_root() / _lp
+        if not _lp.exists():
+            raise FileNotFoundError(
+                f"data.labels_path={labels_path} does not resolve to an "
+                f"existing file (tried {_lp}). Set labels_path=null to skip "
+                "coverage metrics."
             )
-            wandb_enabled = True
-        except Exception as e:
-            log.warning(f"Failed to init WandB: {e}")
+        _clip_range = tuple(cfg["data"].get("labeled_clip_range", [642, 741]))
+        frame_labels, labeled_clip_indices, _n_lab = load_behavior_frames(
+            _lp, clip_range=_clip_range, n_frames=keypoints.shape[1],
+        )
+        n_behaviors = len(BEHAVIORS)
+        n_intersect = int(
+            np.isin(labeled_clip_indices, all_clip_indices).sum()
+        )
+        log.info(
+            f"Coverage metrics enabled: {n_intersect}/{len(labeled_clip_indices)} "
+            f"labeled clips are in the fit set; "
+            f"median labeled frames/clip = {int(np.median(_n_lab))}."
+        )
 
-    # Log input keypoint sample — first thing in wandb
-    if wandb_enabled:
-        import wandb
-
+    # Save an input keypoint sample figure to disk (one-time, diagnostic).
+    try:
         fig = _plot_keypoint_sample(keypoints[0], kp_names, clip_idx=0)
-        input_log = {"input/keypoint_sample": wandb.Image(fig)}
+        fig.savefig(output_dir / "input_keypoint_sample.png", dpi=150)
         plt.close(fig)
-
-        # Input keypoint video (3D skeleton animation, clip 0)
-        try:
-            input_video_path = str(output_dir / "input_keypoint_clip0.mp4")
-            _render_keypoint_video(
-                keypoints[0],
-                input_video_path,
-                kp_names=kp_names,
-                title="Input clip 0",
-            )
-            input_log["input/keypoint_video"] = wandb.Video(
-                input_video_path, fps=30, format="mp4"
-            )
-        except Exception as ve:
-            log.warning(f"Input video rendering failed: {ve}")
-
-        wandb.log(input_log)
+    except Exception as e:
+        log.warning(f"Failed to save input keypoint sample: {e}")
 
     # Grid
     grid = list(
@@ -761,7 +827,11 @@ def run_sweep(cfg: dict) -> dict:
                 )
                 original, reconstructed = _reconstruct_keypoints(fit_result)
                 metrics = _compute_metrics(
-                    fit_result, original, reconstructed, n_states
+                    fit_result, original, reconstructed, n_states,
+                    frame_labels=frame_labels,
+                    labeled_clip_indices=labeled_clip_indices,
+                    all_clip_indices=all_clip_indices,
+                    n_behaviors=n_behaviors,
                 )
 
                 result = {
@@ -778,62 +848,37 @@ def run_sweep(cfg: dict) -> dict:
                 setting_results.append(result)
                 all_results.append(result)
 
-                if wandb_enabled:
-                    import wandb
-
-                    # Reconstruction example (clip 0)
+                # Save reconstruction timeseries PNG to the seed's project_dir
+                # (same location KPMS writes its own artifacts). Cheap, useful
+                # diagnostic if a fit looks off.
+                try:
                     fig = _plot_reconstruction(
                         original,
                         reconstructed,
                         clip_idx=0,
                         title_prefix=f"{setting_key} seed={seed}",
                     )
-
-                    log_dict = {
-                        "sweep/n_states": n_states,
-                        "sweep/kappa": kappa,
-                        "sweep/latent_dim": latent_dim,
-                        "sweep/model_type": model_type,
-                        "sweep/seed": seed,
-                        "sweep/reconstruction_mse": metrics["reconstruction_mse"],
-                        "sweep/active_syllables": metrics["active_syllables"],
-                        "sweep/usage_ratio": metrics["syllable_usage_ratio"],
-                        "sweep/mean_duration": metrics["mean_duration"],
-                        "sweep/std_duration": metrics["std_duration"],
-                        "sweep/transition_entropy": metrics["transition_entropy"],
-                        "sweep/reconstruction_example": wandb.Image(fig),
-                    }
-
-                    # 3D keypoint skeleton video (input only, with syllable codes)
-                    # NOTE: reconstruction overlay removed — KPMS states are
-                    # Gibbs samples (jittery), not smooth MAP estimates.
-                    # Reconstruction quality is shown via the 2D timeseries
-                    # plot above (sweep/reconstruction_example).
-                    try:
-                        video_path = str(
-                            setting_dir / f"seed{seed}" / f"keypoint_video_clip0.mp4"
-                        )
-                        _render_keypoint_video(
-                            keypoints[0],
-                            video_path,
-                            kp_names=kp_names,
-                            codes=fit_result.labels_list[0],
-                            title=f"{setting_key} s{seed}",
-                        )
-                        log_dict["sweep/keypoint_video"] = wandb.Video(
-                            video_path, fps=30, format="mp4"
-                        )
-                    except Exception as ve:
-                        log.warning(f"  Video rendering failed: {ve}")
-
-                    wandb.log(log_dict)
+                    fig.savefig(
+                        Path(project_dir) / "reconstruction.png", dpi=150,
+                    )
                     plt.close(fig)
+                except Exception as ve:
+                    log.warning(f"  Failed to save reconstruction plot: {ve}")
 
+                coverage_str = ""
+                if "nmi_global" in metrics:
+                    coverage_str = (
+                        f", NMI={metrics['nmi_global']:.3f}, "
+                        f"purity={metrics['purity_global']:.3f} "
+                        f"(on {metrics['n_labeled_clips_used']} clips, "
+                        f"{metrics['n_labeled_frames_used']} frames)"
+                    )
                 log.info(
                     f"  MSE={metrics['reconstruction_mse']:.4f}, "
                     f"active={metrics['active_syllables']}/{n_states}, "
                     f"dur={metrics['mean_duration']:.1f}±{metrics['std_duration']:.1f}, "
                     f"H={metrics['transition_entropy']:.2f}"
+                    f"{coverage_str}"
                 )
 
             except Exception as e:
@@ -868,18 +913,6 @@ def run_sweep(cfg: dict) -> dict:
                 for i, r in enumerate(seeds_results):
                     r["eml_score"] = float(scores[i])
                     r["eml_stderr"] = float(std_errors[i])
-                if wandb_enabled:
-                    import wandb
-
-                    for i, r in enumerate(seeds_results):
-                        wandb.log(
-                            {
-                                "eml/setting": setting_key,
-                                "eml/seed": r["seed"],
-                                "eml/score": r["eml_score"],
-                                "eml/stderr": r["eml_stderr"],
-                            }
-                        )
                 log.info(
                     f"  EML for {setting_key}: "
                     f"scores={[f'{s:.2f}' for s in scores]}"
@@ -918,34 +951,12 @@ def run_sweep(cfg: dict) -> dict:
         best = None
         log.warning("No successful fits!")
 
-    # Summary plots
-    if wandb_enabled and valid:
-        import wandb
-
+    # Summary plots to disk.
+    if valid:
         try:
-            _log_sweep_summary_plots(valid, setting_seeds)
+            _save_sweep_summary_plots(setting_seeds, output_dir)
         except Exception as e:
             log.warning(f"Failed to create summary plots: {e}")
-
-    # Best model summary
-    if wandb_enabled and best:
-        import wandb
-
-        wandb.run.summary.update(
-            {
-                "best/setting": best["setting"],
-                "best/n_states": best["n_states"],
-                "best/kappa": best["kappa"],
-                "best/latent_dim": best["latent_dim"],
-                "best/model_type": best["model_type"],
-                "best/reconstruction_mse": best["reconstruction_mse"],
-                "best/usage_ratio": best["syllable_usage_ratio"],
-                "best/transition_entropy": best["transition_entropy"],
-            }
-        )
-        if "eml_score" in best:
-            wandb.run.summary["best/eml_score"] = best["eml_score"]
-        wandb.finish()
 
     # Save results
     summary = {"best_model": best, "all_results": all_results}

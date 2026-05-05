@@ -15,12 +15,17 @@ data:
   reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
   balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
   stac_xml_path: ${oc.env:C2A_ROOT,.}/c2a/assets/rodent.xml
+  # Optional human-behavior labels for coverage metrics (NMI + Hungarian
+  # purity). Leave labels_path=null to skip coverage reporting. The sweep
+  # reports coverage but still selects best model on MSE.
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  labeled_clip_range: [642, 741]
 
 sweep:
-  num_states: [10, 20, 30, 50]
-  kappa: [1.0e+3, 1.0e+4, 1.0e+5]
+  num_states: [10, 20, 30]
+  kappa: [1.0e+2, 3.0e+2, 1.0e+3, 3.0e+3, 1.0e+4, 3.0e+4, 1.0e+5]
   latent_dim: [10]
-  model_type: ["arhmm", "slds"]
+  model_type: ["arhmm"]
   seeds_per_setting: 2
   ar_iters: 50
   full_iters: 300
@@ -32,8 +37,3 @@ codegen:
   sweep_results: outputs/kpms_sweep/sweep_results.json
   balanced_split: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
   output: outputs/kpms_sweep/best_codes.npz
-
-wandb:
-  enabled: true
-  project: moseq_experiments
-  group: kpms_sweep
