@@ -72,6 +72,29 @@ The rodent reference clips (`rodent_reference_clips.h5`,
 these (they're gitignored), pull them from the HuggingFace dataset
 `talmolab/MIMIC-MJX`:
 
+#### Behavior labels
+
+`data/rodent/rodent_labels.csv` contains manual frame-level annotations of
+each clip with two parallel tracks:
+
+- **behavior** ∈ {Immobile, Rear, Turn, Walk}
+- **direction** ∈ {Straight, Left, Right}
+
+These labels are sourced from
+[KevinBian107/TopoMimic-annotation](https://github.com/KevinBian107/TopoMimic-annotation)
+and are used by:
+
+- `c2a.kpms.label_alignment` (loader / coverage metrics)
+- `c2a.sweep.run_sweep` (NMI + Hungarian-purity reporting at three
+  granularities: behavior / direction / combined)
+- `c2a.experiments.run_labeled_hidden_dynamics` (label-anchored hidden
+  state experiment)
+
+The CSV is annotated against the original 30 fps videos (500 frames per
+clip). The H5 mocap data is at half the rate (250 frames per clip), so
+``c2a.kpms.label_alignment`` divides CSV frame numbers by 2 by default
+(``csv_to_h5_subsample=2``).
+
 ```bash
 python -c "
 from huggingface_hub import hf_hub_download
@@ -180,3 +203,6 @@ BSD 3-Clause (see [`LICENSE`](LICENSE)).
 - **Website:** <https://kbian.org/Code2Act-website/#>
 - **MIMIC-MJX:** <https://mimic-mjx.talmolab.org/>
 - **Keypoint-MoSeq:** <https://keypoint-moseq.readthedocs.io/en/latest/>
+- **TopoMimic-annotation** (behavior + direction labels in
+  `data/rodent/rodent_labels.csv`):
+  <https://github.com/KevinBian107/TopoMimic-annotation>

@@ -1,16 +1,28 @@
 """RNN hidden state dynamics visualization (3D PCA).
 
-Creates 2 Nature-style figures, each with 3 panels (Walk | Groom | Rear):
-  - Scatter: point clouds, one behavior per panel, shared PCA axes
-  - Trajectory: lines colored by time, one behavior per panel, shared PCA axes
+Creates Nature-style figures with N panels (one per label):
+  - Scatter: point clouds, one label per panel, shared PCA axes
+  - Trajectory: lines colored by time, one label per panel, shared PCA axes
+  - Combined-panel versions of both
 
-PCA is fitted on ALL behaviors jointly so the coordinate system is shared.
+PCA is fitted on ALL labels jointly so the coordinate system is shared.
 
-Usage:
-    cd moseq_jax/figures
-    python plot_hidden_dynamics.py
+Auto-detects two npz formats:
+  - Legacy (run_hidden_dynamics.py output): hidden_walk / hidden_immobility / hidden_rear
+  - Labeled (run_labeled_hidden_dynamics.py): hidden_<combined-label> like hidden_Walk_Straight
+
+Usage::
+
+    # Legacy 3-class (default file: figures/data/hidden_dynamics.npz)
+    python -m c2a.figures.plot_hidden_dynamics
+
+    # Labeled 7-class
+    python -m c2a.figures.plot_hidden_dynamics \\
+        --npz c2a/figures/data/hidden_dynamics_labeled.npz \\
+        --output_suffix labeled
 """
 
+import argparse
 from pathlib import Path
 
 import matplotlib
@@ -29,18 +41,108 @@ SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
 OUTPUT_DIR = SCRIPT_DIR / "outputs" / "hidden_dynamics"
 
-# ── Behavior config ─────────────────────────────────────────────────────────
-BEHAVIORS = ["walk", "immobility", "rear"]
-BEHAVIOR_LABELS = {
+# ── Legacy aliases (used as defaults / pretty-names when keys match) ────────
+LEGACY_BEHAVIORS = ["walk", "immobility", "rear"]
+LEGACY_BEHAVIOR_LABELS = {
     "walk": "Walking Code",
     "immobility": "Immobility Code",
     "rear": "Rearing Code",
 }
-BEHAVIOR_COLORS = {
-    "walk": "#D55E00",  # orange (Wong)
+LEGACY_BEHAVIOR_COLORS = {
+    "walk": "#D55E00",        # orange (Wong)
     "immobility": "#0072B2",  # blue (Wong)
-    "rear": "#009E73",  # green (Wong)
+    "rear": "#009E73",        # green (Wong)
 }
+
+# Backward-compat aliases — earlier code in this file references the
+# old global names.  Populated dynamically in main() once the labels are
+# discovered, but seeded with legacy values here so unit tests still pass.
+BEHAVIORS = list(LEGACY_BEHAVIORS)
+BEHAVIOR_LABELS = dict(LEGACY_BEHAVIOR_LABELS)
+BEHAVIOR_COLORS = dict(LEGACY_BEHAVIOR_COLORS)
+
+
+def _discover_labels(
+    npz, level: str | None = None, label_subset: list[str] | None = None,
+) -> list[str]:
+    """Return the list of label strings present in ``npz`` as ``hidden_*`` keys.
+
+    Mirrors the discovery in ``plot_hidden_dsa.py`` / ``plot_hidden_rslds.py``:
+
+    * Legacy: keys ``hidden_walk``, ``hidden_immobility``, ``hidden_rear``
+      (no ``__``) → labels are the suffixes.
+    * Labeled flat: keys ``hidden_Walk_Straight``, ``hidden_Turn_Left`` (no
+      ``__`` either, but multi-word) → also legacy-style.
+    * Labeled nested: keys ``hidden_<level>__<label>`` (older design,
+      now obsolete but still supported) → restrict to ``level``.
+    """
+    hidden_keys = [k for k in npz.keys() if k.startswith("hidden_")]
+    if not hidden_keys:
+        raise KeyError("npz has no hidden_<label> keys; nothing to plot.")
+    is_nested = any("__" in k for k in hidden_keys)
+    out: list[str] = []
+    if is_nested:
+        eff = level or "behavior"
+        prefix = f"hidden_{eff}__"
+        for k in hidden_keys:
+            if k.startswith(prefix):
+                out.append(k[len(prefix):])
+    else:
+        for k in hidden_keys:
+            out.append(k[len("hidden_"):])
+    if label_subset is not None:
+        keep = set(label_subset)
+        out = [l for l in out if l in keep]
+    if not out:
+        raise ValueError(
+            f"After filtering (level={level}, subset={label_subset}) no labels "
+            f"matched. Available hidden_* keys: {hidden_keys}"
+        )
+    # Stable order: legacy three first if present, else alphabetic.
+    if not is_nested and any(b in out for b in LEGACY_BEHAVIORS):
+        order = [b for b in LEGACY_BEHAVIORS if b in out]
+        out = order + sorted(l for l in out if l not in order)
+    else:
+        out = sorted(out) if is_nested else out
+    return out
+
+
+# Categorical palette to fall back on for unknown labels (Wong + Okabe-Ito,
+# colorblind-safe).
+_FALLBACK_PALETTE = (
+    "#D55E00", "#0072B2", "#009E73", "#E69F00", "#CC79A7",
+    "#56B4E9", "#F0E442", "#999999", "#6A3D9A", "#B15928",
+    "#1F78B4", "#33A02C",
+)
+
+
+def _label_colors(labels: list[str]) -> dict[str, str]:
+    """Map each label to a consistent color.
+
+    Legacy labels keep their canonical Wong colors; new labels cycle
+    through ``_FALLBACK_PALETTE`` in a deterministic order.
+    """
+    out: dict[str, str] = {}
+    palette_idx = 0
+    for lab in labels:
+        if lab in LEGACY_BEHAVIOR_COLORS:
+            out[lab] = LEGACY_BEHAVIOR_COLORS[lab]
+        else:
+            out[lab] = _FALLBACK_PALETTE[palette_idx % len(_FALLBACK_PALETTE)]
+            palette_idx += 1
+    return out
+
+
+def _label_display(labels: list[str]) -> dict[str, str]:
+    """Pretty label-string lookup. Legacy gets canonical names; combined
+    labels get underscores replaced with space."""
+    out: dict[str, str] = {}
+    for lab in labels:
+        if lab in LEGACY_BEHAVIOR_LABELS:
+            out[lab] = LEGACY_BEHAVIOR_LABELS[lab]
+        else:
+            out[lab] = lab.replace("_", " ")
+    return out
 
 # View angle
 VIEW_ELEV = 20
@@ -145,24 +247,43 @@ def _compute_shared_limits(
 # ── Data loading ─────────────────────────────────────────────────────────────
 
 
-def load_hidden_data() -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """Load hidden dynamics NPZ.
+def load_hidden_data(
+    npz_path: Path | None = None,
+    level: str | None = None,
+    label_subset: list[str] | None = None,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], list[str], str | None]:
+    """Load hidden dynamics NPZ — auto-detects legacy vs. labeled format.
 
     Returns:
-        hiddens: ``{behavior: ndarray [K, T, hidden_dim]}``
-        codes: ``{behavior: ndarray [K, T]}``
+        hiddens: ``{label: ndarray [K, T, hidden_dim]}``
+        codes:   ``{label: ndarray [K, T]}``
+        labels:  ordered list of label strings
+        level_used: ``None`` for legacy / flat-labeled; level prefix for nested
     """
-    raw = np.load(DATA_DIR / "hidden_dynamics.npz", allow_pickle=True)
-    hiddens = {}
-    codes = {}
-    for beh in BEHAVIORS:
-        h_key = f"hidden_{beh}"
-        c_key = f"codes_{beh}"
+    if npz_path is None:
+        npz_path = DATA_DIR / "hidden_dynamics.npz"
+        if not npz_path.exists():
+            alt = DATA_DIR / "hidden_dynamics_labeled.npz"
+            if alt.exists():
+                npz_path = alt
+                print(f"NOTE: legacy npz absent; using labeled npz {alt.name}")
+    raw = np.load(npz_path, allow_pickle=True)
+
+    is_nested = any("__" in k for k in raw.keys() if k.startswith("hidden_"))
+    eff_level = (level or "behavior") if is_nested else None
+
+    labels = _discover_labels(raw, level=eff_level, label_subset=label_subset)
+
+    hiddens: dict[str, np.ndarray] = {}
+    codes: dict[str, np.ndarray] = {}
+    for lab in labels:
+        h_key = f"hidden_{eff_level}__{lab}" if eff_level is not None else f"hidden_{lab}"
+        c_key = f"codes_{eff_level}__{lab}" if eff_level is not None else f"codes_{lab}"
         if h_key in raw:
-            hiddens[beh] = np.array(raw[h_key])
+            hiddens[lab] = np.array(raw[h_key])
         if c_key in raw:
-            codes[beh] = np.array(raw[c_key])
-    return hiddens, codes
+            codes[lab] = np.array(raw[c_key])
+    return hiddens, codes, labels, eff_level
 
 
 def find_single_code_clips(
@@ -528,21 +649,54 @@ def _save_figure(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="3D PCA visualization of GRU hidden state per labeled behavior",
+    )
+    parser.add_argument("--npz", type=str, default=None,
+                        help="Path to hidden_dynamics{,_labeled}.npz "
+                             "(default: auto-detect in figures/data/).")
+    parser.add_argument("--level", type=str, default=None,
+                        choices=[None, "behavior", "direction", "combined"],
+                        help="For older nested-key labeled npz only; ignored otherwise.")
+    parser.add_argument("--labels", type=str, default=None,
+                        help="Comma-separated subset of labels to keep.")
+    parser.add_argument("--output_suffix", type=str, default="",
+                        help="Suffix appended to output figure stems.")
+    args = parser.parse_args()
+
     _setup_nature_style()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_suffix = (f"_{args.output_suffix}" if args.output_suffix else "")
 
-    hiddens, codes = load_hidden_data()
+    label_subset = (
+        [s.strip() for s in args.labels.split(",")] if args.labels else None
+    )
+    npz_path = Path(args.npz) if args.npz else None
 
-    # Build flat array with behavior boundaries (all 3 behaviors for PCA)
+    hiddens, codes, labels, level_used = load_hidden_data(
+        npz_path=npz_path, level=args.level, label_subset=label_subset,
+    )
+
+    # Re-bind module-level globals so plotting functions see the right colors
+    # and pretty-names for the discovered labels.  (The original code relied
+    # on these being constants; rather than thread them through every helper
+    # we rebind here so the 500-line body of this file stays untouched.)
+    global BEHAVIORS, BEHAVIOR_LABELS, BEHAVIOR_COLORS, BEHAVIOR_CMAPS
+    BEHAVIORS = list(labels)
+    BEHAVIOR_LABELS = _label_display(labels)
+    BEHAVIOR_COLORS = _label_colors(labels)
+    BEHAVIOR_CMAPS = {b: _behavior_cmap(c) for b, c in BEHAVIOR_COLORS.items()}
+
+    # Build flat array with behavior boundaries (all labels for shared PCA)
     all_points: list[np.ndarray] = []
     beh_slices: dict[str, tuple[int, int]] = {}
     beh_shapes: dict[str, tuple[int, int]] = {}
     offset = 0
 
-    for beh in BEHAVIORS:
+    for beh in labels:
         if beh not in hiddens:
             continue
-        arr = hiddens[beh]  # [K, T, hidden_dim]
+        arr = hiddens[beh]
         K_beh, T_beh = arr.shape[0], arr.shape[1]
         beh_shapes[beh] = (K_beh, T_beh)
         flat = arr.reshape(-1, arr.shape[-1])
@@ -552,33 +706,33 @@ def main() -> None:
 
     all_points_arr = np.concatenate(all_points, axis=0)
     print(
-        f"Total points: {all_points_arr.shape[0]}, "
-        f"dim: {all_points_arr.shape[1]}"
+        f"Loaded {len(labels)} labels (level={level_used or 'flat/legacy'}); "
+        f"total points: {all_points_arr.shape[0]}, dim: {all_points_arr.shape[1]}"
     )
-    for beh in BEHAVIORS:
+    for beh in labels:
         if beh in beh_shapes:
             K_b, T_b = beh_shapes[beh]
-            print(f"  {beh}: K={K_b}, T={T_b}")
+            print(f"  {beh:<22s}: K={K_b}, T={T_b}, color={BEHAVIOR_COLORS[beh]}")
 
-    # Fit 3D PCA on ALL behaviors (shared space)
+    # Fit 3D PCA on ALL labels (shared coordinate frame)
     print("\nFitting 3D PCA...")
     emb, var = fit_pca_3d(all_points_arr)
 
     # Scatter: separate panels
     fig, rect = plot_scatter_3d(emb, beh_slices, var)
-    _save_figure(fig, rect, "hidden_scatter_pca3d")
+    _save_figure(fig, rect, f"hidden_scatter_pca3d{out_suffix}")
 
     # Scatter: combined single panel
     fig, rect = _plot_scatter_combined(emb, beh_slices, var)
-    _save_figure(fig, rect, "hidden_scatter_pca3d_combined")
+    _save_figure(fig, rect, f"hidden_scatter_pca3d_combined{out_suffix}")
 
     # Trajectories: separate panels
     fig, rect = plot_trajectories_3d(emb, beh_slices, beh_shapes, var)
-    _save_figure(fig, rect, "hidden_trajectories_pca3d")
+    _save_figure(fig, rect, f"hidden_trajectories_pca3d{out_suffix}")
 
     # Trajectories: combined single panel
     fig, rect = _plot_trajectories_combined(emb, beh_slices, beh_shapes, var)
-    _save_figure(fig, rect, "hidden_trajectories_pca3d_combined")
+    _save_figure(fig, rect, f"hidden_trajectories_pca3d_combined{out_suffix}")
 
     print("\nDone.")
 

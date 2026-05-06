@@ -1,17 +1,45 @@
 """Load and align human behavior labels with KPMS syllable outputs.
 
-Reads ``data/rodent/rodent_labels.csv`` (columns: ``Video, Behavior,
-Start_Time, End_Time, Start_Frame, End_Frame``) and produces a per-clip
-int-encoded frame array suitable for comparison against KPMS ``labels_list``.
+Schema (as of 2026-05-06)
+-------------------------
+The CSV at ``data/rodent/rodent_labels.csv`` has **two parallel annotation
+tracks** that together define a 4 × 3 = 12-cell label space:
 
-Behaviors ``Left Turn`` and ``Right Turn`` are dropped entirely — frames
-covered only by those intervals remain ``UNLABELED`` (sentinel ``-1``) and
-are masked out when the coverage metrics are computed.
+* ``behavior``  ∈ {Immobile, Turn, Walk, Rear}
+* ``direction`` ∈ {Straight, Left, Right}
 
-Frame alignment: CSV ``Start_Frame`` / ``End_Frame`` are consumed at face
-value and clipped to ``[0, n_frames)``.  Intervals starting at or beyond
-``n_frames`` are discarded.  Reported ``n_labeled_frames`` lets the caller
-sanity-check what was usable.
+Each row covers a contiguous frame range ``[Start_Frame, End_Frame)`` in
+**CSV frames at 30 fps** (500 frames per 16.67-second clip).  The two
+tracks run concurrently — at any given frame the rodent is labeled with
+both a behavior *and* a direction.  Combining them yields 12 fine labels,
+but only ~7 cells are populated in practice (Immobile is always Straight,
+Turn is never Straight, Walk is overwhelmingly Straight).  The loader
+exposes all three views (behavior / direction / combined) and the caller
+chooses the granularity.
+
+Subsample factor (CSV → H5 frames)
+----------------------------------
+The CSV is annotated against the original 30 fps videos (500 frames / clip).
+The mocap H5 (``rodent_reference_clips.h5``) stores 250 frames per clip —
+half the rate.  CSV frame ``F`` therefore maps to H5 frame ``F // 2`` by
+default (``csv_to_h5_subsample=2``).  Set ``csv_to_h5_subsample=1`` if a
+future CSV is regenerated at the H5 rate.
+
+Behavior labels are sourced from the ``TopoMimic-annotation`` repository:
+https://github.com/KevinBian107/TopoMimic-annotation
+
+Public API
+----------
+* :func:`load_label_frames` — returns a :class:`LabelArrays` NamedTuple
+  with ``behavior`` (4-class), ``direction`` (3-class), and ``combined``
+  (12-class) per-frame integer arrays + clip indices + per-clip counts.
+* :func:`load_behavior_frames` — backward-compatible thin wrapper that
+  returns just the behavior-track view as ``(frame_labels, clip_indices,
+  n_labeled_per_clip)``.  Used by older callers (``c2a.sweep.run_sweep``).
+
+Sentinel
+--------
+``UNLABELED = -1`` — frames not covered by any track-row are masked.
 """
 
 from __future__ import annotations
@@ -20,51 +48,158 @@ import csv
 import logging
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
 log = logging.getLogger(__name__)
 
-# Canonical 6-behavior vocabulary in alphabetical order (also the order that
-# emerged from sort() of the unique labels in the CSV after dropping turns).
-BEHAVIORS: tuple[str, ...] = (
-    "Grooming",
-    "Immobility",
-    "Orienting",
-    "Supported Rear",
-    "Unsupported Rear",
-    "Walking",
+
+# Canonical 4-behavior vocabulary, alphabetically ordered.
+BEHAVIORS: tuple[str, ...] = ("Immobile", "Rear", "Turn", "Walk")
+
+# Canonical 3-direction vocabulary, alphabetically ordered.
+DIRECTIONS: tuple[str, ...] = ("Left", "Right", "Straight")
+
+# 12 combined labels in row-major order: behavior × direction.
+COMBINED_LABELS: tuple[str, ...] = tuple(
+    f"{b}_{d}" for b in BEHAVIORS for d in DIRECTIONS
 )
+
 BEHAVIOR_TO_INT: dict[str, int] = {b: i for i, b in enumerate(BEHAVIORS)}
-DROPPED_BEHAVIORS: frozenset[str] = frozenset({"Left Turn", "Right Turn"})
-UNLABELED: int = -1  # sentinel for the `ignore` mask in NMI / purity.
+DIRECTION_TO_INT: dict[str, int] = {d: i for i, d in enumerate(DIRECTIONS)}
+COMBINED_TO_INT: dict[str, int] = {c: i for i, c in enumerate(COMBINED_LABELS)}
+
+UNLABELED: int = -1
+
+# Track names recognized in the CSV's ``Track`` column.
+_TRACK_BEHAVIOR = "behavior"
+_TRACK_DIRECTION = "direction"
 
 _CLIP_RE = re.compile(r"clip_(\d+)\.mp4")
 
 
-def load_behavior_frames(
+class LabelArrays(NamedTuple):
+    """Per-clip frame labels at three granularities.
+
+    Attributes:
+        behavior: ``(N_clips, n_frames)`` int32, values in
+            ``{-1, 0, 1, 2, 3}`` corresponding to UNLABELED + ``BEHAVIORS``.
+        direction: ``(N_clips, n_frames)`` int32, values in
+            ``{-1, 0, 1, 2}`` corresponding to UNLABELED + ``DIRECTIONS``.
+        combined: ``(N_clips, n_frames)`` int32, values in
+            ``{-1, 0..11}``.  Computed as ``behavior * 3 + direction``
+            iff both tracks label the frame, else UNLABELED.  Indices
+            line up with :data:`COMBINED_LABELS`.
+        clip_indices: ``(N_clips,)`` int — clip ids included.
+        n_labeled_per_clip: ``(N_clips,)`` int — frames with a *combined*
+            label present.  (A frame can be behavior-labeled but
+            direction-unlabeled if the CSV is malformed; in practice the
+            current CSV labels every frame in both tracks.)
+    """
+
+    behavior: np.ndarray
+    direction: np.ndarray
+    combined: np.ndarray
+    clip_indices: np.ndarray
+    n_labeled_per_clip: np.ndarray
+
+
+def _parse_clip_id(video_field: str, row_idx: int) -> int:
+    m = _CLIP_RE.search(video_field)
+    if m is None:
+        raise ValueError(
+            f"Could not parse clip number from Video={video_field!r} "
+            f"(row {row_idx})"
+        )
+    return int(m.group(1))
+
+
+def _accumulate_intervals(
+    rows: list[dict[str, str]],
+    track_name: str,
+    label_to_int: dict[str, int],
+    clip_to_pos: dict[int, int],
+    n_frames_h5: int,
+    subsample: int,
+    arr: np.ndarray,
+) -> dict[str, int]:
+    """Project track-rows of one track type onto ``arr[N_clips, n_frames_h5]``.
+
+    Returns row-accounting counters for sanity-check assertions.
+    """
+    counters = {
+        "wrong_track": 0,
+        "out_of_range_clip": 0,
+        "beyond_nframes": 0,
+        "empty_interval": 0,
+        "applied": 0,
+    }
+
+    for row_idx, row in enumerate(rows, start=1):
+        if row["Track"].strip() != track_name:
+            counters["wrong_track"] += 1
+            continue
+
+        label = row["Label"].strip()
+        if label not in label_to_int:
+            raise KeyError(
+                f"Unknown {track_name} label {label!r} at row {row_idx}. "
+                f"Known: {sorted(label_to_int)}"
+            )
+
+        clip_id = _parse_clip_id(row["Video"], row_idx)
+        if clip_id not in clip_to_pos:
+            counters["out_of_range_clip"] += 1
+            continue
+
+        # CSV frames at 30 fps → H5 frames at 30/subsample fps.
+        s_csv = int(row["Start_Frame"])
+        e_csv = int(row["End_Frame"])
+        s = s_csv // subsample
+        e = e_csv // subsample
+
+        if s >= n_frames_h5:
+            counters["beyond_nframes"] += 1
+            continue
+        e = min(e, n_frames_h5)
+        if e <= s:
+            counters["empty_interval"] += 1
+            continue
+
+        pos = clip_to_pos[clip_id]
+        arr[pos, s:e] = label_to_int[label]
+        counters["applied"] += 1
+
+    return counters
+
+
+def load_label_frames(
     csv_path: str | Path,
-    clip_range: tuple[int, int] = (642, 741),
+    clip_range: tuple[int, int] = (0, 841),
     n_frames: int = 250,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Load behavior labels and project onto per-clip frame arrays.
+    csv_to_h5_subsample: int = 2,
+) -> LabelArrays:
+    """Load behavior/direction/combined frame labels for a clip range.
 
     Args:
-        csv_path: Path to the rodent labels CSV.
+        csv_path: Path to the rodent labels CSV (two-track schema).
         clip_range: ``(low, high)`` inclusive clip-index range to include.
-        n_frames: Number of frames per clip in the target KPMS space.
+            Defaults to the full corpus ``(0, 841)``.
+        n_frames: H5 frames per clip (default 250 — matches
+            ``rodent_reference_clips.h5``).
+        csv_to_h5_subsample: CSV frame number → H5 frame number divisor.
+            Default 2 (CSV at 30 fps, H5 at 15 fps for our data).
 
     Returns:
-        ``(frame_labels, clip_indices, n_labeled_per_clip)`` where
-        ``frame_labels`` has shape ``[N_clips_in_range, n_frames]`` int32,
-        ``clip_indices`` is the sorted clip-index array of length
-        ``N_clips_in_range``, and ``n_labeled_per_clip`` reports how many
-        frames in each clip received a non-``UNLABELED`` label.
+        A :class:`LabelArrays` with ``behavior`` / ``direction`` /
+        ``combined`` arrays of shape ``(N_clips, n_frames)`` plus
+        bookkeeping.
 
     Raises:
-        KeyError: If a behavior string is not in ``BEHAVIOR_TO_INT`` and
-            also not in ``DROPPED_BEHAVIORS``.
-        FileNotFoundError: If ``csv_path`` does not exist.
+        FileNotFoundError: csv_path does not exist.
+        KeyError: required CSV column missing or unknown label string.
+        ValueError: malformed Video field, or ``clip_range`` inverted.
     """
     path = Path(csv_path)
     if not path.exists():
@@ -73,97 +208,104 @@ def load_behavior_frames(
     low, high = int(clip_range[0]), int(clip_range[1])
     if low > high:
         raise ValueError(f"clip_range low > high: {clip_range}")
+    if csv_to_h5_subsample < 1:
+        raise ValueError(f"csv_to_h5_subsample must be >= 1, got {csv_to_h5_subsample}")
 
     clip_indices = np.arange(low, high + 1, dtype=np.int32)
     n_clips = int(clip_indices.size)
     clip_to_pos = {int(c): i for i, c in enumerate(clip_indices)}
 
-    frame_labels = np.full((n_clips, n_frames), UNLABELED, dtype=np.int32)
-
-    n_rows_total = 0
-    n_rows_dropped_turn = 0
-    n_rows_out_of_range = 0
-    n_rows_beyond_nframes = 0
-    n_rows_empty_interval = 0
-    n_rows_applied = 0
+    behavior = np.full((n_clips, n_frames), UNLABELED, dtype=np.int32)
+    direction = np.full((n_clips, n_frames), UNLABELED, dtype=np.int32)
 
     with path.open("r", newline="") as f:
         reader = csv.DictReader(f)
-        required = {"Video", "Behavior", "Start_Frame", "End_Frame"}
+        required = {"Video", "Track", "Label", "Start_Frame", "End_Frame"}
         missing = required - set(reader.fieldnames or [])
         if missing:
             raise KeyError(
-                f"Labels CSV at {path} missing required columns: {sorted(missing)}"
+                f"Labels CSV at {path} missing required columns: {sorted(missing)}. "
+                f"This module expects the two-track schema (Track ∈ "
+                f"{{behavior, direction}}). For the legacy single-Behavior CSV, "
+                f"check out an older revision of c2a/kpms/label_alignment.py."
             )
+        rows = list(reader)
 
-        for row in reader:
-            n_rows_total += 1
-            behavior = row["Behavior"].strip()
+    n_total_rows = len(rows)
 
-            if behavior in DROPPED_BEHAVIORS:
-                n_rows_dropped_turn += 1
-                continue
-            if behavior not in BEHAVIOR_TO_INT:
-                raise KeyError(
-                    f"Unknown behavior {behavior!r} in {path} (row "
-                    f"{n_rows_total}). Known: {sorted(BEHAVIOR_TO_INT)}, "
-                    f"dropped: {sorted(DROPPED_BEHAVIORS)}"
-                )
-
-            m = _CLIP_RE.search(row["Video"])
-            if m is None:
-                raise ValueError(
-                    f"Could not parse clip number from Video={row['Video']!r} "
-                    f"(row {n_rows_total})"
-                )
-            clip_idx = int(m.group(1))
-            if clip_idx not in clip_to_pos:
-                n_rows_out_of_range += 1
-                continue
-
-            start = int(row["Start_Frame"])
-            end = int(row["End_Frame"])
-            if start >= n_frames:
-                n_rows_beyond_nframes += 1
-                continue
-            end_clipped = min(end, n_frames)
-            if end_clipped <= start:
-                # Empty interval after clipping (e.g., End_Frame <= Start_Frame,
-                # or a placeholder ``Start_Frame=End_Frame=0`` row).
-                n_rows_empty_interval += 1
-                continue
-
-            pos = clip_to_pos[clip_idx]
-            frame_labels[pos, start:end_clipped] = BEHAVIOR_TO_INT[behavior]
-            n_rows_applied += 1
-
-    n_labeled_per_clip = (frame_labels != UNLABELED).sum(axis=1).astype(np.int32)
-
-    accounted = (
-        n_rows_dropped_turn
-        + n_rows_out_of_range
-        + n_rows_beyond_nframes
-        + n_rows_empty_interval
-        + n_rows_applied
+    cb = _accumulate_intervals(
+        rows, _TRACK_BEHAVIOR, BEHAVIOR_TO_INT,
+        clip_to_pos, n_frames, csv_to_h5_subsample, behavior,
     )
-    assert accounted == n_rows_total, (
-        f"Row accounting mismatch: {accounted} != {n_rows_total}"
+    cd = _accumulate_intervals(
+        rows, _TRACK_DIRECTION, DIRECTION_TO_INT,
+        clip_to_pos, n_frames, csv_to_h5_subsample, direction,
     )
+
+    # Sanity check: every CSV row should belong to exactly one of the two tracks
+    # (i.e. wrong_track[behavior] + applied[behavior] + ... == n_total_rows for
+    # each track's pass; equivalently, the sum across all "non-skipped" rows
+    # plus wrong_track must reconcile.).  We don't strict-assert here because
+    # exotic Track values would just be silently skipped — log instead.
+    seen_track = (n_total_rows - cb["wrong_track"]) + (n_total_rows - cd["wrong_track"])
+    if seen_track != n_total_rows:
+        log.warning(
+            "Track-row accounting mismatch: %d rows seen as behavior or direction, "
+            "%d total CSV rows.", seen_track, n_total_rows,
+        )
+
+    # Combined label: per-frame, encode (behavior_idx * 3 + direction_idx).
+    # Mask cells where either track is UNLABELED.
+    n_dir = len(DIRECTIONS)
+    both_labeled = (behavior != UNLABELED) & (direction != UNLABELED)
+    combined = np.full((n_clips, n_frames), UNLABELED, dtype=np.int32)
+    combined[both_labeled] = (
+        behavior[both_labeled] * n_dir + direction[both_labeled]
+    )
+
+    n_labeled_per_clip = (combined != UNLABELED).sum(axis=1).astype(np.int32)
 
     log.info(
-        "load_behavior_frames: %d rows (dropped %d turns, %d out-of-range, "
-        "%d beyond frame %d, %d empty intervals, applied %d). "
-        "%d/%d clips have ≥1 labeled frame; median labeled frames/clip = %d.",
-        n_rows_total,
-        n_rows_dropped_turn,
-        n_rows_out_of_range,
-        n_rows_beyond_nframes,
-        n_frames,
-        n_rows_empty_interval,
-        n_rows_applied,
-        int((n_labeled_per_clip > 0).sum()),
-        n_clips,
+        "load_label_frames: %d CSV rows; behavior applied=%d (drops: track=%d, "
+        "clip_oor=%d, beyond=%d, empty=%d); direction applied=%d (drops: track=%d, "
+        "clip_oor=%d, beyond=%d, empty=%d). %d/%d clips fully covered (combined "
+        "label on every H5 frame); median combined-labeled frames/clip = %d.",
+        n_total_rows,
+        cb["applied"], cb["wrong_track"], cb["out_of_range_clip"],
+        cb["beyond_nframes"], cb["empty_interval"],
+        cd["applied"], cd["wrong_track"], cd["out_of_range_clip"],
+        cd["beyond_nframes"], cd["empty_interval"],
+        int((n_labeled_per_clip == n_frames).sum()), n_clips,
         int(np.median(n_labeled_per_clip)),
     )
 
-    return frame_labels, clip_indices, n_labeled_per_clip
+    return LabelArrays(
+        behavior=behavior,
+        direction=direction,
+        combined=combined,
+        clip_indices=clip_indices,
+        n_labeled_per_clip=n_labeled_per_clip,
+    )
+
+
+def load_behavior_frames(
+    csv_path: str | Path,
+    clip_range: tuple[int, int] = (0, 841),
+    n_frames: int = 250,
+    csv_to_h5_subsample: int = 2,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Backward-compat: return only the behavior-track view.
+
+    Returns ``(behavior_frames, clip_indices, n_labeled_per_clip)``
+    matching the old API.  The 4-class behavior vocabulary is now
+    ``BEHAVIORS = (Immobile, Rear, Turn, Walk)`` — the previous
+    6-class vocabulary (Grooming/Immobility/Orienting/Supported Rear/
+    Unsupported Rear/Walking) is gone with the new CSV schema.
+    Existing callers depending on those exact strings must migrate.
+    """
+    arr = load_label_frames(
+        csv_path, clip_range=clip_range, n_frames=n_frames,
+        csv_to_h5_subsample=csv_to_h5_subsample,
+    )
+    n_per_clip = (arr.behavior != UNLABELED).sum(axis=1).astype(np.int32)
+    return arr.behavior, arr.clip_indices, n_per_clip

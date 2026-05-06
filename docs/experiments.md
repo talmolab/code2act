@@ -16,9 +16,10 @@ venv active.
 | 8 | `run_syllable_viz` | `syllable_viz_exp.yaml` | KPMS syllable 3D viz, frequency/duration stats |
 | 9 | `run_inception_distance` | `inception_distance_exp.yaml` | FID/KID — generative distribution quality vs real mocap |
 | 10 | `run_gait_dynamics` | `gait_dynamics_exp.yaml` | Gait PSD — Code2Act vs MIMIC-MJX walking frequency |
-| 11 | `run_hidden_dynamics` | `hidden_dynamics_exp.yaml` | RNN hidden state dynamics — PCA of GRU hidden states per sustained code |
+| 11 | `run_hidden_dynamics` | `hidden_dynamics_exp.yaml` | RNN hidden state dynamics — PCA of GRU hidden states per sustained code (kinematic-heuristic-derived 3-class labels: walk / immobility / rear) |
 | 12 | `run_hidden_trajectory` | `hidden_trajectory_exp.yaml` | Natural hidden trajectories colored by code |
 | 13 | `run_generalization_kid` | `generalization_kid_exp.yaml` | Generalization KID — MIMIC vs C2A distribution quality on unseen data |
+| 14 | `run_labeled_hidden_dynamics` | `labeled_hidden_dynamics_exp.yaml` | RNN hidden state dynamics anchored on **manual** behavior + direction labels from `data/rodent/rodent_labels.csv` (TopoMimic-annotation). Replays actual KPMS code sequences from labeled segments — no kinematic heuristic, no sustained-constant-code regime. Three label granularities saved: behavior (4) / direction (3) / combined (up to 12). |
 
 ## Prerequisites
 
@@ -82,6 +83,61 @@ with MIMIC-MJX baselines — the main gait-fidelity metric.
 Record GRU hidden states during rollouts, run PCA, and visualize how
 different codes activate different manifolds of hidden space. Used in the
 paper's internal-dynamics analysis.
+
+`run_hidden_dynamics` picks **one representative KPMS code per behavior**
+by kinematic heuristic (z_rise / xy_disp / xyz_disp) and *sustains it for
+250 frames*. This is fast and gives a clean PCA picture but conflates
+"what the GRU does in syllable k" with "what the GRU does when the input
+is held constant at the embedding of code k". The companion experiment
+below (`run_labeled_hidden_dynamics`) uses manual labels and natural
+code sequences to address this.
+
+### 14. `run_labeled_hidden_dynamics`
+Counterpart to `run_hidden_dynamics` that uses the manual behavior +
+direction labels in `data/rodent/rodent_labels.csv` (sourced from
+[KevinBian107/TopoMimic-annotation](https://github.com/KevinBian107/TopoMimic-annotation))
+instead of kinematic heuristics. For each labeled segment in each
+populated label cell:
+
+* Reset the env to that segment's source clip
+* **Replay the actual KPMS code sequence** that occurred during the
+  segment via `code_override` (rather than holding a single code
+  constant)
+* Capture hidden / qpos / proprio / codes per timestep
+
+Three label granularities are saved into the same npz, keyed
+`hidden_<level>__<label>`, where `level ∈ {behavior, direction,
+combined}`:
+
+* `behavior`: 4 classes — Immobile / Rear / Turn / Walk
+* `direction`: 3 classes — Left / Right / Straight
+* `combined`: up to 12 (but only ~7 cells are populated in the data —
+  Immobile is always Straight, Turn is never Straight, Walk is
+  essentially always Straight)
+
+The downstream plotting scripts (`plot_hidden_dsa.py`,
+`plot_hidden_rslds.py`) auto-detect the labeled-experiment npz and
+accept `--level` and `--labels` flags to filter.
+
+Outputs:
+* `outputs/labeled_hidden_dynamics/data/hidden_dynamics_labeled.npz` —
+  per-label hidden / qpos / proprio / codes / rewards arrays.
+* `outputs/labeled_hidden_dynamics/data/video_<level>/labeled_<level>_<label>.mp4`
+  — per-label ghost-rendered verification clip.
+* Mirror of the npz at `c2a/figures/data/hidden_dynamics_labeled.npz`
+  for the plotting scripts.
+
+```bash
+# Run the experiment (requires GPU).
+python -m c2a.experiments.run_labeled_hidden_dynamics
+
+# Then re-run InputDSA + rSLDS at any granularity:
+python -m c2a.figures.plot_hidden_dsa  --level behavior  --output_suffix beh
+python -m c2a.figures.plot_hidden_dsa  --level direction --output_suffix dir
+python -m c2a.figures.plot_hidden_dsa  --level combined  --output_suffix com
+python -m c2a.figures.plot_hidden_rslds --K 4 --level behavior  --output_suffix beh
+python -m c2a.figures.plot_hidden_rslds --K 7 --level combined  --output_suffix com
+```
 
 ## Figures
 

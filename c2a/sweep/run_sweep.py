@@ -43,7 +43,12 @@ import yaml
 
 from c2a.kpms.config import KPMSHyperparams
 from c2a.kpms.fit_kpms import fit_kpms_keypoints
-from c2a.kpms.label_alignment import BEHAVIORS, load_behavior_frames
+from c2a.kpms.label_alignment import (
+    BEHAVIORS,
+    COMBINED_LABELS,
+    DIRECTIONS,
+    load_label_frames,
+)
 from c2a.kpms.coverage_metrics import compute_coverage
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -561,10 +566,8 @@ def _compute_metrics(
     original: np.ndarray,
     reconstructed: np.ndarray,
     n_states: int,
-    frame_labels: np.ndarray | None = None,
-    labeled_clip_indices: np.ndarray | None = None,
+    label_arrays=None,
     all_clip_indices: np.ndarray | None = None,
-    n_behaviors: int | None = None,
 ) -> dict:
     """Compute reconstruction, syllable-quality, and (optional) behavior-coverage metrics.
 
@@ -573,19 +576,19 @@ def _compute_metrics(
         original: Flattened original data ``[N, T, K*D]``.
         reconstructed: Flattened reconstructed data ``[N, T, K*D]``.
         n_states: Number of syllable states.
-        frame_labels: Optional per-clip human behavior labels, shape
-            ``[N_labeled, n_frames]``, dtype int32.  Pass together with
-            ``labeled_clip_indices``, ``all_clip_indices``, ``n_behaviors``
+        label_arrays: Optional ``LabelArrays`` from
+            :func:`c2a.kpms.label_alignment.load_label_frames` containing
+            per-clip frame labels at three granularities (behavior,
+            direction, combined).  Pass together with ``all_clip_indices``
             to enable coverage metrics (NMI + Hungarian purity).
-        labeled_clip_indices: Clip indices corresponding to ``frame_labels``.
         all_clip_indices: Clip indices passed to KPMS in positional order
             (i.e. matches ``fit_result.labels_list``).
-        n_behaviors: Number of behavior classes.
 
     Returns:
-        Dict with reconstruction_mse, syllable stats, transition entropy, and
-        (if all coverage-args provided) nmi_global, purity_global,
-        n_labeled_clips_used, n_labeled_frames_used, coverage_mapping.
+        Dict with reconstruction_mse, syllable stats, transition entropy,
+        and (if all coverage-args provided) coverage at three granularities
+        keyed as ``coverage_<level>_<metric>`` for level ∈ {behavior,
+        direction, combined}.
     """
     labels = fit_result.labels_list
 
@@ -625,22 +628,38 @@ def _compute_metrics(
         "transition_entropy": mean_entropy,
     }
 
-    # Optional behavior-coverage metrics (NMI + Hungarian purity).
-    coverage_args = (
-        frame_labels,
-        labeled_clip_indices,
-        all_clip_indices,
-        n_behaviors,
-    )
-    if all(a is not None for a in coverage_args):
-        cov = compute_coverage(
-            syllables_list=fit_result.labels_list,
-            frame_labels=frame_labels,
-            labeled_clip_indices=labeled_clip_indices,
-            all_clip_indices=all_clip_indices,
-            n_syll=n_states,
-            n_beh=int(n_behaviors),
+    # Optional behavior-coverage metrics (NMI + Hungarian purity) at three
+    # granularities.  All three are reported; the caller selects which to
+    # use for downstream model-selection.
+    if label_arrays is not None and all_clip_indices is not None:
+        levels = (
+            ("behavior",  label_arrays.behavior,  len(BEHAVIORS)),
+            ("direction", label_arrays.direction, len(DIRECTIONS)),
+            ("combined",  label_arrays.combined,  len(COMBINED_LABELS)),
         )
+        cov: dict = {}
+        for level_name, level_frames, level_n_classes in levels:
+            level_cov = compute_coverage(
+                syllables_list=fit_result.labels_list,
+                frame_labels=level_frames,
+                labeled_clip_indices=label_arrays.clip_indices,
+                all_clip_indices=all_clip_indices,
+                n_syll=n_states,
+                n_beh=int(level_n_classes),
+            )
+            # Re-key with the level prefix so all three coexist.
+            for k, v in level_cov.items():
+                cov[f"coverage_{level_name}_{k}"] = v
+        # Convenience alias: keep legacy keys (no prefix) pointing to behavior
+        # level so downstream parsers that read 'nmi_global' / 'purity_global'
+        # still work.
+        for legacy_k in (
+            "nmi_global", "purity_global", "n_labeled_clips_used",
+            "n_labeled_frames_used", "coverage_mapping",
+        ):
+            src = f"coverage_behavior_{legacy_k}"
+            if src in cov:
+                cov[legacy_k] = cov[src]
         # ``cov`` is empty when no labeled clip intersects the fit set.
         result.update(cov)
 
@@ -744,11 +763,11 @@ def run_sweep(cfg: dict) -> dict:
         all_clip_indices = np.arange(keypoints.shape[0], dtype=np.int32)
 
     # Load human behavior labels (optional). When present, every fit will
-    # report NMI + Hungarian purity alongside the existing MSE-based metrics.
-    # Model selection stays on MSE — coverage is reported, not selected on.
-    frame_labels = None
-    labeled_clip_indices = None
-    n_behaviors = None
+    # report NMI + Hungarian purity at THREE granularities (4-class behavior,
+    # 3-class direction, 12-class behavior×direction) alongside the existing
+    # MSE-based metrics. Model selection stays on MSE — coverage is reported,
+    # not selected on.
+    label_arrays = None  # type: c2a.kpms.label_alignment.LabelArrays | None
     labels_path = cfg["data"].get("labels_path")
     if labels_path:
         _lp = Path(labels_path)
@@ -760,18 +779,23 @@ def run_sweep(cfg: dict) -> dict:
                 f"existing file (tried {_lp}). Set labels_path=null to skip "
                 "coverage metrics."
             )
-        _clip_range = tuple(cfg["data"].get("labeled_clip_range", [642, 741]))
-        frame_labels, labeled_clip_indices, _n_lab = load_behavior_frames(
+        # Default range covers all 842 clips in the new schema; override
+        # via labeled_clip_range in the YAML if you want a sub-range.
+        _clip_range = tuple(cfg["data"].get("labeled_clip_range", [0, 841]))
+        _subsample = int(cfg["data"].get("csv_to_h5_subsample", 2))
+        label_arrays = load_label_frames(
             _lp, clip_range=_clip_range, n_frames=keypoints.shape[1],
+            csv_to_h5_subsample=_subsample,
         )
-        n_behaviors = len(BEHAVIORS)
         n_intersect = int(
-            np.isin(labeled_clip_indices, all_clip_indices).sum()
+            np.isin(label_arrays.clip_indices, all_clip_indices).sum()
         )
         log.info(
-            f"Coverage metrics enabled: {n_intersect}/{len(labeled_clip_indices)} "
-            f"labeled clips are in the fit set; "
-            f"median labeled frames/clip = {int(np.median(_n_lab))}."
+            f"Coverage metrics enabled (3 granularities): "
+            f"{n_intersect}/{len(label_arrays.clip_indices)} labeled clips "
+            f"in the fit set; "
+            f"median combined-labeled frames/clip = "
+            f"{int(np.median(label_arrays.n_labeled_per_clip))}."
         )
 
     # Save an input keypoint sample figure to disk (one-time, diagnostic).
@@ -828,10 +852,8 @@ def run_sweep(cfg: dict) -> dict:
                 original, reconstructed = _reconstruct_keypoints(fit_result)
                 metrics = _compute_metrics(
                     fit_result, original, reconstructed, n_states,
-                    frame_labels=frame_labels,
-                    labeled_clip_indices=labeled_clip_indices,
+                    label_arrays=label_arrays,
                     all_clip_indices=all_clip_indices,
-                    n_behaviors=n_behaviors,
                 )
 
                 result = {
@@ -866,12 +888,12 @@ def run_sweep(cfg: dict) -> dict:
                     log.warning(f"  Failed to save reconstruction plot: {ve}")
 
                 coverage_str = ""
-                if "nmi_global" in metrics:
+                if "coverage_behavior_nmi_global" in metrics:
                     coverage_str = (
-                        f", NMI={metrics['nmi_global']:.3f}, "
-                        f"purity={metrics['purity_global']:.3f} "
-                        f"(on {metrics['n_labeled_clips_used']} clips, "
-                        f"{metrics['n_labeled_frames_used']} frames)"
+                        f", NMI[beh]={metrics['coverage_behavior_nmi_global']:.3f}/"
+                        f"[dir]={metrics.get('coverage_direction_nmi_global', float('nan')):.3f}/"
+                        f"[12]={metrics.get('coverage_combined_nmi_global', float('nan')):.3f}, "
+                        f"purity[beh]={metrics['coverage_behavior_purity_global']:.3f}"
                     )
                 log.info(
                     f"  MSE={metrics['reconstruction_mse']:.4f}, "

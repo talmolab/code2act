@@ -18,8 +18,13 @@ data:
   # Optional human-behavior labels for coverage metrics (NMI + Hungarian
   # purity). Leave labels_path=null to skip coverage reporting. The sweep
   # reports coverage but still selects best model on MSE.
+  # Behavior labels from KevinBian107/TopoMimic-annotation. Two-track
+  # schema (Track ∈ {behavior, direction}); CSV frames at 30 fps, H5 at 15
+  # fps so we set csv_to_h5_subsample=2. Default range covers all 842
+  # clips; the sweep intersects with the balanced split anyway.
   labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
-  labeled_clip_range: [642, 741]
+  labeled_clip_range: [0, 841]
+  csv_to_h5_subsample: 2
 
 sweep:
   num_states: [10, 20, 30]

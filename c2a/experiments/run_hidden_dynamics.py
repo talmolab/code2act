@@ -185,6 +185,7 @@ def run_rollout_with_hidden(
     hidden_list: list[np.ndarray] = []
     code_list: list[int] = []
     qpos_list: list[np.ndarray] = []
+    proprio_list: list[np.ndarray] = []
     reward_list: list[float] = []
     survival = max_steps
 
@@ -217,6 +218,10 @@ def run_rollout_with_hidden(
             code_list.append(int(extras["indices"]))
 
         qpos_list.append(np.array(state.data.qpos))
+        # Capture the GRU's actual proprioceptive input.  Required by
+        # InputDSA (c2a.figures.plot_hidden_dsa) as the control variable
+        # ``U`` for input-driven dynamics demixing.
+        proprio_list.append(np.array(state.obs["proprioception"]))
 
         state = jit_step(state, action)
         reward_list.append(float(state.reward))
@@ -228,6 +233,7 @@ def run_rollout_with_hidden(
         "hidden_states": np.array(hidden_list),
         "code_indices": np.array(code_list),
         "qpos": np.array(qpos_list),
+        "proprio": np.array(proprio_list),
         "rewards": np.array(reward_list),
         "survival": survival,
     }
@@ -359,6 +365,7 @@ def main(cfg: DictConfig) -> None:
 
         beh_hidden: list[np.ndarray] = []
         beh_qpos: list[np.ndarray] = []
+        beh_proprio: list[np.ndarray] = []
         beh_codes: list[np.ndarray] = []
         beh_rewards: list[np.ndarray] = []
 
@@ -382,6 +389,7 @@ def main(cfg: DictConfig) -> None:
             )
             beh_hidden.append(result["hidden_states"])
             beh_qpos.append(result["qpos"])
+            beh_proprio.append(result["proprio"])
             beh_codes.append(result["code_indices"])
             beh_rewards.append(result["rewards"])
             log.info(
@@ -391,6 +399,7 @@ def main(cfg: DictConfig) -> None:
 
         save_dict[f"hidden_{beh}"] = np.stack(beh_hidden)
         save_dict[f"qpos_{beh}"] = np.stack(beh_qpos)
+        save_dict[f"proprio_{beh}"] = np.stack(beh_proprio)
         save_dict[f"codes_{beh}"] = np.stack(beh_codes)
         save_dict[f"rewards_{beh}"] = np.stack(beh_rewards)
 

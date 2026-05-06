@@ -1,0 +1,75 @@
+# =============================================================================
+# Labeled-behavior RNN Hidden Dynamics Experiment
+# =============================================================================
+# Counterpart to hidden_dynamics_exp.yaml.  Picks ONE KPMS code per
+# combined behavior+direction label by **label agreement** (mode of the
+# KPMS code histogram across the manually-labeled frames of that
+# label), then sustains that code for `target_steps` control steps
+# across K starting body positions.  Termination is disabled so the
+# full window is captured cleanly.
+#
+# Labels source: KevinBian107/TopoMimic-annotation
+# Schema: behavior {Immobile, Rear, Turn, Walk} × direction {Left,
+# Right, Straight} → up to 12 combined cells, ~7 actually populated.
+#
+# Usage:
+#   python -m c2a.experiments.run_labeled_hidden_dynamics
+# =============================================================================
+
+checkpoint:
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260407_031233_484020/
+  step: null
+
+data:
+  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/best_codes.npz
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  labeled_clip_range: [0, 841]
+  csv_to_h5_subsample: 2  # CSV at 30 fps → H5 at 15 fps (250 frames/clip)
+
+# Sustained-code rollout length, in CONTROL STEPS (env at 100 Hz).
+# 1000 ctrl steps = 10 sec sim time = 10 sec video at 50 fps render.
+target_steps: 1000
+
+# Number of starting body positions sampled from the test split (with
+# fixed seed). The SAME K positions are used for every label so the
+# only varying factor across labels is the held KPMS code.
+K_per_label: 8
+
+# Drop combined labels whose total labeled-frame count is below this.
+# This filters out the 5 empty cells (Immobile_Left/Right, Turn_Straight,
+# Walk_Right) and Walk_Left (only 11 frames).
+min_label_frames: 100
+
+# How to select the agreement code per label:
+#   mode             — argmax P(c|L). Vulnerable to KPMS junk clusters.
+#                      With current best_codes.npz, this picks code 0 for
+#                      every label (code 0 has 26% base rate — not specific).
+#   mode_excluding   — argmax P(c|L) over codes NOT in `exclude_codes`.
+#                      DEFAULT. Skips junk clusters; gets unique codes for
+#                      Rear_Left, Rear_Right, Turn_Right, but Immobile_Straight,
+#                      Rear_Straight, Turn_Left, Walk_Straight all collide on
+#                      code 2 in the current model.
+#   enrichment       — argmax P(c|L) / P(c) subject to P(c|L) >= floor.
+#                      Finds the code most over-represented in this label
+#                      vs the corpus base rate. Best per-label specificity
+#                      but requires `min_within_label_frac` to avoid
+#                      over-fitting on rare codes.
+selection_rule: mode_excluding
+exclude_codes: [0]
+min_within_label_frac: 0.05
+
+# Verification-video ghost bodies per label.
+num_video_bodies: 5
+
+# Disable env termination criteria (root_too_far, root_too_rotated,
+# pose_error) so 1000-step sustained-code rollouts don't auto-reset
+# mid-trajectory. nan_termination is still active as a safety net.
+disable_far_termination: true
+
+seed: 42
+render_video: true
+
+output:
+  base_dir: ./outputs/labeled_hidden_dynamics
