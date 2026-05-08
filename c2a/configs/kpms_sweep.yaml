@@ -1,39 +1,58 @@
 # =============================================================================
 # KPMS Hyperparameter Sweep Configuration
 # =============================================================================
-# Grid search over KPMS settings to find the best syllable model.
+# Grid search over KPMS settings; selection follows Weinreb 2024 (Nature
+# Methods): pick (kappa × num_states) with median state duration nearest
+# 400 ms, then rank seeds by Expected Marginal Likelihood (EML).
 #
 # IMPORTANT: This sweep MUST run in a separate process from RL training
 # because keypoint_moseq requires jax_enable_x64=True (process-global).
 #
 # Usage:
-#   cd moseq_jax
-#   python -m sweep.run_sweep
+#   python -m c2a.sweep.run_sweep --config c2a/configs/kpms_sweep.yaml
 # =============================================================================
+
+# Dispatcher reads this to route to c2a.kpms.sweep_impl.run_sweep.
+model: kpms
 
 data:
   reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
   balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
   stac_xml_path: ${oc.env:C2A_ROOT,.}/c2a/assets/rodent.xml
-  # Optional human-behavior labels for coverage metrics (NMI + Hungarian
-  # purity). Leave labels_path=null to skip coverage reporting. The sweep
-  # reports coverage but still selects best model on MSE.
-  # Behavior labels from KevinBian107/TopoMimic-annotation. Two-track
-  # schema (Track ∈ {behavior, direction}); CSV frames at 30 fps, H5 at 15
-  # fps so we set csv_to_h5_subsample=2. Default range covers all 842
-  # clips; the sweep intersects with the balanced split anyway.
+  # Manual behavior labels for *post-hoc* coverage reporting (NMI +
+  # Hungarian purity at 4-class behavior / 3-class direction / 12-class
+  # combined granularities). Reported in sweep_results.json but NOT used
+  # for model selection — selection is paper-faithful (duration → EML).
+  # Source: KevinBian107/TopoMimic-annotation.
+  # CSV at 30 fps, H5 at 15 fps so csv_to_h5_subsample=2.
   labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
   labeled_clip_range: [0, 841]
   csv_to_h5_subsample: 2
 
 sweep:
-  num_states: [10, 20, 30]
-  kappa: [1.0e+2, 3.0e+2, 1.0e+3, 3.0e+3, 1.0e+4, 3.0e+4, 1.0e+5]
+  # Densified around the 400ms-median-duration target (= 6 frames at 15 Hz).
+  # The previous wide grid wasted compute on κ ≥ 1e4 cells that all
+  # saturated at ~75–250-frame durations (12–40× off target).
+  num_states: [15, 20, 30]
+  kappa: [50, 75, 1.0e+2, 1.5e+2, 2.0e+2, 3.0e+2, 5.0e+2, 1.0e+3]
   latent_dim: [10]
   model_type: ["arhmm"]
-  seeds_per_setting: 2
-  ar_iters: 50
-  full_iters: 300
+  # Paper standard for stable EML rank: 10 seeds per (K, κ) cell.  At
+  # 2 seeds the EML mean has SE ≈ 0.71 σ — basically can't distinguish
+  # adjacent cells.  10 seeds gives SE ≈ 0.32 σ.
+  seeds_per_setting: 10
+  # Iterations bumped for safety margin; KPMS log-lik is often still
+  # drifting at 300 for K=30.  paper recipe runs 100/500.
+  ar_iters: 100
+  full_iters: 500
+
+# Paper-faithful selection per Weinreb 2024 Methods. Pick (kappa ×
+# num_states) cell whose median state duration is closest to the target,
+# then rank seeds in that cell by EML.
+selection:
+  target_duration_ms: 400      # Weinreb 2024: "median state duration of 400 ms"
+  mocap_hz: 15                  # H5 sample rate (250 frames per 16.67-sec clip)
+  tolerance_frac: 0.3           # ±30% acceptance window around target
 
 output:
   base_dir: outputs/kpms_sweep

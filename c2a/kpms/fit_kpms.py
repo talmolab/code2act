@@ -19,8 +19,14 @@ try:
     import keypoint_moseq as kpms
 
     HAS_KPMS = True
-except ImportError:
+    KPMS_IMPORT_ERROR: Exception | None = None
+except ImportError as _e:
     HAS_KPMS = False
+    # Capture the real cause so a sweep can report it later instead of
+    # the generic "not installed" message.  Common causes seen in the
+    # wild: (1) lark / lark_parser version conflict, (2) jaxlib-cuda /
+    # CUDA driver mismatch, (3) mujoco SO not loadable.
+    KPMS_IMPORT_ERROR = _e
 
 from c2a.kpms.config import KPMSHyperparams
 from c2a.kpms.keypoint_loader import prepare_keypoints_for_kpms
@@ -73,7 +79,10 @@ def fit_kpms_keypoints(
         KPMSFitResult with model, results, labels.
     """
     if not HAS_KPMS:
-        raise ImportError("keypoint_moseq not installed")
+        raise ImportError(
+            f"keypoint_moseq not importable. Underlying cause: "
+            f"{type(KPMS_IMPORT_ERROR).__name__}: {KPMS_IMPORT_ERROR}"
+        )
 
     coordinates, confidences = prepare_keypoints_for_kpms(keypoint_data)
 

@@ -1,0 +1,50 @@
+# =============================================================================
+# shMoSeq sweep — smoke / refined-grid configuration.
+#
+# Compared to `shimoseq_sweep.yaml` this is narrower and tuned to the
+# trans_kappa live-zone we identified empirically on
+# `c2a/outputs/kpms_sweep/best_codes.npz` (484 clips × 250 frames):
+#
+#   kappa=1e2 → median state duration ~1 frame (too floppy)
+#   kappa=1e3 → median ~3 frames (transitions happen)
+#   kappa=1e4 → median = seg_length (segment-saturated, one state per chunk)
+#
+# The grid below brackets the live zone tightly so the lagged-MI duration
+# filter can do its job and pick the right cell.  Run with:
+#
+#   python -m c2a.sweep.run_sweep --config c2a/configs/shimoseq_sweep_smoke.yaml
+# =============================================================================
+
+model: shimoseq
+
+data:
+  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/best_codes.npz
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  stac_xml_path: ${oc.env:C2A_ROOT,.}/c2a/assets/rodent.xml
+  labeled_clip_range: [0, 841]
+  csv_to_h5_subsample: 2
+
+# Refined grid: 5 × 5 × 3 = 75 fits.  Kappa range covers the entire
+# transition from "transitions happen" → "segment-saturated" so the
+# duration filter can pick the right cell.
+sweep:
+  n_states: [5, 10]
+  trans_kappa: [1.0e+3, 3.0e+3, 1.0e+4]
+  seeds_per_setting: 2
+
+# Smoke-grid hyperparams: 30 iters × gd_iters=100 ≈ 30s/fit; 12 fits ≈ 6 min wall.
+# Verified ll plateaus by iter 20 in the kappa probe.
+hyperparams:
+  emission_gd_iters: 100
+  emission_gd_lr: 1.0e-2
+  num_iters: 30
+  seg_length: 256
+
+selection:
+  lags: null
+  duration_band_frac: [0.5, 1.5]
+
+output:
+  base_dir: outputs/shimoseq_sweep
