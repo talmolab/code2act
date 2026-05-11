@@ -61,3 +61,31 @@ codegen:
   sweep_results: outputs/kpms_sweep/sweep_results.json
   balanced_split: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
   output: outputs/kpms_sweep/best_codes.npz
+
+# Auto-render top-K syllable visualizations after the sweep finishes.
+# trajectory_plots ON by default = the canonical KPMS-native MoSeq grid.
+# syllable_grids OFF by default = the older filmstrip / animated-3D layout
+# (still available; flip syllable_grids: true if you want both).
+auto_render:
+  rank: mse
+  top_k: 5
+  trajectory_plots: true
+  trajectory_plots_kwargs:
+    pre: 0.167               # seconds before syllable onset
+    post: 0.5                # seconds after syllable onset
+    min_frequency: 0.0       # 0.0 = render every syllable that has a bout
+                             # passing min_duration; raise (e.g. 0.001)
+                             # to drop a long tail of rare/transient ones
+    min_duration: 3
+    fps: 30
+    projection_planes: ["xy", "xz"]   # rows of the grid, in this order
+    n_snapshots: 5           # overlaid pose snapshots per cell (PNG)
+    n_samples_per_syllable: 50  # bouts averaged per syllable (cap)
+    keypoint_colormap: autumn
+    save_png: true           # planes_grid.png with snapshots overlaid
+    save_gifs: true          # planes_grid.gif animated lockstep across syllables
+  # Legacy filmstrip renderer:
+  syllable_grids: false
+  n_examples: 5
+  bout_strategy: longest
+  format: both

@@ -1162,19 +1162,55 @@ def run_sweep(cfg: dict) -> dict:
         json.dump(summary, f, indent=2, default=str)
     log.info(f"Saved results to {results_path}")
 
-    # Auto-render per-syllable example grids for the top-K fits.  The
-    # renderer is also a standalone CLI (``python -m
-    # c2a.kpms.render_syllable_grids --sweep-dir ...``) — use that to
-    # re-render with different ``--bout-strategy`` or ``--top-k`` without
-    # rerunning the sweep.
+    # Auto-render top-K syllable grids. Two render styles available:
+    #
+    #   * ``trajectory_plots`` (default ON, NEW) — KPMS-native
+    #     ``generate_trajectory_plots`` output: per-syllable trajectory
+    #     panels in the canonical MoSeq format. The same renderer is
+    #     used by the auto-merge orchestrator so sweep-time and post-
+    #     merge grids share a layout for visual comparison.
+    #   * ``syllable_grids`` (default OFF) — the legacy filmstrip /
+    #     animated 3D-skeleton format from
+    #     ``c2a.kpms.render_syllable_grids``. Kept available for
+    #     bout-by-bout inspection; the standalone CLI
+    #     ``python -m c2a.kpms.render_syllable_grids --sweep-dir ...``
+    #     remains the way to re-render after the fact.
     auto_render_cfg = (cfg.get("auto_render") or {}) if isinstance(cfg, dict) else {}
-    if auto_render_cfg.get("syllable_grids", True):
+    rank = auto_render_cfg.get("rank", "mse")
+    top_k = int(auto_render_cfg.get("top_k", 5))
+
+    if auto_render_cfg.get("trajectory_plots", True):
+        try:
+            from c2a.kpms.native_viz import render_native_for_topk
+            traj_cfg = auto_render_cfg.get("trajectory_plots_kwargs", {}) or {}
+            render_native_for_topk(
+                sweep_dir=output_dir,
+                rank=rank,
+                top_k=top_k,
+                pre=float(traj_cfg.get("pre", 0.167)),
+                post=float(traj_cfg.get("post", 0.5)),
+                min_frequency=float(traj_cfg.get("min_frequency", 0.0)),
+                min_duration=int(traj_cfg.get("min_duration", 3)),
+                fps=int(traj_cfg.get("fps", 30)),
+                projection_planes=list(traj_cfg.get("projection_planes", ["xy", "xz"])),
+                n_snapshots=int(traj_cfg.get("n_snapshots", 5)),
+                n_samples_per_syllable=int(
+                    traj_cfg.get("n_samples_per_syllable", 50)
+                ),
+                keypoint_colormap=str(traj_cfg.get("keypoint_colormap", "autumn")),
+                save_png=bool(traj_cfg.get("save_png", True)),
+                save_gifs=bool(traj_cfg.get("save_gifs", True)),
+            )
+        except Exception as e:
+            log.warning(f"Trajectory-plot auto-render failed: {e}")
+
+    if auto_render_cfg.get("syllable_grids", False):
         try:
             from c2a.kpms.render_syllable_grids import render as _render_grids
             _render_grids(
                 sweep_dir=output_dir,
-                rank=auto_render_cfg.get("rank", "mse"),
-                top_k=int(auto_render_cfg.get("top_k", 5)),
+                rank=rank,
+                top_k=top_k,
                 n_examples=int(auto_render_cfg.get("n_examples", 5)),
                 max_rows_per_page=int(auto_render_cfg.get("max_rows_per_page", 5)),
                 bout_strategy=auto_render_cfg.get("bout_strategy", "longest"),
@@ -1183,7 +1219,7 @@ def run_sweep(cfg: dict) -> dict:
                 fps=int(auto_render_cfg.get("fps", 30)),
             )
         except Exception as e:
-            log.warning(f"Syllable-grid auto-render failed: {e}")
+            log.warning(f"Filmstrip syllable-grid auto-render failed: {e}")
 
     return summary
 

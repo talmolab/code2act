@@ -147,6 +147,96 @@ def select_bouts(
 
 
 # =============================================================================
+# Clarity styling
+# =============================================================================
+#
+# "compact" reproduces the original style: small cells, uniform steelblue
+# points + gray skeleton lines. "clear" enlarges cells, color-codes body
+# parts (head=orange, spine=black, left limbs=blue, right limbs=red),
+# and emphasizes the snout marker so head orientation is unambiguous.
+
+
+HEAD_KP_NAMES: frozenset[str] = frozenset({"Snout", "EarL", "EarR"})
+SPINE_KP_PREFIXES: tuple[str, ...] = ("Spine", "TailBase")
+
+
+def _kp_color_clear(name: str) -> str:
+    """Body-part color for one keypoint name, in the 'clear' style."""
+    if name in HEAD_KP_NAMES:
+        return "darkorange"
+    if any(name.startswith(p) for p in SPINE_KP_PREFIXES):
+        return "black"
+    if name.endswith("L"):
+        return "steelblue"
+    if name.endswith("R"):
+        return "crimson"
+    return "gray"
+
+
+def _edge_color_clear(name_a: str, name_b: str) -> str:
+    """Edge color for the skeleton segment between two keypoints. If
+    both endpoints are the same body group, use that group's color;
+    spine wins for mixed segments (so the trunk is always black)."""
+    ca, cb = _kp_color_clear(name_a), _kp_color_clear(name_b)
+    if ca == cb:
+        return ca
+    if "black" in (ca, cb):
+        return "black"
+    return "gray"
+
+
+def _kp_size_clear(name: str, base: float) -> float:
+    """Snout gets ~2× the marker size so head direction is unambiguous."""
+    return base * 2.2 if name == "Snout" else base
+
+
+def _resolve_styling(
+    clarity: str, kp_names: list[str], edges: list[tuple[int, int]],
+) -> dict:
+    """Pre-resolve per-keypoint / per-edge colors and sizes.
+
+    Returned dict carries a few simple lookups that the per-cell
+    renderers consume — keeping the per-frame draw loop allocation-free.
+    """
+    if clarity == "compact":
+        n = len(kp_names)
+        return {
+            "clarity": "compact",
+            "kp_colors": ["steelblue"] * n,
+            "kp_sizes_static": [6.0] * n,
+            "kp_sizes_anim": [3.0] * n,
+            "edge_colors_static": ["gray"] * len(edges),
+            "edge_colors_anim": ["gray"] * len(edges),
+            "linewidth_static": 1.4,
+            "linewidth_anim": 1.2,
+            "cell_w_in": 2.4, "cell_h_in": 2.0,
+            "label_fontsize": 9,
+            "title_fontsize": 6,
+        }
+    if clarity == "clear":
+        kp_colors = [_kp_color_clear(n) for n in kp_names]
+        kp_sizes_static = [_kp_size_clear(n, 12.0) for n in kp_names]
+        kp_sizes_anim = [_kp_size_clear(n, 6.0) for n in kp_names]
+        edge_colors = [
+            _edge_color_clear(kp_names[a], kp_names[b]) for a, b in edges
+        ]
+        return {
+            "clarity": "clear",
+            "kp_colors": kp_colors,
+            "kp_sizes_static": kp_sizes_static,
+            "kp_sizes_anim": kp_sizes_anim,
+            "edge_colors_static": edge_colors,
+            "edge_colors_anim": edge_colors,
+            "linewidth_static": 2.5,
+            "linewidth_anim": 2.2,
+            "cell_w_in": 3.6, "cell_h_in": 3.0,
+            "label_fontsize": 11,
+            "title_fontsize": 8,
+        }
+    raise ValueError(f"Unknown clarity={clarity!r}; expected 'compact' or 'clear'.")
+
+
+# =============================================================================
 # Per-cell rendering
 # =============================================================================
 
@@ -156,6 +246,7 @@ def _draw_bout_filmstrip(
     cell_spec,
     keypoint_traj: np.ndarray,
     edges: list[tuple[int, int]],
+    style: dict,
     n_snapshots: int = 4,
     title: str = "",
 ) -> None:
@@ -184,26 +275,53 @@ def _draw_bout_filmstrip(
     )
     if title:
         ax_t = fig.add_subplot(inner[0])
-        ax_t.text(0.5, 0.5, title, ha="center", va="center", fontsize=6)
+        ax_t.text(
+            0.5, 0.5, title, ha="center", va="center",
+            fontsize=style["title_fontsize"],
+        )
         ax_t.axis("off")
 
     strip = GridSpecFromSubplotSpec(
         1, n_snapshots, subplot_spec=inner[1], wspace=0.02,
     )
+    # In compact mode: per-snapshot color from viridis (fade through bout).
+    # In clear mode: keep per-keypoint colors stable across snapshots so the
+    # head/limbs are recognizable, and only the alpha fades.
     cmap = plt.get_cmap("viridis")
+    is_clear = style["clarity"] == "clear"
+
     for j, f in enumerate(frame_idx):
         ax = fig.add_subplot(strip[0, j], projection="3d")
         pts = keypoint_traj[f]
-        color = cmap(j / max(n_snapshots - 1, 1))
         com = pts.mean(axis=0)
-        ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c=[color], s=6)
-        for ia, ib in edges:
-            ax.plot(
-                [pts[ia, 0], pts[ib, 0]],
-                [pts[ia, 1], pts[ib, 1]],
-                [pts[ia, 2], pts[ib, 2]],
-                color=color, linewidth=1.4, alpha=0.95,
+        frac = j / max(n_snapshots - 1, 1)
+        if is_clear:
+            ax.scatter(
+                pts[:, 0], pts[:, 1], pts[:, 2],
+                c=style["kp_colors"], s=style["kp_sizes_static"],
+                alpha=0.6 + 0.4 * frac,
             )
+            for (ia, ib), ec in zip(edges, style["edge_colors_static"]):
+                ax.plot(
+                    [pts[ia, 0], pts[ib, 0]],
+                    [pts[ia, 1], pts[ib, 1]],
+                    [pts[ia, 2], pts[ib, 2]],
+                    color=ec, linewidth=style["linewidth_static"],
+                    alpha=0.5 + 0.5 * frac,
+                )
+        else:
+            color = cmap(frac)
+            ax.scatter(
+                pts[:, 0], pts[:, 1], pts[:, 2],
+                c=[color], s=style["kp_sizes_static"][0],
+            )
+            for ia, ib in edges:
+                ax.plot(
+                    [pts[ia, 0], pts[ib, 0]],
+                    [pts[ia, 1], pts[ib, 1]],
+                    [pts[ia, 2], pts[ib, 2]],
+                    color=color, linewidth=style["linewidth_static"], alpha=0.95,
+                )
         half = zoom / 2
         ax.set_xlim(com[0] - half, com[0] + half)
         ax.set_ylim(com[1] - half, com[1] + half)
@@ -222,6 +340,7 @@ def _setup_cell_animated(
     cell_spec,
     keypoint_traj: np.ndarray,
     edges: list[tuple[int, int]],
+    style: dict,
     title: str,
 ) -> dict | None:
     """Set up one animated 3D skeleton in one cell (MP4 path).
@@ -242,7 +361,10 @@ def _setup_cell_animated(
     )
     if title:
         ax_t = fig.add_subplot(inner[0])
-        ax_t.text(0.5, 0.5, title, ha="center", va="center", fontsize=6)
+        ax_t.text(
+            0.5, 0.5, title, ha="center", va="center",
+            fontsize=style["title_fontsize"],
+        )
         ax_t.axis("off")
 
     ax = fig.add_subplot(inner[1], projection="3d")
@@ -253,16 +375,28 @@ def _setup_cell_animated(
     coms = keypoint_traj.mean(axis=1)
 
     pts0 = keypoint_traj[0]
-    (pts_artist,) = ax.plot(pts0[:, 0], pts0[:, 1], pts0[:, 2],
-                            "o", color="steelblue", ms=3)
+    if style["clarity"] == "clear":
+        # Use scatter so we can pass per-keypoint colors and sizes.
+        pts_artist = ax.scatter(
+            pts0[:, 0], pts0[:, 1], pts0[:, 2],
+            c=style["kp_colors"], s=style["kp_sizes_anim"],
+        )
+    else:
+        # Original compact behaviour: plot('o', ms=3) — note `ms` is in
+        # points (linear), unrelated to scatter's `s` (points²). Hard-code
+        # to preserve byte-equivalence with the pre-clarity renderer.
+        (pts_artist,) = ax.plot(
+            pts0[:, 0], pts0[:, 1], pts0[:, 2],
+            "o", color="steelblue", ms=3,
+        )
     line_artists = [
         ax.plot(
             [pts0[ia, 0], pts0[ib, 0]],
             [pts0[ia, 1], pts0[ib, 1]],
             [pts0[ia, 2], pts0[ib, 2]],
-            "-", color="gray", linewidth=1.2,
+            "-", color=ec, linewidth=style["linewidth_anim"],
         )[0]
-        for ia, ib in edges
+        for (ia, ib), ec in zip(edges, style["edge_colors_anim"])
     ]
     ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
     ax.view_init(elev=15, azim=-75)
@@ -285,6 +419,7 @@ def _setup_cell_animated(
         "coms": coms,
         "zoom": zoom,
         "T": T,
+        "is_scatter": style["clarity"] == "clear",
     }
 
 
@@ -293,8 +428,12 @@ def _update_cell_animated(cell: dict, edges: list[tuple[int, int]], t: int) -> l
     last frame for shorter bouts so they hold the final pose."""
     t_clipped = min(t, cell["T"] - 1)
     pts = cell["keypoint_traj"][t_clipped]
-    cell["pts_artist"].set_data(pts[:, 0], pts[:, 1])
-    cell["pts_artist"].set_3d_properties(pts[:, 2])
+    if cell["is_scatter"]:
+        # PathCollection: update offsets3d (the supported public API).
+        cell["pts_artist"]._offsets3d = (pts[:, 0], pts[:, 1], pts[:, 2])
+    else:
+        cell["pts_artist"].set_data(pts[:, 0], pts[:, 1])
+        cell["pts_artist"].set_3d_properties(pts[:, 2])
     for ln, (ia, ib) in zip(cell["line_artists"], edges):
         ln.set_data([pts[ia, 0], pts[ib, 0]], [pts[ia, 1], pts[ib, 1]])
         ln.set_3d_properties([pts[ia, 2], pts[ib, 2]])
@@ -312,10 +451,11 @@ def _update_cell_animated(cell: dict, edges: list[tuple[int, int]], t: int) -> l
 
 
 def _make_page_figure(
-    n_rows: int, n_examples: int, fit_label: str,
+    n_rows: int, n_examples: int, fit_label: str, style: dict,
 ):
     """Build the outer figure + GridSpec used by both PNG and MP4 paths."""
-    fig = plt.figure(figsize=(2.4 * n_examples + 1.6, 2.0 * n_rows + 1.0))
+    cw, ch = style["cell_w_in"], style["cell_h_in"]
+    fig = plt.figure(figsize=(cw * n_examples + 1.6, ch * n_rows + 1.0))
     outer = GridSpec(
         n_rows, n_examples + 1,
         width_ratios=[0.20] + [1.0] * n_examples,
@@ -326,11 +466,14 @@ def _make_page_figure(
     return fig, outer
 
 
-def _draw_row_label(fig, cell_spec, syllable_id: int, n_bouts: int) -> None:
+def _draw_row_label(
+    fig, cell_spec, syllable_id: int, n_bouts: int, style: dict,
+) -> None:
     ax = fig.add_subplot(cell_spec)
     ax.text(
         0.5, 0.5, f"Syll {syllable_id}\n({n_bouts} bouts)",
-        ha="center", va="center", fontsize=9, fontweight="bold",
+        ha="center", va="center",
+        fontsize=style["label_fontsize"], fontweight="bold",
     )
     ax.axis("off")
 
@@ -345,15 +488,17 @@ def render_page_png(
     output_path: Path,
     n_examples: int = 5,
     n_snapshots: int = 4,
+    clarity: str = "compact",
 ) -> None:
     """Render one PNG page: rows = syllables_on_page, cols = examples."""
-    n_rows = len(syllables_on_page)
-    fig, outer = _make_page_figure(n_rows, n_examples, fit_label)
     edges = _resolve_skeleton_edges(kp_names, skeleton)
+    style = _resolve_styling(clarity, kp_names, edges)
+    n_rows = len(syllables_on_page)
+    fig, outer = _make_page_figure(n_rows, n_examples, fit_label, style)
 
     for row_i, sid in enumerate(syllables_on_page):
         bouts = bouts_per_syll.get(sid, [])
-        _draw_row_label(fig, outer[row_i, 0], sid, len(bouts))
+        _draw_row_label(fig, outer[row_i, 0], sid, len(bouts), style)
         for col_i in range(n_examples):
             cell_spec = outer[row_i, col_i + 1]
             if col_i >= len(bouts):
@@ -370,12 +515,13 @@ def render_page_png(
                 f"dur={bout.duration}f"
             )
             _draw_bout_filmstrip(
-                fig, cell_spec, kp_traj, edges,
+                fig, cell_spec, kp_traj, edges, style,
                 n_snapshots=n_snapshots, title=title,
             )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=120, bbox_inches="tight")
+    fig.savefig(output_path, dpi=140 if clarity == "clear" else 120,
+                bbox_inches="tight")
     plt.close(fig)
     log.info(f"  PNG: {output_path}")
 
@@ -390,6 +536,7 @@ def render_page_mp4(
     output_path: Path,
     n_examples: int = 5,
     fps: int = 30,
+    clarity: str = "compact",
 ) -> None:
     """Render one MP4 page: rows = syllables_on_page, cols = examples,
     animated in lockstep."""
@@ -398,15 +545,16 @@ def render_page_mp4(
 
     plt.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
 
-    n_rows = len(syllables_on_page)
-    fig, outer = _make_page_figure(n_rows, n_examples, fit_label)
     edges = _resolve_skeleton_edges(kp_names, skeleton)
+    style = _resolve_styling(clarity, kp_names, edges)
+    n_rows = len(syllables_on_page)
+    fig, outer = _make_page_figure(n_rows, n_examples, fit_label, style)
 
     cells: dict[tuple[int, int], dict] = {}
     max_T = 1
     for row_i, sid in enumerate(syllables_on_page):
         bouts = bouts_per_syll.get(sid, [])
-        _draw_row_label(fig, outer[row_i, 0], sid, len(bouts))
+        _draw_row_label(fig, outer[row_i, 0], sid, len(bouts), style)
         for col_i in range(n_examples):
             cell_spec = outer[row_i, col_i + 1]
             if col_i >= len(bouts):
@@ -422,7 +570,9 @@ def render_page_mp4(
                 f"t={bout.start_frame}-{bout.end_frame} | "
                 f"dur={bout.duration}f"
             )
-            cell = _setup_cell_animated(fig, cell_spec, kp_traj, edges, title)
+            cell = _setup_cell_animated(
+                fig, cell_spec, kp_traj, edges, style, title,
+            )
             if cell is not None:
                 cells[(row_i, col_i)] = cell
                 max_T = max(max_T, cell["T"])
@@ -467,8 +617,15 @@ def render_for_fit(
     min_bout_duration: int = 3,
     output_format: str = "png",
     fps: int = 30,
+    clarity: str = "compact",
 ) -> None:
-    """Render syllable-grids for one fit. Paginates if n_states > max_rows."""
+    """Render syllable-grids for one fit. Paginates if n_states > max_rows.
+
+    Args:
+        clarity: ``"compact"`` (default, original style — small cells,
+            uniform color) or ``"clear"`` (larger cells with body-part
+            coloring; recommended for inspection of merged labels).
+    """
     setting = fit_meta.get("setting", "?")
     seed = fit_meta.get("seed", "?")
     fit_label_base = (
@@ -505,7 +662,7 @@ def render_for_fit(
                 bouts_per_syll=bouts_per_syll,
                 keypoints=keypoints, kp_names=kp_names, skeleton=skeleton,
                 output_path=output_dir / f"{stem}.png",
-                n_examples=n_examples,
+                n_examples=n_examples, clarity=clarity,
             )
         if output_format in ("video", "both"):
             render_page_mp4(
@@ -514,7 +671,7 @@ def render_for_fit(
                 bouts_per_syll=bouts_per_syll,
                 keypoints=keypoints, kp_names=kp_names, skeleton=skeleton,
                 output_path=output_dir / f"{stem}.mp4",
-                n_examples=n_examples, fps=fps,
+                n_examples=n_examples, fps=fps, clarity=clarity,
             )
 
 
@@ -531,6 +688,7 @@ def render(
     balanced_split_path: Path | None = None,
     reference_data_path: Path | None = None,
     stac_xml_path: Path | None = None,
+    clarity: str = "compact",
 ) -> None:
     """End-to-end orchestrator. Mirrors arg flow of render_topk_bands.render."""
     sweep_dir = Path(sweep_dir).resolve()
@@ -595,6 +753,7 @@ def render(
             min_bout_duration=min_bout_duration,
             output_format=output_format,
             fps=fps,
+            clarity=clarity,
         )
 
     log.info(f"Done. Outputs in {output_dir}")
@@ -620,6 +779,11 @@ def main() -> None:
     parser.add_argument("--balanced-split", type=Path, default=None)
     parser.add_argument("--reference-data", type=Path, default=None)
     parser.add_argument("--stac-xml", type=Path, default=None)
+    parser.add_argument(
+        "--clarity", choices=("compact", "clear"), default="compact",
+        help="Layout: 'compact' = original style, 'clear' = larger cells "
+             "with body-part coloring (recommended for inspection).",
+    )
     args = parser.parse_args()
 
     render(
@@ -635,6 +799,7 @@ def main() -> None:
         balanced_split_path=args.balanced_split,
         reference_data_path=args.reference_data,
         stac_xml_path=args.stac_xml,
+        clarity=args.clarity,
     )
 
 

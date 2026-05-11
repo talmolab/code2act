@@ -42,6 +42,7 @@ from c2a.moseq_ppo_networks import (
 )
 from c2a.moseq_ppo import train as moseq_train
 from c2a.moseq_env_wrapper import MoSeqImitation
+from c2a.code_sources import load_codes
 
 
 def _setup_environment() -> None:
@@ -281,12 +282,20 @@ def moseq_rollout_logging_fn(
     render_video=True,
     ppo_network=None,
     jit_decoder_only_inference_fn=None,
+    num_codes=None,
 ):
     """Rollout logging with MoSeq code metrics and video rendering.
 
     Runs full eval (z_e=1) and optionally decoder-only eval (z_e=0).
+
+    Args:
+        num_codes: Codebook size threaded explicitly from the loader. When
+            ``None``, falls back to ``cfg.network_config.num_codes`` for
+            backward compatibility, but callers should pass the data-derived
+            value so plots and video overlays match the actual embedding.
     """
-    num_codes = cfg.network_config.num_codes
+    if num_codes is None:
+        num_codes = int(cfg.network_config.num_codes)
 
     physics_steps_per_ctrl = cfg.env_config.ctrl_dt / cfg.env_config.sim_dt
     steps_per_mocap_frame = (1 / cfg.env_config.mocap_hz) / (
@@ -451,43 +460,31 @@ def main(cfg: DictConfig) -> None:
         train_indices = list(range(train_clips.qpos.shape[0]))
         test_indices = list(range(test_clips.qpos.shape[0]))
 
-    # Load or generate KPMS codes.
-    # Resolution rule (hardened after the 2026-03-21 silent code-corruption
-    # bug): if codes_path is None, generate random codes (smoke-test). If
-    # codes_path is set, resolve it and REQUIRE the file to exist — raise
-    # otherwise, never silently fall back to random codes.
-    codes_path = cfg.kpms_config.get("codes_path", None)
+    # Load codes from the configured source (kpms_raw / kpms_merged /
+    # gt_directional_turn / random for null codes_path). All validation,
+    # provenance, and source-specific quirks live in c2a.code_sources.
+    payload = load_codes(
+        cfg=cfg,
+        train_indices=train_indices,
+        test_indices=test_indices,
+        n_frames=int(cfg.env_config.clip_length),
+    )
+    train_codes = payload.train_codes
+    test_codes = payload.test_codes
+    num_codes = payload.num_codes
+    codes_path = payload.provenance.get("codes_path")  # None for GT/random
 
-    if codes_path is not None:
-        codes_path_p = Path(codes_path)
-        if not codes_path_p.is_absolute():
-            codes_path_p = get_repo_root() / codes_path_p
-        if not codes_path_p.exists():
-            raise FileNotFoundError(
-                f"kpms_config.codes_path={codes_path} does not resolve to an "
-                f"existing file (tried {codes_path_p}). Set codes_path=null to "
-                "run with random codes for smoke-testing."
-            )
-        codes_data = np.load(str(codes_path_p))
-        train_codes = codes_data["train_codes"]
-        test_codes = codes_data["test_codes"]
-        num_codes = int(np.max([train_codes.max(), test_codes.max()])) + 1
-        codes_path = str(codes_path_p)
-        logging.info(
-            f"Loaded KPMS codes from {codes_path}: train {train_codes.shape}, "
-            f"test {test_codes.shape}, num_codes={num_codes} (from data)"
-        )
-    else:
-        num_codes = int(cfg.network_config.num_codes)
-        logging.warning(
-            f"codes_path=null — generating random codes ({num_codes}) for smoke testing"
-        )
-        n_train = train_clips.qpos.shape[0]
-        n_test = test_clips.qpos.shape[0]
-        n_frames = cfg.env_config.clip_length
-        rng = np.random.RandomState(42)
-        train_codes = rng.randint(0, num_codes, size=(n_train, n_frames))
-        test_codes = rng.randint(0, num_codes, size=(n_test, n_frames))
+    # Patch the checkpoint-metadata dict (NOT the live cfg) so saved
+    # checkpoints record the codebook size that was actually used. We do
+    # NOT mutate cfg.network_config.num_codes because:
+    #   (a) checkpointing.load_from_run_state hashes cfg before this point
+    #       and save_run_state hashes it after — mutating cfg here would
+    #       create an asymmetric hash and silently drop run-state on
+    #       preemption resume for any source whose K != YAML default.
+    #   (b) The rollout-logging closure reads num_codes through an
+    #       explicit kwarg (see _policy_params_fn_wrapper below), not via
+    #       cfg, so cfg's value can stay equal to the YAML.
+    cfg_dict["network_config"]["num_codes"] = int(num_codes)
 
     # Code stack size: how many consecutive codes to give the decoder
     code_stack_size = int(cfg.network_config.get("code_stack_size", 1))
@@ -767,47 +764,32 @@ def main(cfg: DictConfig) -> None:
             "moseq_encoder_decoder" if use_continuous_encoder else "moseq_decoder"
         )
 
-    # Read KPMS model provenance (kappa, num_states).
-    # Try .npz metadata first (self-contained), then fall back to sweep_results.json.
-    kpms_kappa = None
-    kpms_num_states = None
-    kpms_model_type = None
-    kpms_mean_duration = None
-    if codes_path and Path(codes_path).exists():
-        try:
-            codes_meta = np.load(codes_path, allow_pickle=False)
-            if "kappa" in codes_meta:
-                kpms_kappa = float(codes_meta["kappa"])
-                kpms_num_states = int(codes_meta["num_states"])
-                kpms_model_type = str(codes_meta.get("model_type", "unknown"))
-                kpms_mean_duration = float(codes_meta.get("mean_duration", 0.0))
+    # KPMS provenance is now carried in payload.provenance (loader-supplied)
+    # for kpms_raw / kpms_merged. For gt_directional_turn the loader supplies
+    # GT-specific metadata (class names, counts). Fall back to sweep_results.json
+    # alongside a KPMS .npz only when the .npz itself didn't carry kappa.
+    kpms_kappa = payload.provenance.get("kpms_kappa")
+    kpms_num_states = payload.provenance.get("kpms_num_states")
+    kpms_model_type = payload.provenance.get("kpms_model_type")
+    kpms_mean_duration = payload.provenance.get("kpms_mean_duration")
+    if codes_path and kpms_kappa is None:
+        sweep_results_path = Path(codes_path).parent / "sweep_results.json"
+        if sweep_results_path.exists():
+            try:
+                with open(sweep_results_path) as f:
+                    sweep_results = json.load(f)
+                best = sweep_results.get("best_model", {})
+                kpms_kappa = best.get("kappa")
+                kpms_num_states = best.get("n_states")
+                kpms_model_type = best.get("model_type")
+                kpms_mean_duration = best.get("mean_duration")
                 logging.info(
-                    f"KPMS provenance (from .npz): kappa={kpms_kappa}, "
-                    f"n_states={kpms_num_states}, model={kpms_model_type}, "
-                    f"mean_duration={kpms_mean_duration:.1f}"
+                    f"KPMS provenance (from sweep_results.json): "
+                    f"kappa={kpms_kappa}, n_states={kpms_num_states}, "
+                    f"model={kpms_model_type}, mean_duration={kpms_mean_duration}"
                 )
-        except Exception as e:
-            logging.warning(f"Could not read .npz metadata: {e}")
-
-        # Fallback: sweep_results.json alongside the codes file
-        if kpms_kappa is None:
-            sweep_results_path = Path(codes_path).parent / "sweep_results.json"
-            if sweep_results_path.exists():
-                try:
-                    with open(sweep_results_path) as f:
-                        sweep_results = json.load(f)
-                    best = sweep_results.get("best_model", {})
-                    kpms_kappa = best.get("kappa")
-                    kpms_num_states = best.get("n_states")
-                    kpms_model_type = best.get("model_type")
-                    kpms_mean_duration = best.get("mean_duration")
-                    logging.info(
-                        f"KPMS provenance (from sweep_results.json): "
-                        f"kappa={kpms_kappa}, n_states={kpms_num_states}, "
-                        f"model={kpms_model_type}, mean_duration={kpms_mean_duration}"
-                    )
-                except Exception as e:
-                    logging.warning(f"Could not read KPMS sweep results: {e}")
+            except Exception as e:
+                logging.warning(f"Could not read KPMS sweep results: {e}")
 
     wandb.config.update(
         {
@@ -815,7 +797,13 @@ def main(cfg: DictConfig) -> None:
             "num_codes": num_codes,
             "code_embed_dim": int(cfg.network_config.code_embed_dim),
             "code_stack_size": code_stack_size,
-            "codes_path": str(codes_path) if codes_path else "random",
+            "code_source": payload.code_source,
+            "codes_path": str(codes_path) if codes_path else "n/a",
+            "is_merged": payload.provenance.get("is_merged"),
+            "gt_class_names": payload.provenance.get("gt_class_names"),
+            "gt_train_counts": payload.provenance.get("gt_train_counts"),
+            "gt_test_counts": payload.provenance.get("gt_test_counts"),
+            "labels_csv_path": payload.provenance.get("labels_csv_path"),
             "kpms_kappa": kpms_kappa,
             "kpms_num_states": kpms_num_states,
             "kpms_model_type": kpms_model_type,
@@ -956,6 +944,7 @@ def main(cfg: DictConfig) -> None:
             render_video=render_video,
             ppo_network=ppo_network,
             jit_decoder_only_inference_fn=jit_decoder_only_fn,
+            num_codes=int(num_codes),
         )
 
     # Wrap wandb_progress to add `/`-prefixed metric groups for WandB panels

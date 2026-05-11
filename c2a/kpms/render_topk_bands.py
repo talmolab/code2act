@@ -80,15 +80,57 @@ def _select_topk(
     rank: str,
     top_k: int,
 ) -> list[dict]:
-    """Pick top-K valid results by the requested ranking."""
+    """Pick top-K valid results by the requested ranking.
+
+    Rank modes:
+      * ``"mse"`` — sort ascending by ``reconstruction_mse`` (legacy
+        default; doesn't measure behavioral interpretability).
+      * ``"nmi"`` — sort descending by ``nmi_global`` (alignment with
+        manual behavior labels, if computed).
+      * ``"eml"`` — **Weinreb 2024** selection: filter to fits whose
+        ``median_duration`` falls in the 400 ms ±30% window (4.2–7.8
+        frames at 15 Hz), then rank by ``eml_score`` descending with
+        ``syllable_usage_ratio`` as tiebreaker. Mirrors what
+        :func:`c2a.kpms.sweep_impl._select_best_kpms` does for the
+        single ``best_model`` pick. Falls back to the K fits whose
+        ``median_duration`` is closest to target if the window is empty.
+    """
     valid = [r for r in all_results if "error" not in r]
     if rank == "mse":
         valid.sort(key=lambda r: r["reconstruction_mse"])
-    elif rank == "nmi":
+        return valid[:top_k]
+    if rank == "nmi":
         valid.sort(key=lambda r: -r.get("nmi_global", float("-inf")))
-    else:
-        raise ValueError(f"Unknown rank={rank!r}; choose 'mse' or 'nmi'.")
-    return valid[:top_k]
+        return valid[:top_k]
+    if rank == "eml":
+        # Weinreb 2024 defaults — 400 ms median target, 15 Hz mocap, ±30%.
+        target_frames = 400.0 * 15.0 / 1000.0  # = 6 frames
+        tolerance_frac = 0.3
+        lo, hi = target_frames * (1.0 - tolerance_frac), target_frames * (1.0 + tolerance_frac)
+
+        def _dur(r: dict) -> float:
+            if "median_duration" in r:
+                return float(r["median_duration"])
+            return float(r.get("mean_duration", 0.0))
+
+        in_window = [r for r in valid if lo <= _dur(r) <= hi]
+        if in_window:
+            candidates = list(in_window)
+        else:
+            # No fit in window — fall back to closest-to-target.
+            candidates = sorted(
+                valid, key=lambda r: abs(_dur(r) - target_frames),
+            )[: max(5, top_k)]
+        candidates.sort(
+            key=lambda r: (
+                -float(r.get("eml_score", float("-inf"))),
+                -float(r.get("syllable_usage_ratio", 0.0)),
+            ),
+        )
+        return candidates[:top_k]
+    raise ValueError(
+        f"Unknown rank={rank!r}; choose 'mse', 'nmi', or 'eml'."
+    )
 
 
 def render(

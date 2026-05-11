@@ -142,6 +142,31 @@ bash bash_scripts/run_pipeline_best_kpms.sh     # fixed-KPMS decoder sweep
 
 See [`bash_scripts/README.md`](bash_scripts/README.md) for sweep details.
 
+### Auto-merge KPMS syllables
+
+After the sweep, collapse near-duplicate syllables in each top-K fit
+using the AR-HMM Bhattacharyya criterion, and re-render the merged
+trajectory grids:
+
+```bash
+python -m c2a.kpms.merge_states --sweep-dir outputs/kpms_sweep
+```
+
+By default this ranks the top-K fits by the **Weinreb 2024**
+criterion (`--rank eml`): filter fits whose median state duration sits
+in the 400 ms ±30 % window, then sort by EML descending. Same criterion
+the sweep uses to pick `best_model`, so the M1..M5 reported here line
+up with what the paper recommends. Pass `--rank mse` for the legacy
+reconstruction-MSE ranking, or `--rank nmi` for label-aligned NMI.
+
+Outputs at `outputs/kpms_sweep/auto_merged/M{1..5}/`:
+`checkpoint_merged.h5`, `auto_merge_report.json`,
+`bhattacharyya_matrix.npy`, `trajectory_plots/planes_grid.{png,gif}`,
+plus `best_codes_merged.npz` for the M{k} matching `best_codes.npz`.
+Wire that file into `kpms_config.code_source: kpms_merged` to train on
+merged labels. Tune via `--threshold` (default 0.3) and `--linkage`
+(`complete` / `single`).
+
 ### Analysis experiments
 
 13 experiments evaluate different aspects of the trained decoder (inference,

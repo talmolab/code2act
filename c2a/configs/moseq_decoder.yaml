@@ -93,11 +93,42 @@ render_config:
   num_eval_rollout_videos: 3
 
 # =============================================================================
-# KPMS Configuration
+# Code Source Configuration
 # =============================================================================
+# Selects the per-frame discrete code that the decoder policy receives.
+# All sources produce arrays of shape [N_clips, clip_length] int32 in
+# [0, num_codes); MoSeqImitation, the network, and PPO are agnostic to
+# which source generated them. See c2a/code_sources.py for the loader.
+#
+# code_source ∈
+#   "kpms_raw"             — raw KPMS codes from a sweep (current default;
+#                             accepts the file even if it carries
+#                             is_merged=True, but warns).
+#   "kpms_merged"          — merged KPMS codes; REQUIRES the .npz to carry
+#                             is_merged=True provenance (written by
+#                             c2a.kpms.merge_states.reencode_codes_npz).
+#                             Refuses to silently treat raw codes as merged.
+#   "gt_directional_turn"  — 5-class ground-truth labels:
+#                             0=Immobile, 1=Rear, 2=Walk,
+#                             3=Turn_Left, 4=Turn_Right.
+#                             Direction is collapsed for non-Turn behaviors.
+#                             Raises on any UNLABELED frame in the balanced
+#                             split (data quality is enforced).
+# When code_source ∈ {kpms_raw, kpms_merged} and codes_path is null, random
+# codes are generated for smoke testing (legacy fallback).
+# When code_source = gt_*, codes_path is ignored — labels come from CSV.
+#
+# network_config.num_codes is OVERRIDDEN at load time to match the source's
+# actual codebook size, so the YAML value below is informational only.
 kpms_config:
-  # Path to pre-computed KPMS codes (.npz file from generate_codes.py)
-  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/best_codes.npz
+  code_source: kpms_merged
+  # Path to pre-computed KPMS codes (.npz file from generate_codes.py).
+  # Only used when code_source ∈ {kpms_raw, kpms_merged}.
+  codes_path: ${oc.env:C2A_ROOT,.}/outputs/kpms_sweep/auto_merged/M1/codes_merged.npz
+  # Ground-truth labels CSV. Only used when code_source = gt_*.
+  labels_csv_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  # CSV is annotated at 30 fps; H5 is at 15 fps -> divide by 2.
+  csv_to_h5_subsample: 2
 
 # =============================================================================
 # Network Architecture - MoSeq Decoder-Only
