@@ -73,11 +73,27 @@ DATA_DIR = SCRIPT_DIR / "data"
 OUTPUT_DIR = SCRIPT_DIR / "outputs" / "hidden_dynamics"
 
 # ── Default label aliases (legacy npz from run_hidden_dynamics) ─────────────
-LEGACY_BEHAVIORS = ["walk", "immobility", "rear"]
+# The list also serves as the preferred display order in legacy mode —
+# any label not in this list trails after the matched ones in
+# discovery order (see ``_discover_labels``).
+LEGACY_BEHAVIORS = [
+    # 3-class kinematic-heuristic scheme (run_hidden_dynamics.py)
+    "walk", "immobility", "rear",
+    # 5-class directional-turn scheme (run_labeled_hidden_dynamics.py
+    # after the 2026-05-11 directional-turn rewire)
+    "Immobile", "Rear", "Walk", "Turn_Left", "Turn_Right",
+]
 LEGACY_BEHAVIOR_LABELS = {
+    # 3-class
     "walk": "Walking",
     "immobility": "Immobility",
     "rear": "Rearing",
+    # 5-class
+    "Immobile": "Immobility",
+    "Rear": "Rearing",
+    "Walk": "Walking",
+    "Turn_Left": "Turn (Left)",
+    "Turn_Right": "Turn (Right)",
 }
 
 

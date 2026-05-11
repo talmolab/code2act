@@ -67,11 +67,24 @@ DATA_DIR = SCRIPT_DIR / "data"
 OUTPUT_DIR = SCRIPT_DIR / "outputs" / "hidden_dynamics"
 
 # ── Default label aliases (legacy npz) ──────────────────────────────────────
-LEGACY_BEHAVIORS = ["walk", "immobility", "rear"]
+LEGACY_BEHAVIORS = [
+    # 3-class kinematic-heuristic scheme (run_hidden_dynamics.py)
+    "walk", "immobility", "rear",
+    # 5-class directional-turn scheme (run_labeled_hidden_dynamics.py
+    # after the 2026-05-11 directional-turn rewire)
+    "Immobile", "Rear", "Walk", "Turn_Left", "Turn_Right",
+]
 LEGACY_BEHAVIOR_LABELS = {
+    # 3-class
     "walk": "Walking",
     "immobility": "Immobility",
     "rear": "Rearing",
+    # 5-class
+    "Immobile": "Immobility",
+    "Rear": "Rearing",
+    "Walk": "Walking",
+    "Turn_Left": "Turn (Left)",
+    "Turn_Right": "Turn (Right)",
 }
 
 
@@ -127,7 +140,11 @@ def _discover_labels(
     return labels, display, eff_level
 
 # Default rSLDS hyperparameters
-DEFAULT_K = 3                    # one discrete regime per target behavior
+# K=5 matches the directional-turn label scheme (Immobile / Rear / Walk
+# / Turn_Left / Turn_Right) produced by run_labeled_hidden_dynamics.py.
+# Drop to --K 3 if running against the legacy 3-class npz from
+# run_hidden_dynamics.py; bump if you want oversegmentation slack.
+DEFAULT_K = 5                    # one discrete regime per target behavior
 DEFAULT_D = 8                    # continuous latent dim
 DEFAULT_PCA_DIM = 32             # observed dim after PCA on hidden states
 DEFAULT_NUM_ITERS = 50           # Laplace EM iterations

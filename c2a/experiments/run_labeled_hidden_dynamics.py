@@ -6,10 +6,16 @@ https://github.com/KevinBian107/TopoMimic-annotation) instead of
 kinematic heuristics over KPMS codes.
 
 The schema is two-track: ``behavior`` ∈ {Immobile, Rear, Turn, Walk}
-crossed with ``direction`` ∈ {Left, Right, Straight}, giving up to 12
-``combined`` labels.  Only ~7 cells are populated in practice (Immobile
-is always Straight, Turn is never Straight, Walk is essentially always
-Straight) — see ``c2a.kpms.label_alignment`` for the joint distribution.
+crossed with ``direction`` ∈ {Left, Right, Straight}. This experiment
+projects the two tracks onto the **5-class directional-turn scheme**
+that mirrors ``c2a.code_sources.SOURCE_GT_DIRECTIONAL_TURN``: direction
+is collapsed for non-Turn behaviors so the rollouts cover
+
+    Immobile, Rear, Walk, Turn_Left, Turn_Right.
+
+(``Turn_Straight`` is absent in the current CSV; if a future CSV
+introduces it, the directional-turn mapping leaves it UNLABELED, the
+agreement-code finder ignores it, and no rollout is produced for it.)
 
 Design (vs ``run_hidden_dynamics.py``)
 --------------------------------------
@@ -22,11 +28,12 @@ labels*.
 This experiment uses the same sustained-code-with-K-bodies design but
 selects the code via **label agreement**:
 
-1.  For each populated combined label L, count the KPMS codes occurring
-    on the manually-labeled frames of L across the entire labeled
-    corpus.  The mode is the *agreement code* for L.  We print the
-    agreement fraction (= mode count / total labeled frames) for each
-    label so the user can see how cleanly KPMS clusters that behavior.
+1.  For each populated directional-turn label L, count the KPMS codes
+    occurring on the manually-labeled frames of L across the entire
+    labeled corpus.  The mode is the *agreement code* for L.  We print
+    the agreement fraction (= mode count / total labeled frames) for
+    each label so the user can see how cleanly KPMS clusters that
+    behavior.
 2.  Pick **K starting body positions** ONCE from the test split (same
     positions used across every label, so the only difference between
     rollouts of two labels is the held code).
@@ -51,8 +58,11 @@ Outputs
      codes_<label>:      (K, T)
      rewards_<label>:    (K, T)
 
-  Labels are the ``combined`` strings (e.g. ``Walk_Straight``).  Plot
-  scripts auto-detect this format (no level prefix; legacy mode).
+  Labels are the 5-class directional-turn strings: ``Immobile``,
+  ``Rear``, ``Walk``, ``Turn_Left``, ``Turn_Right``. Plot scripts
+  (``plot_hidden_dsa.py`` / ``plot_hidden_rslds.py``) detect this as
+  legacy (no level prefix, no ``__`` separator) and process each
+  ``hidden_<label>`` array as one behavior class.
 
 * ``outputs/<base_dir>/data/labeled_<label>.mp4`` — per-label
   ghost-overlay verification clip (K bodies running the same code).
@@ -100,8 +110,9 @@ from c2a.experiments.shared.ghost_rendering import (
 from c2a.experiments.shared.plotting import get_trajectory_colors
 
 from c2a.kpms.label_alignment import (
-    COMBINED_LABELS,
+    DIRECTIONAL_TURN_LABELS,
     UNLABELED,
+    directional_turn_array,
     load_label_frames,
 )
 from c2a.experiments.run_hidden_dynamics import run_rollout_with_hidden
@@ -130,8 +141,9 @@ def _abs(p) -> str:
 
 
 def _find_agreement_codes(
-    combined_labels: np.ndarray,
+    label_array: np.ndarray,
     label_clip_indices: np.ndarray,
+    label_names: tuple[str, ...],
     all_codes: np.ndarray,
     code_clip_indices: np.ndarray,
     intersect_clips: set[int],
@@ -141,7 +153,14 @@ def _find_agreement_codes(
     exclude_codes: tuple[int, ...] = (0,),
     min_within_label_frac: float = 0.05,
 ) -> dict[str, dict]:
-    """Build the (combined-label → KPMS code) lookup table.
+    """Build the (label → KPMS code) lookup table.
+
+    Generic over the label scheme — pass any per-frame integer label
+    array indexed by ``range(len(label_names))`` plus UNLABELED (-1).
+    Use :data:`c2a.kpms.label_alignment.COMBINED_LABELS` for the
+    12-class combined behavior×direction breakdown, or
+    :data:`DIRECTIONAL_TURN_LABELS` for the 5-class
+    {Immobile, Rear, Walk, Turn_Left, Turn_Right} breakdown.
 
     Three selection rules, configurable via ``selection_rule``:
 
@@ -161,8 +180,12 @@ def _find_agreement_codes(
       codes that happen to occur once in only one label).
 
     Args:
-        combined_labels: ``(N_clips, T)`` int32 from ``LabelArrays.combined``.
-        label_clip_indices: clip-id index for ``combined_labels`` rows.
+        label_array: ``(N_clips, T)`` int32 with values in
+            ``{-1, 0, …, len(label_names) - 1}`` (UNLABELED = -1).
+        label_clip_indices: clip-id index for ``label_array`` rows.
+        label_names: per-class string names. Index ``i`` of
+            ``label_names`` must correspond to the integer ``i`` used in
+            ``label_array``.
         all_codes: ``(N_clips_codes, T)`` KPMS code per mocap frame.
         code_clip_indices: clip-id index for ``all_codes`` rows.
         intersect_clips: set of clip ids to use (in both label & code views).
@@ -184,23 +207,24 @@ def _find_agreement_codes(
             f"('mode', 'mode_excluding', 'enrichment')"
         )
 
+    n_label_classes = len(label_names)
     clip_to_label_row = {int(c): i for i, c in enumerate(label_clip_indices)}
     clip_to_code_row = {int(c): i for i, c in enumerate(code_clip_indices)}
 
-    histograms = np.zeros((len(COMBINED_LABELS), num_codes), dtype=np.int64)
+    histograms = np.zeros((n_label_classes, num_codes), dtype=np.int64)
     for clip_id in intersect_clips:
         if clip_id not in clip_to_label_row or clip_id not in clip_to_code_row:
             continue
         lbl_row = clip_to_label_row[clip_id]
         code_row = clip_to_code_row[clip_id]
-        per_frame_combined = combined_labels[lbl_row]
+        per_frame_label = label_array[lbl_row]
         per_frame_code = all_codes[code_row]
-        for combined_int in range(len(COMBINED_LABELS)):
-            mask = per_frame_combined == combined_int
+        for label_int in range(n_label_classes):
+            mask = per_frame_label == label_int
             if not mask.any():
                 continue
             codes_here = per_frame_code[mask].astype(np.int64)
-            np.add.at(histograms[combined_int], codes_here, 1)
+            np.add.at(histograms[label_int], codes_here, 1)
 
     # Base rate: P(c) over all labeled frames. Used by 'enrichment' rule.
     base_counts = histograms.sum(axis=0).astype(np.float64)
@@ -209,8 +233,8 @@ def _find_agreement_codes(
     excl = set(int(c) for c in (exclude_codes or ()))
 
     out: dict[str, dict] = {}
-    for combined_int, label_str in enumerate(COMBINED_LABELS):
-        h = histograms[combined_int].astype(np.float64)
+    for label_int, label_str in enumerate(label_names):
+        h = histograms[label_int].astype(np.float64)
         n_frames = int(h.sum())
         if n_frames < min_label_frames:
             continue
@@ -254,7 +278,7 @@ def _find_agreement_codes(
             "code": code,
             "agreement": agreement,
             "n_frames": n_frames,
-            "histogram": histograms[combined_int].copy(),
+            "histogram": histograms[label_int].copy(),
             "rule_used": selection_rule,
             "top3": top3,
         }
@@ -405,18 +429,34 @@ def main(cfg: DictConfig) -> None:
     # ------------------------------------------------------------------
     # Codes + balanced split
     # ------------------------------------------------------------------
-    codes_data = np.load(_abs(cfg.data.codes_path))
-    all_codes = codes_data["all_codes"]                 # (N_clips, T)
-    test_codes = codes_data["test_codes"]               # (N_test, T)
-    train_idx = codes_data["train_indices"]
-    test_idx = codes_data["test_indices"]
-    code_clip_indices = np.concatenate([train_idx, test_idx])
-    num_codes = int(np.max(all_codes)) + 1
-
+    # IMPORTANT: build codes the same way the policy was trained,
+    # dispatched on ``ckpt_cfg.kpms_config.code_source``. For
+    # ``gt_directional_turn`` checkpoints (num_codes=5, labels-from-CSV)
+    # there is no on-disk codes .npz — codes are computed from the
+    # labels CSV at call time. For ``kpms_raw`` / ``kpms_merged`` this
+    # reads the .npz path baked into the checkpoint config. This must
+    # match training, otherwise the agreement-code histogram lives in
+    # the wrong vocabulary and the sustained-code rollouts replay codes
+    # the policy never saw.
     splits = load_balanced_splits(_abs(cfg.data.balanced_split_path))
-    test_indices = splits["balanced"]["test_indices"]
-
+    train_indices = np.asarray(splits["balanced"]["train_indices"], dtype=np.int64)
+    test_indices = np.asarray(splits["balanced"]["test_indices"], dtype=np.int64)
     clip_len = int(ckpt_cfg.env_config.clip_length)
+
+    from c2a.code_sources import load_codes
+    codes_payload = load_codes(ckpt_cfg, train_indices, test_indices, clip_len)
+    train_codes = codes_payload.train_codes
+    test_codes = codes_payload.test_codes
+    num_codes = int(codes_payload.num_codes)
+    log.info(
+        f"Codes: source={codes_payload.code_source}, num_codes={num_codes}, "
+        f"train={train_codes.shape}, test={test_codes.shape}"
+    )
+
+    # Train + test view used by the agreement-code histogram. Rows
+    # correspond positionally to ``code_clip_indices``.
+    all_codes = np.concatenate([train_codes, test_codes], axis=0)
+    code_clip_indices = np.concatenate([train_indices, test_indices])
 
     # ------------------------------------------------------------------
     # Labels
@@ -451,9 +491,16 @@ def main(cfg: DictConfig) -> None:
     exclude_codes = tuple(int(c) for c in cfg.get("exclude_codes", [0]))
     min_within_label_frac = float(cfg.get("min_within_label_frac", 0.05))
 
+    # 5-class directional-turn scheme: collapse direction for non-Turn
+    # behaviors so the experiment reports Immobile / Rear / Walk /
+    # Turn_Left / Turn_Right (mirrors c2a.code_sources.gt_directional_turn).
+    label_names = DIRECTIONAL_TURN_LABELS
+    label_array_5 = directional_turn_array(label_arrays)
+
     agreement = _find_agreement_codes(
-        combined_labels=label_arrays.combined,
+        label_array=label_array_5,
         label_clip_indices=label_arrays.clip_indices,
+        label_names=label_names,
         all_codes=all_codes,
         code_clip_indices=code_clip_indices,
         intersect_clips=intersect_for_agreement,
@@ -466,17 +513,17 @@ def main(cfg: DictConfig) -> None:
 
     # Tally what we skipped for the printed table.
     skipped: list[tuple[str, int]] = []
-    for combined_int, label_str in enumerate(COMBINED_LABELS):
+    for label_int, label_str in enumerate(label_names):
         if label_str in agreement:
             continue
-        mask_frames = (label_arrays.combined == combined_int).sum()
+        mask_frames = (label_array_5 == label_int).sum()
         skipped.append((label_str, int(mask_frames)))
     _print_agreement_table(agreement, skipped, selection_rule, exclude_codes)
 
     if not agreement:
         raise RuntimeError(
-            "No combined label has enough labeled frames to compute an "
-            f"agreement code (min_label_frames={min_label_frames}). "
+            "No directional-turn label has enough labeled frames to compute "
+            f"an agreement code (min_label_frames={min_label_frames}). "
             "Lower min_label_frames or check the labels CSV."
         )
 
@@ -543,7 +590,7 @@ def main(cfg: DictConfig) -> None:
     save_dict: dict[str, Any] = {}
     populated: list[tuple[str, int, int, float]] = []  # (label, code, K, agreement)
 
-    for label_int, label_str in enumerate(COMBINED_LABELS):
+    for label_int, label_str in enumerate(label_names):
         if label_str not in agreement:
             continue
         info = agreement[label_str]

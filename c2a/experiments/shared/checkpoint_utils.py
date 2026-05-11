@@ -63,6 +63,12 @@ def _build_ppo_networks(net_cfg: DictConfig) -> tuple[Any, bool, dict]:
         encoder_layer_sizes=tuple(net_cfg.get("encoder_layer_sizes", [256, 128])),
         continuous_latent_dim=int(net_cfg.get("continuous_latent_dim", 16)),
         z_e_dropout_rate=float(net_cfg.get("z_e_dropout_rate", 0.0)),
+        # MUST be threaded through — otherwise the encoder's first dense
+        # layer is built with shape (task_obs_size, H) instead of
+        # (task_obs_size + proprio_size, H), and orbax-restore fails
+        # with "Requested shape … not compatible with stored shape" for
+        # any checkpoint trained with encoder_uses_proprio=true.
+        encoder_uses_proprio=bool(net_cfg.get("encoder_uses_proprio", False)),
     )
 
     if use_rnn:

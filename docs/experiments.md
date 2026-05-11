@@ -96,47 +96,63 @@ code sequences to address this.
 Counterpart to `run_hidden_dynamics` that uses the manual behavior +
 direction labels in `data/rodent/rodent_labels.csv` (sourced from
 [KevinBian107/TopoMimic-annotation](https://github.com/KevinBian107/TopoMimic-annotation))
-instead of kinematic heuristics. For each labeled segment in each
-populated label cell:
+instead of kinematic heuristics. For each populated directional-turn
+label, the script picks the **agreement KPMS code** (mode of the code
+histogram across the label's frames) and sustains that code for
+`target_steps` control steps × `K_per_label` starting body positions,
+capturing hidden / qpos / proprio / codes per timestep.
 
-* Reset the env to that segment's source clip
-* **Replay the actual KPMS code sequence** that occurred during the
-  segment via `code_override` (rather than holding a single code
-  constant)
-* Capture hidden / qpos / proprio / codes per timestep
+Label scheme (5 classes, mirrors `c2a.code_sources.gt_directional_turn`):
 
-Three label granularities are saved into the same npz, keyed
-`hidden_<level>__<label>`, where `level ∈ {behavior, direction,
-combined}`:
+* `Immobile`   (any direction collapsed)
+* `Rear`       (any direction collapsed)
+* `Walk`       (any direction collapsed)
+* `Turn_Left`  (Turn × Left)
+* `Turn_Right` (Turn × Right)
 
-* `behavior`: 4 classes — Immobile / Rear / Turn / Walk
-* `direction`: 3 classes — Left / Right / Straight
-* `combined`: up to 12 (but only ~7 cells are populated in the data —
-  Immobile is always Straight, Turn is never Straight, Walk is
-  essentially always Straight)
+`Turn_Straight` is absent in the current CSV and stays UNLABELED.
 
 The downstream plotting scripts (`plot_hidden_dsa.py`,
-`plot_hidden_rslds.py`) auto-detect the labeled-experiment npz and
-accept `--level` and `--labels` flags to filter.
+`plot_hidden_rslds.py`, `plot_hidden_dynamics.py`) read the
+experiment's npz directly. They auto-detect "legacy mode" (single
+underscores, no level prefix) so the 5-class output works without any
+flags beyond `--npz` and `--output_suffix`. The `--level` flag still
+exists on `plot_hidden_dsa.py` and `plot_hidden_rslds.py` for the
+deprecated 12-class `hidden_<level>__<label>` schema; it is **not**
+needed for the current 5-class output and should be omitted.
 
 Outputs:
+
 * `outputs/labeled_hidden_dynamics/data/hidden_dynamics_labeled.npz` —
-  per-label hidden / qpos / proprio / codes / rewards arrays.
-* `outputs/labeled_hidden_dynamics/data/video_<level>/labeled_<level>_<label>.mp4`
-  — per-label ghost-rendered verification clip.
+  per-label hidden / qpos / proprio / codes / rewards arrays, keyed
+  `hidden_<L>` / `qpos_<L>` / ... for `L` in the 5-class set above.
+* `outputs/labeled_hidden_dynamics/data/labeled_<L>.mp4` — one
+  ghost-rendered verification clip per populated label.
 * Mirror of the npz at `c2a/figures/data/hidden_dynamics_labeled.npz`
-  for the plotting scripts.
+  so the plotting scripts find it without `--npz`.
 
 ```bash
 # Run the experiment (requires GPU).
 python -m c2a.experiments.run_labeled_hidden_dynamics
 
-# Then re-run InputDSA + rSLDS at any granularity:
-python -m c2a.figures.plot_hidden_dsa  --level behavior  --output_suffix beh
-python -m c2a.figures.plot_hidden_dsa  --level direction --output_suffix dir
-python -m c2a.figures.plot_hidden_dsa  --level combined  --output_suffix com
-python -m c2a.figures.plot_hidden_rslds --K 4 --level behavior  --output_suffix beh
-python -m c2a.figures.plot_hidden_rslds --K 7 --level combined  --output_suffix com
+# Run DSA / InputDSA + rSLDS on the labeled output. The --npz flag is
+# required because c2a/figures/data/ may also contain a legacy
+# hidden_dynamics.npz from run_hidden_dynamics; without --npz the
+# plotters would silently prefer that older file. --output_suffix
+# isolates the new outputs so they do not overwrite earlier 3-class
+# figures.
+python -m c2a.figures.plot_hidden_dsa \
+    --npz c2a/figures/data/hidden_dynamics_labeled.npz \
+    --output_suffix 5class
+
+python -m c2a.figures.plot_hidden_rslds \
+    --npz c2a/figures/data/hidden_dynamics_labeled.npz \
+    --output_suffix 5class --K 5
+
+# PCA-3D scatter / trajectory plots (same npz, same suffix conventions):
+python -m c2a.figures.plot_hidden_dynamics \
+    --npz c2a/figures/data/hidden_dynamics_labeled.npz \
+    --output_suffix 5class
 ```
 
 ## Figures
@@ -153,6 +169,37 @@ python -m c2a.figures.plot_hidden_trajectory
 python -m c2a.figures.render_single_code_categories
 # ...
 ```
+
+### Hidden-state visualization + analysis scripts
+
+These four read the npz produced by experiment 11
+(`run_hidden_dynamics`) or experiment 14 (`run_labeled_hidden_dynamics`).
+All accept `--npz` and `--output_suffix`; for the labeled-experiment
+output, pass `--npz c2a/figures/data/hidden_dynamics_labeled.npz`
+explicitly so the loader does not silently prefer a legacy
+`hidden_dynamics.npz` if both exist.
+
+* `plot_hidden_dynamics.py` — PCA-3D scatter + trajectory plots of the
+  hidden state per label. Outputs `hidden_scatter_pca3d{,_combined}*`
+  and `hidden_trajectories_pca3d{,_combined}*`. The cheapest
+  visualization; useful as a sanity check before the heavier DSA / rSLDS
+  fits.
+* `plot_hidden_trajectory.py` — single-trial trajectory walkthrough in
+  PCA-3D with code colour-coding. Outputs `hidden_trajectory_pca3d*`.
+* `plot_hidden_dsa.py` — DSA + per-trial-centered DSA + InputDSA
+  (qpos as control). Outputs `dsa_vanilla_heatmap*`,
+  `dsa_centered_heatmap*`, `dsa_inputdsa_heatmap*`,
+  `dsa_within_between*`, `dsa_rank_sweep*`. **Requires the optional
+  `[analysis]` deps** (see README "Analysis dependencies").
+* `plot_hidden_rslds.py` — recurrent SLDS fit with K discrete regimes
+  on the pooled hidden trajectories. Outputs `rslds_confusion*`,
+  `rslds_regime_traces*`, `rslds_summary*`. Default K=5 matches the
+  current directional-turn label scheme. Also needs the `[analysis]`
+  deps.
+
+The `--level` flag on `plot_hidden_dsa.py` and `plot_hidden_rslds.py`
+is for the deprecated 12-class `hidden_<level>__<label>` npz schema
+and should **not** be passed for the current 5-class output.
 
 ## Known issues
 

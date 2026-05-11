@@ -65,6 +65,48 @@ python -c "import jax; print(jax.devices())"
 python -c "import c2a, c2a.moseq_ppo, c2a.train_moseq_decoder"
 ```
 
+### Analysis dependencies (DSA / rSLDS — optional)
+
+The hidden-state analysis scripts under `c2a/figures/plot_hidden_*.py`
+need two extra GitHub-only packages: Mitchell Ostrow's **DSA** (NeurIPS
+2024) and Linderman lab's **ssm** (rSLDS). They are declared in
+`pyproject.toml` under the `[analysis]` extra, but the install needs
+sequencing — a plain `uv pip install -e ".[analysis]"` will fail on
+`ssm` because that package imports `numpy` + `cython` at build time
+without declaring them as build deps. Install in this order:
+
+```bash
+# DSA — uppercase package on GitHub. (PyPI's `dsa` is a different,
+# unrelated package; don't `uv pip install DSA` from PyPI.)
+uv pip install git+https://github.com/mitchellostrow/DSA.git
+
+# ssm build prerequisites + ssm itself with build-isolation disabled
+# so the build sees the venv's numpy and cython.
+uv pip install autograd cython
+uv pip install --no-build-isolation git+https://github.com/lindermanlab/ssm.git
+```
+
+**One-line patch for DSA on Python 3.12.** DSA uses
+`ClassVar[Final]` (un-parameterised `Final`), which Python 3.12's
+typing rejects with `TypeError: Plain typing.Final is not valid as
+type argument`. Until upstream fixes it, patch in place:
+
+```bash
+sed -i 's/compare: ClassVar\[Final\] = "state"/compare: ClassVar[str] = "state"/' \
+    .venv/lib/python3.12/site-packages/DSA/dsa.py
+```
+
+Verify everything:
+
+```bash
+python -c "from DSA import DSA, InputDSA; print('DSA OK')"
+python -c "from ssm import SLDS; print('ssm OK')"
+```
+
+You only need this for the `plot_hidden_dsa.py` / `plot_hidden_rslds.py`
+figure scripts (under `c2a/figures/`). The training pipeline, sweep,
+and merge scripts don't need these packages.
+
 ### Reference data
 
 The rodent reference clips (`rodent_reference_clips.h5`,

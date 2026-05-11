@@ -39,6 +39,26 @@ dev = [
     "pytest-cov",
     "black[jupyter]",
 ]
+# Extra deps for the hidden-dynamics analysis scripts under
+# c2a/figures/plot_hidden_*.py. NOT installed by default because both
+# pull from GitHub and ssm has a pre-install build quirk; see the
+# Analysis dependencies section in the README for the exact install
+# sequence (a plain `uv pip install -e ".[analysis]"` will fail on ssm
+# without --no-build-isolation, and DSA needs a one-line patch on
+# Python 3.12).
+analysis = [
+    # Mitchell Ostrow's DSA / InputDSA (NeurIPS 2024) — used by
+    # c2a.figures.plot_hidden_dsa. PyPI name "dsa" is a different
+    # unrelated package; we must install from GitHub.
+    "DSA @ git+https://github.com/mitchellostrow/DSA.git",
+    # Build helpers for ssm (which doesn't declare them itself).
+    "autograd",
+    "cython",
+    # Linderman lab's ssm / rSLDS — used by
+    # c2a.figures.plot_hidden_rslds. Not on PyPI; GitHub-only.
+    # Install with --no-build-isolation after cython+numpy are present.
+    "ssm @ git+https://github.com/lindermanlab/ssm.git",
+]
 
 [project.urls]
 Homepage = "https://kbian.org/Code2Act-website/"

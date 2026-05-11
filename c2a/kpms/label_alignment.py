@@ -70,6 +70,30 @@ BEHAVIOR_TO_INT: dict[str, int] = {b: i for i, b in enumerate(BEHAVIORS)}
 DIRECTION_TO_INT: dict[str, int] = {d: i for i, d in enumerate(DIRECTIONS)}
 COMBINED_TO_INT: dict[str, int] = {c: i for i, c in enumerate(COMBINED_LABELS)}
 
+# 5-class scheme used by ``c2a.code_sources.SOURCE_GT_DIRECTIONAL_TURN``
+# and by ``c2a.experiments.run_labeled_hidden_dynamics`` when configured
+# for a 5-class breakdown. Direction is collapsed for non-Turn behaviors:
+#
+#   Immobile (any direction) -> 0
+#   Rear     (any direction) -> 1
+#   Walk     (any direction) -> 2
+#   Turn + Left              -> 3
+#   Turn + Right             -> 4
+#   Turn + Straight          -> UNLABELED  (not present in the current CSV)
+#
+# Defined here (not in code_sources.py) so analysis scripts can import
+# it without pulling the GT-codes loader / training-only machinery.
+DIRECTIONAL_TURN_LABELS: tuple[str, ...] = (
+    "Immobile",
+    "Rear",
+    "Walk",
+    "Turn_Left",
+    "Turn_Right",
+)
+DIRECTIONAL_TURN_TO_INT: dict[str, int] = {
+    n: i for i, n in enumerate(DIRECTIONAL_TURN_LABELS)
+}
+
 UNLABELED: int = -1
 
 # Track names recognized in the CSV's ``Track`` column.
@@ -103,6 +127,49 @@ class LabelArrays(NamedTuple):
     combined: np.ndarray
     clip_indices: np.ndarray
     n_labeled_per_clip: np.ndarray
+
+
+def directional_turn_array(arrays: LabelArrays) -> np.ndarray:
+    """Project ``(behavior, direction)`` onto the 5-class directional-turn enum.
+
+    Class mapping (same as :data:`DIRECTIONAL_TURN_LABELS`):
+
+        Immobile (any direction) -> 0
+        Rear     (any direction) -> 1
+        Walk     (any direction) -> 2
+        Turn + Left              -> 3
+        Turn + Right             -> 4
+        Turn + Straight          -> UNLABELED  (absent in current CSV)
+        Either track UNLABELED   -> UNLABELED
+
+    Args:
+        arrays: ``LabelArrays`` from :func:`load_label_frames`.
+
+    Returns:
+        ``(N_clips, n_frames)`` int32 with values in
+        ``{-1, 0, 1, 2, 3, 4}``. Indices align with
+        :data:`DIRECTIONAL_TURN_LABELS`.
+    """
+    # 4 × 3 lookup with UNLABELED in the "unused" slot.
+    M = np.full((len(BEHAVIORS), len(DIRECTIONS)), UNLABELED, dtype=np.int32)
+    M[BEHAVIOR_TO_INT["Immobile"], :] = DIRECTIONAL_TURN_TO_INT["Immobile"]
+    M[BEHAVIOR_TO_INT["Rear"], :]     = DIRECTIONAL_TURN_TO_INT["Rear"]
+    M[BEHAVIOR_TO_INT["Walk"], :]     = DIRECTIONAL_TURN_TO_INT["Walk"]
+    M[BEHAVIOR_TO_INT["Turn"], DIRECTION_TO_INT["Left"]] = (
+        DIRECTIONAL_TURN_TO_INT["Turn_Left"]
+    )
+    M[BEHAVIOR_TO_INT["Turn"], DIRECTION_TO_INT["Right"]] = (
+        DIRECTIONAL_TURN_TO_INT["Turn_Right"]
+    )
+    # M[Turn, Straight] left UNLABELED — empty cell.
+
+    behavior = arrays.behavior
+    direction = arrays.direction
+    out = np.full(behavior.shape, UNLABELED, dtype=np.int32)
+    both = (behavior != UNLABELED) & (direction != UNLABELED)
+    # Safe lookup: index only the labeled slots.
+    out[both] = M[behavior[both], direction[both]]
+    return out
 
 
 def _parse_clip_id(video_field: str, row_idx: int) -> int:
