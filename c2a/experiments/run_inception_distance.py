@@ -60,6 +60,7 @@ from c2a.experiments.shared.plotting import set_nature_style, NATURE_COLORS
 
 # Import code generation functions
 from experiments.run_code_generation import (
+    _assert_decoder_compatible_with_arhmm,
     generate_arhmm_level1_sequences,
     generate_arhmm_level2_sequences,
     generate_empirical_tm_sequences,
@@ -930,9 +931,14 @@ def main(cfg: DictConfig) -> None:
 
     gen_cfg = _make_generation_cfg(cfg, clip_length, n_rollouts)
 
-    # Load ARHMM params if needed
+    # Load ARHMM params if needed.
+    # Hard gate: the AR-HMM samples KPMS syllable ids; the decoder's
+    # code embedding table must index the same KPMS state space, so
+    # we require code_source=kpms_merged (with a softer warning for
+    # kpms_raw). gt_directional_turn / random decoders are rejected.
     arhmm_params = None
     if any(m.startswith("arhmm") for m in methods):
+        _assert_decoder_compatible_with_arhmm(ckpt_cfg, methods)
         arhmm_params = load_arhmm_params(gen_cfg)
 
     # Load mimic checkpoint if needed

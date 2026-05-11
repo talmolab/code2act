@@ -33,6 +33,12 @@ from track_mjx.config import utils
 from vnl_playground.tasks.rodent.imitation import ReferenceClips
 from c2a.moseq_env_wrapper import MoSeqImitation
 
+from c2a.code_sources import (
+    SOURCE_GT_DIRECTIONAL_TURN,
+    SOURCE_KPMS_MERGED,
+    SOURCE_KPMS_RAW,
+    SOURCE_RANDOM,
+)
 from c2a.experiments.shared.checkpoint_utils import (
     load_moseq_checkpoint,
     load_mimic_checkpoint,
@@ -238,6 +244,83 @@ def load_arhmm_params(cfg: DictConfig) -> dict[str, np.ndarray]:
         }
     log.info(f"  Loaded ARHMM params: pi={result['pi'].shape}, Ab={result['Ab'].shape}")
     return result
+
+
+def _assert_decoder_compatible_with_arhmm(
+    ckpt_cfg: DictConfig, methods: list[str],
+) -> None:
+    """Refuse to run AR-HMM sampling against a non-KPMS decoder.
+
+    The ARHMM (loaded from a keypoint-moseq snapshot in
+    ``cfg.generation.arhmm.model_path``) is a generative model over the
+    K-class KPMS state space — its transition matrix ``pi``, AR
+    weights ``Ab``, and noise ``Q`` are indexed by syllable id in that
+    KPMS state space. Feeding those samples into a decoder whose code
+    embedding table was trained on a DIFFERENT label set (e.g.
+    ``gt_directional_turn``, where ints 0..4 mean
+    Immobile/Rear/Walk/Turn_Left/Turn_Right rather than KPMS syllables)
+    just routes ARHMM-sampled integers through unrelated embeddings —
+    the rollouts are garbage, the FID/KID numbers are meaningless.
+
+    The merged variant (``kpms_merged``) is the only label set whose
+    integer ids line up with the AR-HMM's state space AND have a
+    principled K (after Bhattacharyya collapse). The unmerged raw
+    KPMS source (``kpms_raw``) lives in the same KPMS state space too,
+    but the merged variant is the one the unconditioned-generation
+    figures expect; gate raw with a clear warning rather than a hard
+    refuse so a user can knowingly run on raw if needed.
+
+    Args:
+        ckpt_cfg: The decoder checkpoint's resolved Hydra config.
+        methods: The list of generation methods this run will execute
+            (from ``cfg.generation.methods``). The check only fires
+            when an AR-HMM method is actually requested — other
+            methods (uniform_random, transition_matrix, hmm_dynamax,
+            …) don't rely on KPMS state semantics.
+
+    Raises:
+        RuntimeError: ``code_source`` is ``gt_directional_turn`` /
+            ``random`` (or any other source whose ints don't index the
+            AR-HMM's state space).
+    """
+    arhmm_methods = {m for m in methods if m.startswith("arhmm")}
+    if not arhmm_methods:
+        return
+
+    code_source = str(ckpt_cfg.kpms_config.get("code_source", ""))
+    if code_source == SOURCE_KPMS_MERGED:
+        log.info(
+            "  ARHMM compatibility check: decoder trained on "
+            "kpms_merged (OK)."
+        )
+        return
+    if code_source == SOURCE_KPMS_RAW:
+        log.warning(
+            "  ARHMM compatibility check: decoder trained on kpms_raw, "
+            "NOT kpms_merged. The AR-HMM lives in the raw KPMS state "
+            "space, so integer ids do align — but the unconditioned-"
+            "generation figures (FID/KID, behavior-parade panels) are "
+            "built around the merged variant. Numbers will not be "
+            "directly comparable to those reported in the paper. "
+            "Re-train the decoder with code_source=kpms_merged for the "
+            "intended comparison."
+        )
+        return
+
+    raise RuntimeError(
+        f"AR-HMM unconditioned generation requires a decoder trained on "
+        f"KPMS codes (code_source={SOURCE_KPMS_MERGED!r}, or "
+        f"{SOURCE_KPMS_RAW!r} with a warning). The loaded checkpoint "
+        f"reports code_source={code_source!r} — the AR-HMM at "
+        f"cfg.generation.arhmm.model_path was fit on the KPMS state "
+        f"space, so its sampled integer ids do not correspond to this "
+        f"decoder's code embedding table (e.g. gt_directional_turn ids "
+        f"index the 5-class behavior enum, not KPMS syllables). "
+        f"Requested AR-HMM methods: {sorted(arhmm_methods)}. "
+        f"Either drop the arhmm_* methods from "
+        f"cfg.generation.methods, or point cfg.checkpoint.path at a "
+        f"decoder trained with kpms_config.code_source={SOURCE_KPMS_MERGED!r}."
+    )
 
 
 def generate_arhmm_level1_sequences(
@@ -506,6 +589,11 @@ def main(cfg: DictConfig) -> None:
 
     arhmm_params = None
     if "arhmm_level1" in methods or "arhmm_level2" in methods:
+        # Hard gate: the AR-HMM was fit on KPMS syllable ids; if the
+        # decoder's embedding table was trained on a different label
+        # set (e.g. gt_directional_turn) the sampled ids index unrelated
+        # embeddings and the experiment produces meaningless output.
+        _assert_decoder_compatible_with_arhmm(ckpt_cfg, methods)
         arhmm_params = load_arhmm_params(cfg)
 
     if "arhmm_level1" in methods and arhmm_params is not None:

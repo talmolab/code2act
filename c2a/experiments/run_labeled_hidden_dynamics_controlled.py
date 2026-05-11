@@ -582,25 +582,28 @@ def main(cfg: DictConfig) -> None:
             for k, clip_id in enumerate(pose_clips):
                 # reset_clip_idx is the POSITION within keep_clips_idx,
                 # i.e. k itself (each body uses its k-th clip).
+                # NOTE on "survival": run_rollout_with_hidden (the
+                # run_hidden_dynamics flavour) NEVER breaks on
+                # state.done — the loop always runs the full max_steps
+                # and merely records the step at which `done` first
+                # fires. The env's imitation-clip truncation (cur_frame
+                # > clip_length - reference_length - 1) flips `done`
+                # around ctrl step ~448 with start_frame≈20, but
+                # physics keeps integrating, MJX state keeps evolving,
+                # and qpos/hidden/proprio remain valid through T_total.
+                # In decoder-only mode (z_e_scale=0) the stale
+                # imitation target is irrelevant because the encoder's
+                # contribution is zeroed at the GRU input. The
+                # `survival` number reported below is therefore just
+                # informational ("when did the imitation clock expire")
+                # and not a loss-of-data signal.
                 key = jax.random.PRNGKey(seed + 1000 * len(rollouts) + k)
-                # ignore_done=True: the env truncates the rollout when
-                # the imitation clip ends (cur_frame > clip_length -
-                # reference_length - 1, i.e. ~244 mocap frames ≈ 448
-                # ctrl steps with mocap_hz=50, ctrl_dt=0.01). In
-                # decoder-only AR mode the reference clip is irrelevant
-                # (z_e_scale=0 zeroes the encoder's contribution), so
-                # truncation purely caps survival without preserving
-                # any meaningful signal. Spatial criteria are already
-                # inflated to 1e6 in _build_pose_env; nan_termination
-                # would still fire if physics diverges, which is also
-                # what ignore_done suppresses.
                 result = run_rollout_with_hidden(
                     env, inf_fn, params, ppo_networks, key,
                     max_steps=T_total,
                     code_override=codes_arr,
                     reset_clip_idx=int(k),
                     jit_reset=jit_reset, jit_step=jit_step,
-                    ignore_done=True,
                 )
 
                 def _rect(a: np.ndarray) -> np.ndarray:
@@ -620,8 +623,9 @@ def main(cfg: DictConfig) -> None:
                 codes_actual_all.append(_rect(result["code_indices"]))
                 rewards_all.append(_rect(result["rewards"]))
                 log.info(
-                    f"  body {k} (clip {int(clip_id)}): survival="
-                    f"{result['survival']}/{T_total}, "
+                    f"  body {k} (clip {int(clip_id)}): "
+                    f"first_done_step={result['survival']}/{T_total} "
+                    f"(rollout completes T_total regardless), "
                     f"mean_reward={np.mean(result['rewards']):.3f}"
                 )
 
