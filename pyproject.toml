@@ -47,6 +47,13 @@ dev = [
 # without --no-build-isolation, and DSA needs a one-line patch on
 # Python 3.12).
 analysis = [
+    # DSA pulls torch with no upper pin. PyTorch 2.10+ depends on the
+    # CUDA-13 NVIDIA wheels (nvidia-cudnn-cu13, nvidia-cublas (no
+    # suffix), cuda-toolkit==13.0.2, …), which collide with the
+    # CUDA-12 cuDNN that jax-cuda12-plugin loads and break JAX-CUDA
+    # init with CUDNN_STATUS_NOT_INITIALIZED. Hold torch on the last
+    # CUDA-12 release line.
+    "torch<2.10",
     # Mitchell Ostrow's DSA / InputDSA (NeurIPS 2024) — used by
     # c2a.figures.plot_hidden_dsa. PyPI name "dsa" is a different
     # unrelated package; we must install from GitHub.

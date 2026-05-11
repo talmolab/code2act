@@ -20,6 +20,7 @@ venv active.
 | 12 | `run_hidden_trajectory` | `hidden_trajectory_exp.yaml` | Natural hidden trajectories colored by code |
 | 13 | `run_generalization_kid` | `generalization_kid_exp.yaml` | Generalization KID — MIMIC vs C2A distribution quality on unseen data |
 | 14 | `run_labeled_hidden_dynamics` | `labeled_hidden_dynamics_exp.yaml` | RNN hidden state dynamics anchored on **manual** behavior + direction labels from `data/rodent/rodent_labels.csv` (TopoMimic-annotation). Replays actual KPMS code sequences from labeled segments — no kinematic heuristic, no sustained-constant-code regime. Three label granularities saved: behavior (4) / direction (3) / combined (up to 12). |
+| 15 | `run_labeled_hidden_dynamics_controlled` | `labeled_hidden_dynamics_controlled_exp.yaml` | Controlled 2-pose × 3-sequence diagnostic. Holds each of the 5 directional-turn codes for a fixed duration in a fixed order, from two controlled starting poses (walking / rearing), in **decoder-only mode** (`z_e_scale=0` bypasses the continuous encoder). Produces 6 side-by-side videos with rotating-PCA panel + phase banner. |
 
 ## Prerequisites
 
@@ -153,6 +154,52 @@ python -m c2a.figures.plot_hidden_rslds \
 python -m c2a.figures.plot_hidden_dynamics \
     --npz c2a/figures/data/hidden_dynamics_labeled.npz \
     --output_suffix 5class
+```
+
+### 15. `run_labeled_hidden_dynamics_controlled`
+Controlled diagnostic. For each pair of (starting pose, code sequence),
+hold each code for a fixed duration (default 5 s × 5 codes = 25 s per
+rollout) with K=10 bodies starting from the same pose-type, in
+**decoder-only mode** (`z_e_scale = 0.0`) so the continuous encoder is
+bypassed and the GRU receives only `[code_embedding, 0, proprio]`. The
+proprio loop drives the autoregressive dynamics; the only varying input
+is the per-frame code.
+
+Matrix: 2 starting poses (walking / rearing) × 3 code sequences = 6
+rollouts:
+
+- `walk → Turn_Right → Turn_Left → Walk → Rear`
+- `Rear → Walk → Turn_Right → Turn_Left → Walk`
+- `Immobile → Walk → Turn_Right → Turn_Left → Walk`
+
+Starting pose is selected via the labels CSV — K=10 test clips whose
+directional-turn label at the configured probe frame (default frame 20)
+matches the requested pose (Walk for walking-pose, Rear for
+rearing-pose). The env is built with `start_frame_range = [probe_frame,
+probe_frame]` so the rodent resets at exactly the labeled frame.
+
+Outputs:
+* `outputs/labeled_hidden_dynamics_controlled/data/hidden_<pose>_<seq>.npz`
+  — per (pose, sequence): `hidden`, `qpos`, `proprio`, `codes`,
+  `rewards` arrays of shape `(K, T, ...)` plus the K reset clip indices.
+* `outputs/labeled_hidden_dynamics_controlled/data/pca_basis.npz` —
+  joint PCA components + variance + axes limits (shared across all 6
+  videos so panels are visually comparable).
+* `outputs/labeled_hidden_dynamics_controlled/videos/<pose>_<seq>.mp4`
+  — side-by-side rotating-PCA + ghost-render composite with a
+  full-width phase banner at the top.
+
+```bash
+python -m c2a.experiments.run_labeled_hidden_dynamics_controlled
+
+# Quick smoke test (1 s holds, K=2 bodies, no video):
+python -m c2a.experiments.run_labeled_hidden_dynamics_controlled \
+    hold_seconds_per_code=1 K_per_rollout=2 render_video=false
+
+# Encoder-on ablation for comparison (z_e contribution restored):
+python -m c2a.experiments.run_labeled_hidden_dynamics_controlled \
+    z_e_scale=1.0 \
+    output.base_dir=./outputs/labeled_hidden_dynamics_controlled_z1
 ```
 
 ## Figures

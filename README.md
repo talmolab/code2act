@@ -76,6 +76,15 @@ sequencing — a plain `uv pip install -e ".[analysis]"` will fail on
 without declaring them as build deps. Install in this order:
 
 ```bash
+# DSA pulls `torch` as a transitive dep with no upper pin. PyTorch
+# 2.10+ shifted its Linux wheels to depend on the CUDA-13 NVIDIA
+# wheels (`nvidia-cudnn-cu13`, `nvidia-cublas` (unsuffixed),
+# `cuda-toolkit==13.0.2`, …). Those clobber the CUDA-12 cuDNN that
+# `jax-cuda12-plugin` requires, breaking `import jax` with
+# `CUDNN_STATUS_NOT_INITIALIZED`. Pin torch to the last CUDA-12 line
+# (≤2.9.x) BEFORE DSA so uv's resolver doesn't pick 2.11.
+uv pip install "torch<2.10"
+
 # DSA — uppercase package on GitHub. (PyPI's `dsa` is a different,
 # unrelated package; don't `uv pip install DSA` from PyPI.)
 uv pip install git+https://github.com/mitchellostrow/DSA.git
@@ -84,6 +93,23 @@ uv pip install git+https://github.com/mitchellostrow/DSA.git
 # so the build sees the venv's numpy and cython.
 uv pip install autograd cython
 uv pip install --no-build-isolation git+https://github.com/lindermanlab/ssm.git
+```
+
+If you already hit the cu13 collision (symptom: `RuntimeError: cuDNN
+not found` from `jax_plugins.xla_cuda12`, or `CUDNN_STATUS_NOT_INITIALIZED`
+with both `nvidia-cudnn-cu12-*` and `nvidia-cudnn-cu13-*` present in
+`uv pip list`), recover with:
+
+```bash
+uv pip install --reinstall "torch<2.10"
+uv pip uninstall \
+    nvidia-cudnn-cu13 nvidia-nccl-cu13 nvidia-cusparselt-cu13 \
+    nvidia-nvshmem-cu13 nvidia-cublas nvidia-cuda-runtime \
+    nvidia-cuda-nvrtc nvidia-cuda-cupti nvidia-cufft nvidia-nvjitlink \
+    cuda-toolkit cuda-bindings triton
+# Then re-extract cuDNN in case NFS silly-renamed its .so files during
+# the torch swap (you'll see `.nfsXXXX` ghosts under nvidia/cudnn/lib/):
+uv pip install --reinstall nvidia-cudnn-cu12==9.10.2.21
 ```
 
 **One-line patch for DSA on Python 3.12.** DSA uses

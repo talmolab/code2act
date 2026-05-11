@@ -134,13 +134,23 @@ def directional_turn_array(arrays: LabelArrays) -> np.ndarray:
 
     Class mapping (same as :data:`DIRECTIONAL_TURN_LABELS`):
 
-        Immobile (any direction) -> 0
-        Rear     (any direction) -> 1
-        Walk     (any direction) -> 2
-        Turn + Left              -> 3
-        Turn + Right             -> 4
-        Turn + Straight          -> UNLABELED  (absent in current CSV)
-        Either track UNLABELED   -> UNLABELED
+        Immobile (any direction)  -> 0
+        Rear     (any direction)  -> 1
+        Walk     (any direction)  -> 2
+        Turn + Left               -> 3
+        Turn + Right              -> 4
+        Turn + Straight           -> UNLABELED  (absent in current CSV)
+        Turn + UNLABELED          -> UNLABELED  (cannot disambiguate L/R)
+        UNLABELED behavior        -> UNLABELED
+
+    Only the ``Turn`` class actually depends on the ``direction`` track —
+    ``Walk`` / ``Rear`` / ``Immobile`` are direction-independent and pass
+    through whenever ``behavior`` is labeled, even if ``direction`` is
+    UNLABELED at that frame. (Direction annotations in the CSV are
+    sparser than behavior annotations, especially at early-clip frames;
+    suppressing direction-independent classes whenever direction is
+    missing would needlessly collapse most early-clip Walk/Rear/Immobile
+    frames to UNLABELED.)
 
     Args:
         arrays: ``LabelArrays`` from :func:`load_label_frames`.
@@ -150,25 +160,24 @@ def directional_turn_array(arrays: LabelArrays) -> np.ndarray:
         ``{-1, 0, 1, 2, 3, 4}``. Indices align with
         :data:`DIRECTIONAL_TURN_LABELS`.
     """
-    # 4 × 3 lookup with UNLABELED in the "unused" slot.
-    M = np.full((len(BEHAVIORS), len(DIRECTIONS)), UNLABELED, dtype=np.int32)
-    M[BEHAVIOR_TO_INT["Immobile"], :] = DIRECTIONAL_TURN_TO_INT["Immobile"]
-    M[BEHAVIOR_TO_INT["Rear"], :]     = DIRECTIONAL_TURN_TO_INT["Rear"]
-    M[BEHAVIOR_TO_INT["Walk"], :]     = DIRECTIONAL_TURN_TO_INT["Walk"]
-    M[BEHAVIOR_TO_INT["Turn"], DIRECTION_TO_INT["Left"]] = (
-        DIRECTIONAL_TURN_TO_INT["Turn_Left"]
-    )
-    M[BEHAVIOR_TO_INT["Turn"], DIRECTION_TO_INT["Right"]] = (
-        DIRECTIONAL_TURN_TO_INT["Turn_Right"]
-    )
-    # M[Turn, Straight] left UNLABELED — empty cell.
-
     behavior = arrays.behavior
     direction = arrays.direction
     out = np.full(behavior.shape, UNLABELED, dtype=np.int32)
-    both = (behavior != UNLABELED) & (direction != UNLABELED)
-    # Safe lookup: index only the labeled slots.
-    out[both] = M[behavior[both], direction[both]]
+
+    # Direction-independent classes — only need behavior to be labeled.
+    for name in ("Immobile", "Rear", "Walk"):
+        mask = behavior == BEHAVIOR_TO_INT[name]
+        out[mask] = DIRECTIONAL_TURN_TO_INT[name]
+
+    # Turn — needs direction to disambiguate Left vs Right.
+    # Turn + Straight, and Turn + UNLABELED, both stay UNLABELED.
+    turn = behavior == BEHAVIOR_TO_INT["Turn"]
+    out[turn & (direction == DIRECTION_TO_INT["Left"])] = (
+        DIRECTIONAL_TURN_TO_INT["Turn_Left"]
+    )
+    out[turn & (direction == DIRECTION_TO_INT["Right"])] = (
+        DIRECTIONAL_TURN_TO_INT["Turn_Right"]
+    )
     return out
 
 
