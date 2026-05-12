@@ -15,6 +15,18 @@ network, or the PPO loop:
         - ``"shimoseq"``            — shMoSeq high-level state codes from a
                                        sweep (written by
                                        ``c2a.codegen.shimoseq.generate_codes``).
+        - ``"kinematics_vae"``      — discrete codes from K-Means on a
+                                       trained vanilla kinematics-VAE's
+                                       continuous latent (written by
+                                       ``c2a.codegen.kinematics_vae.vae.tokenize``).
+        - ``"vqvae"``               — discrete codes from a trained
+                                       vanilla VQ-VAE (written by
+                                       ``c2a.codegen.kinematics_vae.vqvae.tokenize``).
+        - ``"ps_vqvae"``            — discrete codes from a trained
+                                       product-space VQ-VAE; per-branch
+                                       codes are factored into a single
+                                       product index (written by
+                                       ``c2a.codegen.kinematics_vae.ps_vqvae.tokenize``).
         - ``"gt_directional_turn"`` — 5-class ground-truth labels:
                                        Immobile, Rear, Walk, Turn_Left, Turn_Right.
 
@@ -50,6 +62,9 @@ log = logging.getLogger(__name__)
 SOURCE_KPMS_RAW = "kpms_raw"
 SOURCE_KPMS_MERGED = "kpms_merged"
 SOURCE_SHIMOSEQ = "shimoseq"
+SOURCE_KINEMATICS_VAE = "kinematics_vae"
+SOURCE_VQVAE = "vqvae"
+SOURCE_PS_VQVAE = "ps_vqvae"
 SOURCE_GT_DIRECTIONAL_TURN = "gt_directional_turn"
 SOURCE_RANDOM = "random"  # implicit when codes_path=null
 
@@ -61,12 +76,18 @@ _NPZ_SCHEMA_SOURCES = frozenset({
     SOURCE_KPMS_RAW,
     SOURCE_KPMS_MERGED,
     SOURCE_SHIMOSEQ,
+    SOURCE_KINEMATICS_VAE,
+    SOURCE_VQVAE,
+    SOURCE_PS_VQVAE,
 })
 
 VALID_SOURCES = {
     SOURCE_KPMS_RAW,
     SOURCE_KPMS_MERGED,
     SOURCE_SHIMOSEQ,
+    SOURCE_KINEMATICS_VAE,
+    SOURCE_VQVAE,
+    SOURCE_PS_VQVAE,
     SOURCE_GT_DIRECTIONAL_TURN,
 }
 
@@ -170,6 +191,24 @@ def load_codes(
         return _load_kpms_npz(
             codes_path, train_indices, test_indices, n_frames,
             require_merged=False, requested_source=SOURCE_SHIMOSEQ,
+        )
+
+    if code_source == SOURCE_KINEMATICS_VAE:
+        return _load_kpms_npz(
+            codes_path, train_indices, test_indices, n_frames,
+            require_merged=False, requested_source=SOURCE_KINEMATICS_VAE,
+        )
+
+    if code_source == SOURCE_VQVAE:
+        return _load_kpms_npz(
+            codes_path, train_indices, test_indices, n_frames,
+            require_merged=False, requested_source=SOURCE_VQVAE,
+        )
+
+    if code_source == SOURCE_PS_VQVAE:
+        return _load_kpms_npz(
+            codes_path, train_indices, test_indices, n_frames,
+            require_merged=False, requested_source=SOURCE_PS_VQVAE,
         )
 
     if code_source == SOURCE_GT_DIRECTIONAL_TURN:
