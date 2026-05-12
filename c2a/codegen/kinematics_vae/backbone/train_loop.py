@@ -569,7 +569,6 @@ def train(
     np_rng = np.random.default_rng(int(seed))
     n_windows = inputs.shape[0]
 
-    best_eval = float("inf")
     last_log = time.time()
     for step in range(num_steps):
         # Mini-batch — uniform sample with replacement; mirrors Scott's
@@ -612,22 +611,22 @@ def train(
                     step=step,
                 )
 
-        if step > 0 and (step % eval_every == 0 or step == num_steps - 1):
-            # Cheap "eval": full-pass deterministic forward, no shuffle.
-            eval_score = float(loss)
-            if eval_score < best_eval:
-                best_eval = eval_score
-                _save_checkpoint(
-                    ckpt_dir, step,
-                    enc_params=all_params["encoder"],
-                    bn_params=all_params["bottleneck"],
-                    dec_params=all_params["decoder"],
-                    pred_params=all_params["predictor"],
-                    modules=modules,
-                    metrics={**metrics_py, "eval_score": eval_score},
-                )
-
-        if step > 0 and step % ckpt_every == 0:
+        # Periodic checkpoint — every ckpt_every step (and on the
+        # last step). The previous "best_eval" gate used the current
+        # train-batch loss, which monotonically decreases, so every
+        # eval-step looked like an improvement — effectively a no-op
+        # filter that lied about which checkpoint was best. Honest
+        # periodic snapshots are clearer; users can pick a step from
+        # the final WandB curve.
+        is_ckpt = (
+            step > 0
+            and (step % ckpt_every == 0 or step == num_steps - 1)
+        )
+        if is_ckpt:
+            # Re-compute metrics_py at the ckpt step so meta.json never
+            # records stale values from the previous log_every step.
+            metrics_at_ckpt = {k: float(v) for k, v in metrics.items()}
+            metrics_at_ckpt["loss"] = float(loss)
             _save_checkpoint(
                 ckpt_dir, step,
                 enc_params=all_params["encoder"],
@@ -635,7 +634,7 @@ def train(
                 dec_params=all_params["decoder"],
                 pred_params=all_params["predictor"],
                 modules=modules,
-                metrics={**metrics_py, "eval_score": float(loss)},
+                metrics=metrics_at_ckpt,
             )
 
     # Final checkpoint

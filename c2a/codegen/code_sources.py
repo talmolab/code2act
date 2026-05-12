@@ -169,11 +169,36 @@ def load_codes(
     n_train = int(train_indices.shape[0])
     n_test = int(test_indices.shape[0])
 
-    if codes_path is None and code_source in _NPZ_SCHEMA_SOURCES:
-        # Smoke-test path. Random codes were the historical fallback when
-        # codes_path=null. We honour it for any npz-schema source (kpms*,
-        # shimoseq); GT sources always require their CSV to exist.
+    # Smoke-test fallback: ``codes_path=null`` → random codes sized by
+    # ``cfg.network_config.num_codes``. We only honour this for the
+    # KPMS-family sources (``kpms_raw`` / ``kpms_merged`` / ``shimoseq``)
+    # where the random codebook size is consistent with how the user
+    # set ``num_codes`` in their decoder yaml. For the new
+    # kinematics_vae-family sources (``kinematics_vae`` / ``vqvae`` /
+    # ``ps_vqvae``) the codebook size is determined by the *tokenizer's*
+    # training config (latent-VAE K-means cluster count, VQ codebook K,
+    # PS-VQ per-group K product), NOT the decoder yaml's ``num_codes`` —
+    # silently falling back would train a working-but-semantically-random
+    # policy whose code distribution doesn't match the intended tokenizer.
+    # Refuse the fallback there and force the user to either point at a
+    # real tokenizer-output npz or switch to ``kpms_raw`` for smoke runs.
+    _RANDOM_FALLBACK_SOURCES = frozenset({
+        SOURCE_KPMS_RAW, SOURCE_KPMS_MERGED, SOURCE_SHIMOSEQ,
+    })
+    if codes_path is None and code_source in _RANDOM_FALLBACK_SOURCES:
         return _generate_random(cfg, n_train, n_test, n_frames)
+    if codes_path is None and code_source in (
+        SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE,
+    ):
+        raise ValueError(
+            f"kpms_config.code_source={code_source!r} requires "
+            f"kpms_config.codes_path to be set (a tokenizer-output .npz). "
+            f"Random-codes fallback is disabled for kinematics-VAE-family "
+            f"sources because ``cfg.network_config.num_codes`` is unrelated "
+            f"to the tokenizer's actual codebook size — silently falling "
+            f"back would feed the decoder garbage. For a smoke run, set "
+            f"``code_source: kpms_raw`` with ``codes_path: null`` instead."
+        )
 
     if code_source == SOURCE_KPMS_RAW:
         return _load_kpms_npz(
