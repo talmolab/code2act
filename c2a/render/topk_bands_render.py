@@ -21,7 +21,7 @@ All helpers operate on the same ``model_rows`` shape:
 so a "model" can be a KPMS syllable sequence or a shMoSeq state sequence
 interchangeably.
 
-Behaviour-band coloring uses ``c2a.codegen.kpms.label_alignment.{BEHAVIORS, UNLABELED}``
+Behaviour-band coloring uses ``c2a.codegen.shared.label_alignment.{BEHAVIORS, UNLABELED}``
 because both pipelines compare against the same manual rodent labels.
 """
 
@@ -37,13 +37,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
-from c2a.codegen.kpms.label_alignment import BEHAVIORS, UNLABELED
+from c2a.codegen.shared.label_alignment import BEHAVIORS, UNLABELED
 
 log = logging.getLogger(__name__)
 
 
 # 4 perceptually distinct colors for the rodent label vocabulary
-# (Immobile, Rear, Turn, Walk — see c2a.codegen.kpms.label_alignment.BEHAVIORS).
+# (Immobile, Rear, Turn, Walk — see c2a.codegen.shared.label_alignment.BEHAVIORS).
 # Held stable across figures so KPMS and shMoSeq plots are directly comparable.
 BEHAVIOR_COLORS = {
     "Immobile": "#377eb8",

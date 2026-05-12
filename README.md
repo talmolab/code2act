@@ -152,7 +152,7 @@ These labels are sourced from
 [KevinBian107/TopoMimic-annotation](https://github.com/KevinBian107/TopoMimic-annotation)
 and are used by:
 
-- `c2a.codegen.kpms.label_alignment` (loader / coverage metrics)
+- `c2a.codegen.shared.label_alignment` (loader / coverage metrics)
 - `c2a.codegen.run_sweep` (NMI + Hungarian-purity reporting at three
   granularities: behavior / direction / combined)
 - `c2a.experiments.run_labeled_hidden_dynamics` (label-anchored hidden
@@ -160,7 +160,7 @@ and are used by:
 
 The CSV is annotated against the original 30 fps videos (500 frames per
 clip). The H5 mocap data is at half the rate (250 frames per clip), so
-``c2a.codegen.kpms.label_alignment`` divides CSV frame numbers by 2 by default
+``c2a.codegen.shared.label_alignment`` divides CSV frame numbers by 2 by default
 (``csv_to_h5_subsample=2``).
 
 ```bash

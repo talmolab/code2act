@@ -110,7 +110,7 @@ from c2a.experiments.shared.checkpoint_utils import (
     make_inference_fn,
 )
 from c2a.experiments.shared.clip_selection import load_balanced_splits
-from c2a.codegen.kpms.label_alignment import (
+from c2a.codegen.shared.label_alignment import (
     BEHAVIORS,
     BEHAVIOR_TO_INT,
     DIRECTIONAL_TURN_LABELS,

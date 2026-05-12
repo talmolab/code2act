@@ -57,9 +57,9 @@ VALID_SOURCES = {
 
 
 # 5-class mapping for gt_directional_turn.
-# Behavior indices match c2a.codegen.kpms.label_alignment.BEHAVIORS:
+# Behavior indices match c2a.codegen.shared.label_alignment.BEHAVIORS:
 #   0=Immobile, 1=Rear, 2=Turn, 3=Walk
-# Direction indices match c2a.codegen.kpms.label_alignment.DIRECTIONS:
+# Direction indices match c2a.codegen.shared.label_alignment.DIRECTIONS:
 #   0=Left, 1=Right, 2=Straight
 GT_DIRECTIONAL_TURN_NUM_CODES = 5
 GT_DIRECTIONAL_TURN_NAMES = (
@@ -415,7 +415,7 @@ def _load_gt_directional_turn(
     """
     # Lazy import: label_alignment lives next to KPMS code and pulling it
     # eagerly into c2a/__init__.py would couple environments together.
-    from c2a.codegen.kpms.label_alignment import (
+    from c2a.codegen.shared.label_alignment import (
         BEHAVIOR_TO_INT, DIRECTION_TO_INT, UNLABELED, load_label_frames,
     )
 

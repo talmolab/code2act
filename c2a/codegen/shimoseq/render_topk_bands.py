@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from c2a.codegen.kpms.label_alignment import load_label_frames
+from c2a.codegen.shared.label_alignment import load_label_frames
 from c2a.codegen.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
 from c2a.paths import get_repo_root
 from c2a.render.topk_bands_render import (

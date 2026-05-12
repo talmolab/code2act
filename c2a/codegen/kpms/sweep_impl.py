@@ -59,13 +59,13 @@ import yaml
 
 from c2a.codegen.kpms.config import KPMSHyperparams
 from c2a.codegen.kpms.fit_kpms import fit_kpms_keypoints
-from c2a.codegen.kpms.label_alignment import (
+from c2a.codegen.shared.label_alignment import (
     BEHAVIORS,
     COMBINED_LABELS,
     DIRECTIONS,
     load_label_frames,
 )
-from c2a.codegen.kpms.coverage_metrics import compute_coverage
+from c2a.codegen.shared.coverage_metrics import compute_coverage
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -663,7 +663,7 @@ def _compute_metrics(
         reconstructed: Flattened reconstructed data ``[N, T, K*D]``.
         n_states: Number of syllable states.
         label_arrays: Optional ``LabelArrays`` from
-            :func:`c2a.codegen.kpms.label_alignment.load_label_frames` containing
+            :func:`c2a.codegen.shared.label_alignment.load_label_frames` containing
             per-clip frame labels at three granularities (behavior,
             direction, combined).  Pass together with ``all_clip_indices``
             to enable coverage metrics (NMI + Hungarian purity).
@@ -937,7 +937,7 @@ def run_sweep(cfg: dict) -> dict:
     # 3-class direction, 12-class behavior×direction) alongside the existing
     # MSE-based metrics. Model selection stays on MSE — coverage is reported,
     # not selected on.
-    label_arrays = None  # type: c2a.codegen.kpms.label_alignment.LabelArrays | None
+    label_arrays = None  # type: c2a.codegen.shared.label_alignment.LabelArrays | None
     labels_path = cfg["data"].get("labels_path")
     if labels_path:
         _lp = Path(labels_path)

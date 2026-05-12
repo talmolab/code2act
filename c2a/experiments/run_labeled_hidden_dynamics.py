@@ -109,7 +109,7 @@ from c2a.experiments.shared.ghost_rendering import (
 )
 from c2a.experiments.shared.plotting import get_trajectory_colors
 
-from c2a.codegen.kpms.label_alignment import (
+from c2a.codegen.shared.label_alignment import (
     DIRECTIONAL_TURN_LABELS,
     UNLABELED,
     directional_turn_array,
@@ -157,7 +157,7 @@ def _find_agreement_codes(
 
     Generic over the label scheme — pass any per-frame integer label
     array indexed by ``range(len(label_names))`` plus UNLABELED (-1).
-    Use :data:`c2a.codegen.kpms.label_alignment.COMBINED_LABELS` for the
+    Use :data:`c2a.codegen.shared.label_alignment.COMBINED_LABELS` for the
     12-class combined behavior×direction breakdown, or
     :data:`DIRECTIONAL_TURN_LABELS` for the 5-class
     {Immobile, Rear, Walk, Turn_Left, Turn_Right} breakdown.
