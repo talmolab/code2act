@@ -47,6 +47,7 @@ data/rodent/*.npz
 # Checkpoints (too large for git)
 model_checkpoints/
 trained_mimic_ckpts/
+trained_kinematics_vae_ckpts/
 
 # Node (for website if installed locally)
 node_modules/
