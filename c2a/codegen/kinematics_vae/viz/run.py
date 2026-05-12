@@ -45,11 +45,18 @@ def _gt_train_frame_labels(
     n_frames: int,
     csv_to_h5_subsample: int = 2,
 ) -> np.ndarray:
-    """Return ``(n_train_clips * n_frames,)`` int behavior labels for the
-    train clips, flattened in clip-major frame order.
+    """Return ``(n_train_clips * n_frames,)`` int combined ``behavior ×
+    direction`` labels for the train clips, flattened in clip-major frame
+    order.
+
+    The combined index is ``behavior * 3 + direction`` over the canonical
+    vocabularies ``BEHAVIORS × DIRECTIONS`` from
+    :mod:`c2a.codegen.shared.label_alignment` ({Immobile, Rear, Turn,
+    Walk} × {Left, Right, Straight}). Frames where either track is
+    UNLABELED stay at -1.
 
     Returns:
-        flattened labels in ``{-1, 0, 1, 2, 3}`` where -1 is UNLABELED.
+        flattened labels in ``{-1, 0..11}`` where -1 is UNLABELED.
     """
     max_clip = int(np.max(train_indices))
     arr = load_label_frames(
@@ -58,8 +65,8 @@ def _gt_train_frame_labels(
         n_frames=n_frames,
         csv_to_h5_subsample=int(csv_to_h5_subsample),
     )
-    behavior = arr.behavior[train_indices]   # (n_train, n_frames)
-    return behavior.reshape(-1).astype(np.int32)
+    combined = arr.combined[train_indices]   # (n_train, n_frames)
+    return combined.reshape(-1).astype(np.int32)
 
 
 def _train_subset(

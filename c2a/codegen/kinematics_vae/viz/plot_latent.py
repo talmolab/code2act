@@ -7,8 +7,12 @@ Each variant emits one figure with 3 columns (PCA, t-SNE, UMAP) and
 points stay in the same position; only the coloring changes between
 rows.
 
-Row 1 is always **ground-truth-label coloring** (4-class behavior from
-``c2a.codegen.shared.label_alignment``: Immobile / Rear / Turn / Walk).
+Row 1 is always **ground-truth-label coloring** using the 12-class
+``behavior × direction`` combined scheme from
+``c2a.codegen.shared.label_alignment``
+(``BEHAVIORS × DIRECTIONS`` = {Immobile, Rear, Turn, Walk} ×
+{Left, Right, Straight}; combined index = ``behavior * 3 + direction``).
+Hue encodes behavior, lightness encodes direction.
 
 Row 2 is the **discovered codes** (the variant's discrete code per
 frame).
@@ -52,18 +56,37 @@ def _pc_label(name: str, explained: float | None) -> str:
 log = logging.getLogger(__name__)
 
 
-# GT-label name mapping. ``-1`` is the c2a UNLABELED sentinel; the
-# 4 numeric classes match ``c2a.codegen.shared.label_alignment.BEHAVIORS``.
-_GT_NAMES: tuple[str, ...] = ("UNLABELED", "Immobile", "Rear", "Turn", "Walk")
-_GT_VALUES: tuple[int, ...] = (-1, 0, 1, 2, 3)
-# Stable colors so the same class is always the same hue across plots.
-# Grey = UNLABELED so the eye doesn't read it as a "5th behavior class".
+# GT-label name mapping for the 12-class combined ``behavior × direction``
+# scheme exported by ``c2a.codegen.shared.label_alignment``. Combined index
+# is ``behavior * 3 + direction`` over
+# ``BEHAVIORS = (Immobile, Rear, Turn, Walk)`` ×
+# ``DIRECTIONS = (Left, Right, Straight)``. ``-1`` = UNLABELED.
+#
+# Color scheme: HUE encodes behavior (blue=Immobile, red=Rear, green=Turn,
+# orange=Walk), LIGHTNESS encodes direction (dark=Left, medium=Right,
+# light=Straight). So the eye reads behavior first, then direction.
+_GT_NAMES: tuple[str, ...] = (
+    "UNLABELED",
+    "Immobile_Left", "Immobile_Right", "Immobile_Straight",
+    "Rear_Left", "Rear_Right", "Rear_Straight",
+    "Turn_Left", "Turn_Right", "Turn_Straight",
+    "Walk_Left", "Walk_Right", "Walk_Straight",
+)
+_GT_VALUES: tuple[int, ...] = (-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
 _GT_COLORS: tuple[str, ...] = (
-    "#999999",   # UNLABELED — neutral grey
-    "#1f77b4",   # Immobile  — blue
-    "#d62728",   # Rear      — red
-    "#2ca02c",   # Turn      — green
-    "#ff7f0e",   # Walk      — orange
+    "#999999",   # UNLABELED         — neutral grey
+    "#08306b",   # Immobile_Left     — dark blue
+    "#2171b5",   # Immobile_Right    — medium blue
+    "#9ecae1",   # Immobile_Straight — light blue
+    "#67000d",   # Rear_Left         — dark red
+    "#cb181d",   # Rear_Right        — medium red
+    "#fcae91",   # Rear_Straight     — light red/salmon
+    "#00441b",   # Turn_Left         — dark green
+    "#238b45",   # Turn_Right        — medium green
+    "#a1d99b",   # Turn_Straight     — light green
+    "#7f2704",   # Walk_Left         — dark orange/brown
+    "#d94801",   # Walk_Right        — medium orange
+    "#fdae6b",   # Walk_Straight     — light orange
 )
 
 
@@ -72,7 +95,8 @@ def _gt_cmap_and_norm() -> tuple[ListedColormap, BoundaryNorm]:
     deterministic (matplotlib's default colormap normalization with a
     raw integer column changes when min/max change between subsamples)."""
     cmap = ListedColormap(_GT_COLORS, name="c2a_gt")
-    # Boundaries at -1.5, -0.5, 0.5, 1.5, 2.5, 3.5 → 5 bins.
+    # Boundaries between consecutive class values: -1.5, -0.5, 0.5, …, 11.5
+    # → len(_GT_VALUES) bins.
     boundaries = [v - 0.5 for v in _GT_VALUES] + [_GT_VALUES[-1] + 0.5]
     norm = BoundaryNorm(boundaries, cmap.N, clip=True)
     return cmap, norm
@@ -146,7 +170,7 @@ def _scatter_code_panel(
 
 def plot_latent_vae(
     z: np.ndarray,
-    behavior_labels: np.ndarray,
+    gt_labels: np.ndarray,
     codes: np.ndarray,
     *,
     n_max: int = 20_000,
@@ -157,14 +181,16 @@ def plot_latent_vae(
 
     Args:
         z: ``(N, D)`` per-frame latents (typically μ).
-        behavior_labels: ``(N,)`` integer GT behavior labels in
-            ``{-1=UNLABELED, 0=Immobile, 1=Rear, 2=Turn, 3=Walk}``.
+        gt_labels: ``(N,)`` integer GT combined behavior×direction
+            labels in ``{-1=UNLABELED, 0..11}`` where the value is
+            ``behavior * 3 + direction`` over ``BEHAVIORS × DIRECTIONS``
+            (see :mod:`c2a.codegen.shared.label_alignment`).
         codes: ``(N,)`` discovered codes (k-means cluster ids).
         n_max: Subsample to this many points before t-SNE/UMAP.
 
     Layout:
         ┌─────────┬───────┬──────┐
-        │ PCA     │ t-SNE │ UMAP │  ← row 0: GT behavior (legend right)
+        │ PCA     │ t-SNE │ UMAP │  ← row 0: GT behavior×direction (legend right)
         ├─────────┼───────┼──────┤
         │ PCA     │ t-SNE │ UMAP │  ← row 1: VAE code (colorbar right)
         └─────────┴───────┴──────┘
@@ -183,13 +209,13 @@ def plot_latent_vae(
         ("t-SNE", proj_tsne, ("t-SNE 1", "t-SNE 2")),
         ("UMAP", proj_umap, ("UMAP 1", "UMAP 2")),
     ]
-    sub_labels = behavior_labels[idx]
+    sub_labels = gt_labels[idx]
     sub_codes = codes[idx]
     code_sc = None
     for j, (col_name, xy, (xlab, ylab)) in enumerate(cols):
         _scatter_gt_panel(
             axes[0, j], xy, sub_labels,
-            title=f"{col_name} — GT behavior",
+            title=f"{col_name} — GT behavior×direction",
             xlabel=xlab, ylabel=ylab,
         )
         code_sc = _scatter_code_panel(
@@ -217,7 +243,7 @@ def plot_latent_vae(
 def plot_latent_vqvae(
     z_e: np.ndarray,
     codebook: np.ndarray,
-    behavior_labels: np.ndarray,
+    gt_labels: np.ndarray,
     codes: np.ndarray,
     *,
     n_max: int = 20_000,
@@ -250,13 +276,13 @@ def plot_latent_vqvae(
         ("t-SNE", proj_tsne, proj_tsne_cb, ("t-SNE 1", "t-SNE 2")),
         ("UMAP", proj_umap, proj_umap_cb, ("UMAP 1", "UMAP 2")),
     ]
-    sub_labels = behavior_labels[idx]
+    sub_labels = gt_labels[idx]
     sub_codes = codes[idx]
     code_sc = None
     for j, (col_name, xy, xy_cb, (xlab, ylab)) in enumerate(cols):
         _scatter_gt_panel(
             axes[0, j], xy, sub_labels,
-            title=f"{col_name} — GT behavior",
+            title=f"{col_name} — GT behavior×direction",
             xlabel=xlab, ylabel=ylab,
         )
         code_sc = _scatter_code_panel(
@@ -297,7 +323,7 @@ def plot_latent_ps_vqvae(
     per_group_codes: np.ndarray,
     group_dims: list[int],
     group_codebook_sizes: list[int],
-    behavior_labels: np.ndarray,
+    gt_labels: np.ndarray,
     *,
     n_max: int = 20_000,
     seed: int = 0,
@@ -322,7 +348,7 @@ def plot_latent_ps_vqvae(
     )
 
     offsets = np.cumsum([0] + group_dims)
-    sub_labels = behavior_labels[idx]
+    sub_labels = gt_labels[idx]
     fig, axes = plt.subplots(
         2 * G, 3, figsize=(16, 5 * G), constrained_layout=True,
     )
@@ -423,7 +449,7 @@ def plot_ps_vqvae_joint_heatmap(
 
 def plot_pca_pairs(
     z: np.ndarray,
-    behavior_labels: np.ndarray,
+    gt_labels: np.ndarray,
     *,
     pairs: Sequence[tuple[int, int]] = ((0, 1), (0, 2), (1, 2)),
     n_max: int = 20_000,
@@ -443,7 +469,7 @@ def plot_pca_pairs(
     proj = p.fit_transform(z_sub)
     var_ratio = p.explained_variance_ratio_
 
-    sub_labels = behavior_labels[idx]
+    sub_labels = gt_labels[idx]
     fig, axes = plt.subplots(
         1, len(pairs), figsize=(5 * len(pairs) + 2, 4.5),
         constrained_layout=True,
