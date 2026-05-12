@@ -21,16 +21,16 @@ data:
   reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
 
 generation:
-  methods: ["transition_matrix", "hmm_dynamax", "arhmm_level2"]
+  # Available method keys:
+  #   Quick (inline — no checkpoint needed):
+  #     "transition_matrix", "arhmm_level1", "arhmm_level2"
+  #   Trainable (require ar_checkpoints.<name> to point at a directory
+  #   produced by `python -m c2a.ar_codegen.train model=<name> ...`):
+  #     "gpt2", "mamba", "s5", "hmm_pretrained"
+  methods: ["transition_matrix", "arhmm_level2"]
 
   transition_matrix:
     temperatures: [0.5, 1.0, 2.0]
-
-  hmm_dynamax:
-    num_states_sweep: [4, 8, 16, 32]
-    num_em_iters: 100
-    train_ratio: 0.8
-    seed: 0
 
   arhmm:
     model_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/s50_k1e+04_l10_arhmm/seed1/keypoint_arhmm_states50_seed1/checkpoint.h5
@@ -39,6 +39,16 @@ generation:
   num_sequences: 10
   sequence_length: 500
   seed: 42
+
+# Paths to trained ar_codegen checkpoints (each a directory containing
+# meta.json + params). Set to null to disable that model — if a method
+# is listed in generation.methods but its checkpoint is null, it's
+# skipped with a warning.
+ar_checkpoints:
+  gpt2: null
+  mamba: null
+  s5: null
+  hmm: null
 
 free_loop:
   max_steps: 1000

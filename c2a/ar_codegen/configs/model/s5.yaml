@@ -1,0 +1,20 @@
+# S5 — Linderman-lab diagonal SSM (vendored from lindermanlab/S5).
+#
+# Override on the command line:
+#   python -m c2a.ar_codegen.train model=s5 model.P=128
+
+_name: s5
+
+# Architecture (vocab_size is set at runtime = num_codes + 1).
+H: 128                   # model / feature dimension
+P: 64                    # state size (must be even when conj_sym=true)
+n_layers: 4
+C_init: lecun_normal     # one of: lecun_normal | trunc_standard_normal | complex_normal
+discretization: zoh      # one of: zoh | bilinear
+dt_min: 0.001
+dt_max: 0.1
+conj_sym: true           # exploit conjugate-symmetric eigenvalues (halves param count)
+clip_eigs: true          # left-half-plane constraint; recommended for AR use
+bidirectional: false     # MUST be false for autoregressive sampling
+max_len: 256
+dropout_rate: 0.1

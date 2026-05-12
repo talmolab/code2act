@@ -1,0 +1,14 @@
+# Sampling config for c2a.ar_codegen.sample.
+
+checkpoint: ???           # required: path to a trained checkpoint directory
+n: 100                    # number of sequences to sample
+length: 250               # length of each sequence (must be <= model.max_len)
+seed: 42
+temperature: 1.0          # neural models only; HMM ignores
+
+out: null                 # default: <checkpoint>/samples_n{n}_T{length}_s{seed}.npz
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

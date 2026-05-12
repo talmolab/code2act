@@ -58,13 +58,14 @@ from c2a.experiments.shared.checkpoint_utils import (
 from c2a.experiments.shared.vae_network import make_vae_network
 from c2a.experiments.shared.plotting import set_nature_style, NATURE_COLORS
 
-# Import code generation functions
+# Import code generation functions. The HMM-fitting path moved to
+# c2a/ar_codegen/models/hmm.py — load a pre-fit checkpoint via
+# CodeGenerator.from_checkpoint instead of importing the old function.
 from experiments.run_code_generation import (
     _assert_decoder_compatible_with_arhmm,
     generate_arhmm_level1_sequences,
     generate_arhmm_level2_sequences,
     generate_empirical_tm_sequences,
-    generate_hmm_sequences,
     load_arhmm_params,
 )
 
@@ -588,17 +589,10 @@ def _make_generation_cfg(
         ),
         resolve=True,
     )
-    hmm_cfg = OmegaConf.to_container(
-        cfg.inception_distance.generation.get(
-            "hmm_dynamax",
-            {
-                "num_states_sweep": [4, 8, 16, 32],
-                "num_em_iters": 100,
-                "train_ratio": 0.8,
-                "seed": 0,
-            },
-        ),
-        resolve=True,
+    # AR checkpoints (top-level) — thread through so the AR / pretrained-HMM
+    # methods can resolve their checkpoint paths inside generate_method_codes.
+    ar_ckpts = OmegaConf.to_container(
+        cfg.get("ar_checkpoints", {}) or {}, resolve=True,
     )
     return OmegaConf.create(
         {
@@ -608,8 +602,8 @@ def _make_generation_cfg(
                 "seed": gen_seed,
                 "arhmm": arhmm_cfg,
                 "transition_matrix": tm_cfg,
-                "hmm_dynamax": hmm_cfg,
-            }
+            },
+            "ar_checkpoints": ar_ckpts,
         }
     )
 
@@ -632,8 +626,40 @@ def generate_method_codes(
     elif method_name == "arhmm_level1":
         assert arhmm_params is not None
         return generate_arhmm_level1_sequences(arhmm_params, gen_cfg)[:n_seqs]
-    elif method_name == "hmm_dynamax":
-        return generate_hmm_sequences(all_codes, num_codes, gen_cfg)[:n_seqs]
+    elif method_name in ("hmm_dynamax", "hmm_pretrained"):
+        # HMM fitting moved to c2a.ar_codegen. To use here:
+        #   1) Fit:   python -m c2a.ar_codegen.train model=hmm
+        #   2) Pass:  ar_checkpoints.hmm=<output_dir> on the command line
+        # The `hmm_dynamax` alias is kept for backward compatibility with
+        # older saved configs / shell scripts; both names resolve to the
+        # same checkpoint loader.
+        ar_ckpt_cfg = gen_cfg.get("ar_checkpoints", None)
+        ckpt_path = None if ar_ckpt_cfg is None else ar_ckpt_cfg.get("hmm", None)
+        if ckpt_path is None:
+            raise RuntimeError(
+                f"Method {method_name!r} requires ar_checkpoints.hmm to "
+                "point at a directory produced by "
+                "`python -m c2a.ar_codegen.train model=hmm`. The inline "
+                "HMM-fitting path was removed when the HMM moved to "
+                "c2a.ar_codegen."
+            )
+        from c2a.ar_codegen.models.base import CodeGenerator
+        from c2a.paths import get_repo_root
+        cp = Path(ckpt_path)
+        if not cp.is_absolute():
+            cp = get_repo_root() / cp
+        gen = CodeGenerator.from_checkpoint(cp)
+        if gen.num_codes != num_codes:
+            raise RuntimeError(
+                f"HMM checkpoint at {cp} has num_codes={gen.num_codes}, "
+                f"but the experiment expects num_codes={num_codes}."
+            )
+        seqs = gen.sample(
+            n_seq=n_seqs,
+            length=int(gen_cfg.generation.sequence_length),
+            seed=int(gen_cfg.generation.seed),
+        )
+        return [seqs[i] for i in range(n_seqs)]
     elif method_name == "transition_matrix":
         tm_results = generate_empirical_tm_sequences(all_codes, num_codes, gen_cfg)
         first_key = next(iter(tm_results))

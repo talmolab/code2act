@@ -30,8 +30,12 @@ data:
 inception_distance:
   # Methods to compare. All generate fresh rollouts.
   # Options: decoder_original_codes, mimic_mjx, arhmm_level2, arhmm_level1,
-  #          hmm_dynamax, transition_matrix, uniform_random
-  methods: ["decoder_original_codes", "mimic_mjx", "arhmm_level2", "hmm_dynamax", "transition_matrix", "uniform_random"]
+  #          hmm_pretrained, transition_matrix, uniform_random,
+  #          gpt2, mamba, s5
+  # NOTE: "hmm_dynamax" is kept as a legacy alias of "hmm_pretrained" —
+  # both require ar_checkpoints.hmm to point at a trained HMM checkpoint
+  # (the inline EM-fit path moved to c2a.ar_codegen.models.hmm).
+  methods: ["decoder_original_codes", "mimic_mjx", "arhmm_level2", "hmm_pretrained", "transition_matrix", "uniform_random"]
 
   # Number of rollout clips per method. null = use all balanced clips.
   num_rollout_clips: 100
@@ -50,11 +54,9 @@ inception_distance:
   # Code generation parameters
   generation:
     seed: 42
-    hmm_dynamax:
-      num_states_sweep: [4, 8, 16, 32]
-      num_em_iters: 100
-      train_ratio: 0.8
-      seed: 0
+    # hmm_dynamax / hmm_pretrained: load a pre-fit HMM via
+    # ar_checkpoints.hmm (the legacy `hmm_dynamax.num_states_sweep`
+    # block is no longer read).
     transition_matrix:
       temperatures: [1.0]
 
@@ -90,6 +92,16 @@ inception_distance:
 # Rollout parameters
 rollout:
   seed: 42
+
+# AR-codegen checkpoints. Each is a directory produced by
+# `python -m c2a.ar_codegen.train model=<name>`. Required when the
+# matching method (gpt2 / mamba / s5 / hmm_pretrained) is in
+# `inception_distance.methods`.
+ar_checkpoints:
+  gpt2: null
+  mamba: null
+  s5: null
+  hmm: null
 
 output:
   base_dir: ./outputs/moseq_inception_distance

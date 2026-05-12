@@ -62,9 +62,61 @@ fine), generates K-body ghost videos and solo videos, writes transition
 matrices.
 
 ### 3. `run_code_generation`
-Uses four generative models to produce code sequences (empirical transition
-matrix, dynamax HMM, ARHMM with L2 regularization, plus a free-loop
-model) and rolls them out through the decoder. Outputs comparison metrics.
+Generates code sequences from a number of unconditional sequence priors
+and rolls each through the trained Code2Act decoder for survival /
+distributional eval. Two classes of generator participate:
+
+**Trainable generators — live in `c2a/ar_codegen/`** (one shared
+`CodeGenerator` interface — train once, load by checkpoint path):
+
+| Method key (`generation.methods`) | Model              | Where it lives                            |
+|-----------------------------------|--------------------|-------------------------------------------|
+| `gpt2`                            | GPT-2 XS (small Flax decoder-only transformer, adapted from `flax/examples/lm1b`) | `c2a/ar_codegen/models/gpt2.py` |
+| `mamba`                           | Mamba selective SSM (pure-JAX port of `deep_ssm/mixers/mamba_simple.py`) | `c2a/ar_codegen/models/mamba.py` |
+| `s5`                              | S5 SSM (vendored from `lindermanlab/S5`) | `c2a/ar_codegen/models/s5.py` |
+| `hmm_pretrained`                  | Categorical HMM via dynamax EM | `c2a/ar_codegen/models/hmm.py` |
+
+Train them via:
+
+```bash
+python -m c2a.ar_codegen.train model=gpt2  data.code_source=kpms_raw \
+    data.codes_path=c2a/outputs/kpms_sweep/best_codes.npz
+python -m c2a.ar_codegen.train model=mamba data.code_source=kpms_raw ...
+python -m c2a.ar_codegen.train model=s5    data.code_source=kpms_raw ...
+python -m c2a.ar_codegen.train model=hmm   data.code_source=kpms_raw ...
+```
+
+Each writes a checkpoint at `outputs/ar_codegen/{model}/{run_id}/` with
+`meta.json` + params. Pass the checkpoint paths to the experiment via
+`ar_checkpoints.{gpt2,mamba,s5,hmm}=...`.
+
+**Quick generators — inline in `c2a/experiments/run_code_generation.py`**
+(no fitting, no checkpoints):
+
+| Method key                          | Model |
+|-------------------------------------|-------|
+| `transition_matrix` (with `tm_T*`)  | Empirical TM at various sampling temperatures |
+| `arhmm_level1`                      | ARHMM transition-only sampling (loaded from the KPMS H5 checkpoint) |
+| `arhmm_level2`                      | ARHMM with AR latent dynamics |
+| `uniform_random`, `single_code`, `reversed` | Control sequences (baselines) |
+
+**Code-source compatibility.** All seven trainable + quick generators
+consume the same per-frame integer code arrays produced by
+`c2a.code_sources.load_codes` (validated as `int32`, values in
+`[0, num_codes)`). They are therefore **generic over code source**:
+
+| `data.code_source`     | What it loads                                                  |
+|------------------------|----------------------------------------------------------------|
+| `kpms_raw`             | Raw KPMS codes from the sweep (`c2a/outputs/kpms_sweep/best_codes.npz`) |
+| `kpms_merged`          | KPMS codes after `c2a.kpms.merge_states` (requires `is_merged=True` in the .npz) |
+| `gt_directional_turn`  | 5-class manual labels from `data/rodent/rodent_labels.csv` (Immobile / Rear / Walk / Turn_Left / Turn_Right) |
+| (`null` for AR models) | Random codes — smoke test only                                 |
+
+The same `GPT2Generator` / `MambaGenerator` / `S5Generator` /
+`HMMGenerator` class trains and samples on any of these — the only
+thing that changes between fits is the codebook size (`num_codes` =
+2..number-of-syllables-in-the-source). See `c2a/ar_codegen/README.md`
+for the full training → sampling → experiment workflow.
 
 ### 4, 13. `run_generalization*`
 Take unseen continuous tracking data (default:

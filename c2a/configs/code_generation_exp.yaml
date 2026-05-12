@@ -15,16 +15,14 @@ data:
   reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
 
 generation:
-  methods: ["transition_matrix", "hmm_dynamax", "arhmm_level1", "arhmm_level2"]
+  # See c2a/experiments/configs/code_generation_exp.yaml for the canonical
+  # config. Available method keys (inline + AR):
+  #   "transition_matrix", "arhmm_level1", "arhmm_level2"  (no checkpoint)
+  #   "gpt2", "mamba", "s5", "hmm_pretrained"              (requires ar_checkpoints)
+  methods: ["transition_matrix", "arhmm_level1", "arhmm_level2"]
 
   transition_matrix:
     temperatures: [0.5, 1.0, 2.0]
-
-  hmm_dynamax:
-    num_states_sweep: [4, 8, 16, 32]
-    num_em_iters: 100
-    train_ratio: 0.8
-    seed: 0
 
   arhmm:
     model_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/s50_k1e+04_l10_arhmm/seed1/keypoint_arhmm_states50_seed1/checkpoint.h5
@@ -33,6 +31,15 @@ generation:
   num_sequences: 10
   sequence_length: 500
   seed: 42
+
+# AR checkpoints (only consulted if any of gpt2/mamba/s5/hmm_pretrained
+# are listed in `generation.methods`). Produce these with
+# `python -m c2a.ar_codegen.train model=<name>`.
+ar_checkpoints:
+  gpt2: null
+  mamba: null
+  s5: null
+  hmm: null
 
 free_loop:
   max_steps: 1000

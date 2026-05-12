@@ -11,7 +11,7 @@ The output frame layout::
     +-------- ghost (K bodies) ----+ PCA ------+
     |                              |           |
     |  K mujoco bodies overlaid    |  rotating |
-    |  on close_profile camera     |  3D scatter|
+    |  on divergent_cam (3/4 view) |  3D scatter|
     |  with code-bar timeline at   |  with     |
     |  the bottom (existing helper)|  trajectory|
     +------------------------------+-----------+
@@ -355,7 +355,12 @@ def render_rotating_pca_video(
             qe = qs + base_nq
             mj_data.qpos[qs:qe] = centered_qpos[gi, t_clip]
         mujoco.mj_forward(ghost_model, mj_data)
-        renderer.update_scene(mj_data, camera="close_profile")
+        # build_ghost_model injects its own world camera named
+        # "divergent_cam" (see c2a.rendering_utils.build_ghost_model);
+        # the source rodent.xml's "close_profile" camera doesn't
+        # carry through, and every other ghost-rendering script in
+        # c2a/ uses "divergent_cam" for this reason.
+        renderer.update_scene(mj_data, camera="divergent_cam")
         frame_ghost = renderer.render().copy()
         if frame_ghost.shape[:2] != (panel_h, panel_w):
             frame_ghost = cv2.resize(

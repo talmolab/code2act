@@ -1,0 +1,16 @@
+# GPT-2 XS — small decoder-only transformer.
+#
+# Sized for c2a data scale (~17 k tokens). Override on the command line:
+#   python -m c2a.ar_codegen.train model=gpt2 model.emb_dim=256
+
+_name: gpt2
+
+# Architecture (vocab_size is set at runtime = num_codes + 1).
+emb_dim: 128
+num_heads: 4
+num_layers: 4
+qkv_dim: 128
+mlp_dim: 512
+max_len: 256
+dropout_rate: 0.1
+attention_dropout_rate: 0.1

@@ -1,10 +1,19 @@
 """Experiment 3: Generative models of KPMS codes + free-loop rollouts.
 
-Four methods: empirical transition matrix, dynamax HMM, ARHMM L1, ARHMM L2.
+Inline (no checkpoint needed):
+    transition_matrix, arhmm_level1, arhmm_level2, controls.
+
+AR / trainable (loaded via ``ar_checkpoints.<name>``; produced by
+``python -m c2a.ar_codegen.train model=<name>``):
+    gpt2, mamba, s5, hmm_pretrained.
+
+The inline ``hmm_dynamax`` branch moved to
+``c2a.ar_codegen.models.hmm.HMMGenerator``.
 
 Usage:
-    cd moseq_jax
-    python -m experiments.run_code_generation
+    python -m c2a.experiments.run_code_generation \\
+        generation.methods=[transition_matrix,arhmm_level2,gpt2] \\
+        ar_checkpoints.gpt2=outputs/ar_codegen/gpt2/<dir>
 """
 
 import os
@@ -146,82 +155,20 @@ def generate_empirical_tm_sequences(
 
 
 # ---------------------------------------------------------------------------
-# Method B: HMM via dynamax
+# Method B: HMM via dynamax  →  moved to c2a/ar_codegen/models/hmm.py
 # ---------------------------------------------------------------------------
-
-
-def generate_hmm_sequences(
-    all_codes: np.ndarray,
-    num_codes: int,
-    cfg: DictConfig,
-) -> list[np.ndarray]:
-    """Fit discrete HMM with dynamax and sample sequences."""
-    log.info("  Method B: HMM via dynamax")
-    from dynamax.hidden_markov_model import CategoricalHMM
-
-    hmm_cfg = cfg.generation.hmm_dynamax
-    seed = int(hmm_cfg.seed)
-    n_seq = int(cfg.generation.num_sequences)
-    length = int(cfg.generation.sequence_length)
-
-    # Prepare emissions: [n_clips, n_frames, 1]
-    emissions = all_codes[:, :, None].astype(np.int32)
-
-    # Train/test split
-    n_clips = len(all_codes)
-    n_train = int(n_clips * float(hmm_cfg.train_ratio))
-    rng = np.random.RandomState(seed)
-    perm = rng.permutation(n_clips)
-    train_emissions = emissions[perm[:n_train]]
-    test_emissions = emissions[perm[n_train:]]
-
-    best_ll = -np.inf
-    best_params = None
-    best_K = None
-
-    for K in hmm_cfg.num_states_sweep:
-        log.info(f"    Fitting K={K}...")
-        hmm = CategoricalHMM(num_states=int(K), emission_dim=1, num_classes=num_codes)
-        key = jax.random.PRNGKey(seed)
-        params, props = hmm.initialize(key)
-
-        # Fit on concatenated train sequences
-        for ep in range(len(train_emissions)):
-            try:
-                params, lls = hmm.fit_em(
-                    params, props, train_emissions[ep],
-                    num_iters=int(hmm_cfg.num_em_iters),
-                )
-            except Exception as e:
-                log.warning(f"      EM failed for clip {ep}: {e}")
-                continue
-
-        # Evaluate on test set
-        test_ll = 0.0
-        for ep in range(len(test_emissions)):
-            try:
-                ll = hmm.marginal_log_prob(params, test_emissions[ep])
-                test_ll += float(ll)
-            except Exception:
-                pass
-
-        log.info(f"      K={K}: test_ll={test_ll:.1f}")
-        if test_ll > best_ll:
-            best_ll = test_ll
-            best_params = params
-            best_K = K
-
-    log.info(f"    Best K={best_K} (test_ll={best_ll:.1f})")
-
-    # Sample from best model
-    hmm = CategoricalHMM(num_states=best_K, emission_dim=1, num_classes=num_codes)
-    seqs = []
-    for i in range(n_seq):
-        key = jax.random.PRNGKey(seed + 1000 + i)
-        states, emissions = hmm.sample(best_params, key, num_timesteps=length)
-        seqs.append(np.array(emissions[:, 0], dtype=np.int32))
-
-    return seqs
+#
+# HMM fitting used to happen inline here. It now lives in
+# ``c2a.ar_codegen.models.hmm.HMMGenerator`` so that the HMM, GPT-2,
+# Mamba, and S5 share one unified train/save/load pipeline. To use the
+# HMM in this experiment:
+#
+#   1) Fit:    ``python -m c2a.ar_codegen.train model=hmm``
+#   2) Point:  pass ``ar_checkpoints.hmm=<output_dir>`` to this script
+#   3) Enable: include ``hmm_pretrained`` in ``generation.methods``
+#
+# The pretrained-AR loader below picks it up via
+# ``CodeGenerator.from_checkpoint``.
 
 
 # ---------------------------------------------------------------------------
@@ -580,12 +527,58 @@ def main(cfg: DictConfig) -> None:
         tm_results = generate_empirical_tm_sequences(all_codes, num_codes, cfg)
         all_generated.update(tm_results)
 
-    if "hmm_dynamax" in methods:
-        try:
-            hmm_seqs = generate_hmm_sequences(all_codes, num_codes, cfg)
-            all_generated["hmm_dynamax"] = hmm_seqs
-        except Exception as e:
-            log.warning(f"  HMM fitting failed: {e}")
+    # ---------------------------------------------------------------
+    # Trainable generators (gpt2 / mamba / s5 / hmm_pretrained):
+    # load from c2a/ar_codegen checkpoints and sample.
+    # See c2a.ar_codegen.train for how to produce these checkpoints.
+    # ---------------------------------------------------------------
+    n_seq_ar = int(cfg.generation.num_sequences)
+    length_ar = int(cfg.generation.sequence_length)
+    seed_ar = int(cfg.generation.seed)
+    ar_method_to_key = {
+        "gpt2": "gpt2",
+        "mamba": "mamba",
+        "s5": "s5",
+        "hmm_pretrained": "hmm",
+    }
+    ar_ckpt_cfg = cfg.get("ar_checkpoints", None)
+    for ar_method, ckpt_key in ar_method_to_key.items():
+        if ar_method not in methods:
+            continue
+        ckpt_path = None if ar_ckpt_cfg is None else ar_ckpt_cfg.get(ckpt_key, None)
+        if ckpt_path is None:
+            log.warning(
+                "  Skipping %s: no ar_checkpoints.%s configured. Train one "
+                "with `python -m c2a.ar_codegen.train model=%s`.",
+                ar_method, ckpt_key, ckpt_key,
+            )
+            continue
+        # Resolve relative checkpoint paths against the repo root, NOT
+        # Hydra's run-dir CWD. Without this, `ar_checkpoints.gpt2=outputs/...`
+        # would silently look under outputs/<this_run>/outputs/... and fail
+        # in a confusing way.
+        from c2a.paths import get_repo_root
+        ckpt_p = Path(ckpt_path)
+        if not ckpt_p.is_absolute():
+            ckpt_p = get_repo_root() / ckpt_p
+        from c2a.ar_codegen.models.base import CodeGenerator
+        gen = CodeGenerator.from_checkpoint(ckpt_p)
+        if gen.num_codes != num_codes:
+            raise RuntimeError(
+                f"{ar_method} checkpoint at {ckpt_path} has num_codes="
+                f"{gen.num_codes} but the decoder was trained with "
+                f"num_codes={num_codes}. Refusing to sample — the decoder "
+                "embedding table is incompatible. Re-train the AR model "
+                "on the same code source as the decoder."
+            )
+        seqs = gen.sample(
+            n_seq=n_seq_ar, length=length_ar, seed=seed_ar,
+        )
+        all_generated[ar_method] = [seqs[i] for i in range(n_seq_ar)]
+        log.info(
+            "  %s: sampled %d sequences of length %d from %s",
+            ar_method, n_seq_ar, length_ar, ckpt_path,
+        )
 
     arhmm_params = None
     if "arhmm_level1" in methods or "arhmm_level2" in methods:

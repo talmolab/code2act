@@ -506,14 +506,46 @@ def main(cfg: DictConfig) -> None:
     test_codes_walking = _test_codes_for_pose(walking_clips)
     test_codes_rearing = _test_codes_for_pose(rearing_clips)
 
+    # Decide reuse before paying the JIT-compile cost. Envs are still
+    # built unconditionally because the rendering phase later needs
+    # ghost models extracted from them.
+    sequence_names_for_paths = list(cfg.sequences.keys())
+    expected_npz_paths = [
+        data_dir / f"hidden_{pose_name}_{seq_name}.npz"
+        for pose_name in ("walking", "rearing")
+        for seq_name in sequence_names_for_paths
+    ]
+    reuse_rollouts_cfg = bool(cfg.get("reuse_rollouts", True))
+    can_reuse_rollouts = (
+        reuse_rollouts_cfg and all(p.exists() for p in expected_npz_paths)
+    )
+    if reuse_rollouts_cfg and not can_reuse_rollouts:
+        missing = [p.name for p in expected_npz_paths if not p.exists()]
+        log.info(
+            f"reuse_rollouts=true but {len(missing)} of "
+            f"{len(expected_npz_paths)} rollout npzs missing "
+            f"({missing[:3]}{'...' if len(missing) > 3 else ''}); "
+            f"running rollouts fresh."
+        )
+    elif can_reuse_rollouts:
+        log.info(
+            f"reuse_rollouts=true and all {len(expected_npz_paths)} "
+            f"rollout npzs present under {data_dir.relative_to(REPO_ROOT) if str(data_dir).startswith(str(REPO_ROOT)) else data_dir}/ "
+            f"— skipping JIT-compile + rollout loop."
+        )
+
     log.info("Building walking-pose env...")
     env_walking = _build_pose_env(
         ckpt_cfg, _abs(cfg.data.reference_data_path), clip_len,
         keep_clips_idx=walking_clips, test_codes=test_codes_walking,
         code_stack_size=code_stack_size, probe_frame=walking_probe_frame,
     )
-    jit_reset_w = jax.jit(env_walking.reset)
-    jit_step_w = jax.jit(env_walking.step)
+    jit_reset_w = (
+        jax.jit(env_walking.reset) if not can_reuse_rollouts else None
+    )
+    jit_step_w = (
+        jax.jit(env_walking.step) if not can_reuse_rollouts else None
+    )
 
     log.info("Building rearing-pose env...")
     env_rearing = _build_pose_env(
@@ -521,8 +553,12 @@ def main(cfg: DictConfig) -> None:
         keep_clips_idx=rearing_clips, test_codes=test_codes_rearing,
         code_stack_size=code_stack_size, probe_frame=rearing_probe_frame,
     )
-    jit_reset_r = jax.jit(env_rearing.reset)
-    jit_step_r = jax.jit(env_rearing.step)
+    jit_reset_r = (
+        jax.jit(env_rearing.reset) if not can_reuse_rollouts else None
+    )
+    jit_step_r = (
+        jax.jit(env_rearing.step) if not can_reuse_rollouts else None
+    )
 
     # ------------------------------------------------------------------
     # Resolve sequences
@@ -564,93 +600,132 @@ def main(cfg: DictConfig) -> None:
         ("rearing", env_rearing, jit_reset_r, jit_step_r, rearing_clips),
     ]
 
+    pose_to_probe_frame = {
+        "walking": walking_probe_frame,
+        "rearing": rearing_probe_frame,
+    }
+    pose_to_clips = {
+        "walking": walking_clips,
+        "rearing": rearing_clips,
+    }
+
     rollouts: dict[tuple[str, str], dict[str, Any]] = {}
-    for pose_name, env, jit_reset, jit_step, pose_clips in pose_specs:
-        for seq_name, sinfo in resolved_sequences.items():
-            log.info(
-                f"\n=== Pose={pose_name} | Sequence={seq_name} ==="
-            )
-            codes_arr = sinfo["codes"]
-            T_total = int(codes_arr.shape[0])
 
-            hidden_all: list[np.ndarray] = []
-            qpos_all: list[np.ndarray] = []
-            proprio_all: list[np.ndarray] = []
-            codes_actual_all: list[np.ndarray] = []
-            rewards_all: list[np.ndarray] = []
-
-            for k, clip_id in enumerate(pose_clips):
-                # reset_clip_idx is the POSITION within keep_clips_idx,
-                # i.e. k itself (each body uses its k-th clip).
-                # NOTE on "survival": run_rollout_with_hidden (the
-                # run_hidden_dynamics flavour) NEVER breaks on
-                # state.done — the loop always runs the full max_steps
-                # and merely records the step at which `done` first
-                # fires. The env's imitation-clip truncation (cur_frame
-                # > clip_length - reference_length - 1) flips `done`
-                # around ctrl step ~448 with start_frame≈20, but
-                # physics keeps integrating, MJX state keeps evolving,
-                # and qpos/hidden/proprio remain valid through T_total.
-                # In decoder-only mode (z_e_scale=0) the stale
-                # imitation target is irrelevant because the encoder's
-                # contribution is zeroed at the GRU input. The
-                # `survival` number reported below is therefore just
-                # informational ("when did the imitation clock expire")
-                # and not a loss-of-data signal.
-                key = jax.random.PRNGKey(seed + 1000 * len(rollouts) + k)
-                result = run_rollout_with_hidden(
-                    env, inf_fn, params, ppo_networks, key,
-                    max_steps=T_total,
-                    code_override=codes_arr,
-                    reset_clip_idx=int(k),
-                    jit_reset=jit_reset, jit_step=jit_step,
-                )
-
-                def _rect(a: np.ndarray) -> np.ndarray:
-                    """Pad / truncate so each body's array is exactly
-                    (T_total, ...) — termination would otherwise leave
-                    a ragged tensor across the K bodies."""
-                    if a.shape[0] >= T_total:
-                        return a[:T_total]
-                    pad = np.zeros(
-                        (T_total - a.shape[0],) + a.shape[1:], dtype=a.dtype,
-                    )
-                    return np.concatenate([a, pad], axis=0)
-
-                hidden_all.append(_rect(result["hidden_states"]))
-                qpos_all.append(_rect(result["qpos"]))
-                proprio_all.append(_rect(result["proprio"]))
-                codes_actual_all.append(_rect(result["code_indices"]))
-                rewards_all.append(_rect(result["rewards"]))
+    if can_reuse_rollouts:
+        for pose_name in ("walking", "rearing"):
+            for seq_name in resolved_sequences.keys():
+                npz_path = data_dir / f"hidden_{pose_name}_{seq_name}.npz"
+                d = np.load(npz_path, allow_pickle=True)
+                agg = {k: d[k] for k in d.files}
+                # Numpy 0-d / 1-elt arrays of strings come back wrapped;
+                # unwrap pose_name / seq_name for the rendering pass.
+                agg["pose_name"] = str(agg["pose_name"])
+                agg["seq_name"] = str(agg["seq_name"])
+                rollouts[(pose_name, seq_name)] = agg
                 log.info(
-                    f"  body {k} (clip {int(clip_id)}): "
-                    f"first_done_step={result['survival']}/{T_total} "
-                    f"(rollout completes T_total regardless), "
-                    f"mean_reward={np.mean(result['rewards']):.3f}"
+                    f"  Loaded {npz_path.name}: hidden={agg['hidden'].shape}, "
+                    f"qpos={agg['qpos'].shape}"
                 )
+    else:
+        for pose_name, env, jit_reset, jit_step, pose_clips in pose_specs:
+            for seq_name, sinfo in resolved_sequences.items():
+                log.info(
+                    f"\n=== Pose={pose_name} | Sequence={seq_name} ==="
+                )
+                codes_arr = sinfo["codes"]
+                T_total = int(codes_arr.shape[0])
 
-            agg = {
-                "hidden": np.stack(hidden_all, axis=0),
-                "qpos": np.stack(qpos_all, axis=0),
-                "proprio": np.stack(proprio_all, axis=0),
-                "codes": np.stack(codes_actual_all, axis=0),
-                "rewards": np.stack(rewards_all, axis=0),
-                "start_clips": np.asarray(pose_clips, dtype=np.int64),
-                "code_sequence": codes_arr,
-                "phase_bounds": np.asarray(sinfo["phase_bounds"], dtype=np.int64),
-                "phase_names": np.asarray(sinfo["names"], dtype=object),
-                "phase_code_ints": np.asarray(sinfo["phase_code_ints"], dtype=np.int64),
-                "pose_name": pose_name,
-                "seq_name": seq_name,
-                "probe_frame": np.int32(probe_frame),
-                "z_e_scale": np.float32(z_e_scale),
-            }
-            rollouts[(pose_name, seq_name)] = agg
+                hidden_all: list[np.ndarray] = []
+                qpos_all: list[np.ndarray] = []
+                proprio_all: list[np.ndarray] = []
+                codes_actual_all: list[np.ndarray] = []
+                rewards_all: list[np.ndarray] = []
 
-            # Per-rollout npz (granular, easy to re-render).
-            out_npz = data_dir / f"hidden_{pose_name}_{seq_name}.npz"
-            np.savez_compressed(out_npz, **agg)
-            log.info(f"  Saved: {out_npz}")
+                for k, clip_id in enumerate(pose_clips):
+                    # reset_clip_idx is the POSITION within
+                    # keep_clips_idx, i.e. k itself (each body uses its
+                    # k-th clip).
+                    # NOTE on "survival": run_rollout_with_hidden (the
+                    # run_hidden_dynamics flavour) NEVER breaks on
+                    # state.done — the loop always runs the full
+                    # max_steps and merely records the step at which
+                    # `done` first fires. The env's imitation-clip
+                    # truncation (cur_frame > clip_length -
+                    # reference_length - 1) flips `done` around ctrl
+                    # step ~448 with start_frame≈20, but physics keeps
+                    # integrating, MJX state keeps evolving, and
+                    # qpos/hidden/proprio remain valid through
+                    # T_total. In decoder-only mode (z_e_scale=0) the
+                    # stale imitation target is irrelevant because the
+                    # encoder's contribution is zeroed at the GRU
+                    # input. The `survival` number reported below is
+                    # therefore just informational ("when did the
+                    # imitation clock expire") and not a loss-of-data
+                    # signal.
+                    key = jax.random.PRNGKey(
+                        seed + 1000 * len(rollouts) + k
+                    )
+                    result = run_rollout_with_hidden(
+                        env, inf_fn, params, ppo_networks, key,
+                        max_steps=T_total,
+                        code_override=codes_arr,
+                        reset_clip_idx=int(k),
+                        jit_reset=jit_reset, jit_step=jit_step,
+                    )
+
+                    def _rect(a: np.ndarray) -> np.ndarray:
+                        """Pad / truncate so each body's array is
+                        exactly (T_total, ...) — termination would
+                        otherwise leave a ragged tensor across the K
+                        bodies."""
+                        if a.shape[0] >= T_total:
+                            return a[:T_total]
+                        pad = np.zeros(
+                            (T_total - a.shape[0],) + a.shape[1:],
+                            dtype=a.dtype,
+                        )
+                        return np.concatenate([a, pad], axis=0)
+
+                    hidden_all.append(_rect(result["hidden_states"]))
+                    qpos_all.append(_rect(result["qpos"]))
+                    proprio_all.append(_rect(result["proprio"]))
+                    codes_actual_all.append(_rect(result["code_indices"]))
+                    rewards_all.append(_rect(result["rewards"]))
+                    log.info(
+                        f"  body {k} (clip {int(clip_id)}): "
+                        f"first_done_step={result['survival']}/{T_total} "
+                        f"(rollout completes T_total regardless), "
+                        f"mean_reward={np.mean(result['rewards']):.3f}"
+                    )
+
+                agg = {
+                    "hidden": np.stack(hidden_all, axis=0),
+                    "qpos": np.stack(qpos_all, axis=0),
+                    "proprio": np.stack(proprio_all, axis=0),
+                    "codes": np.stack(codes_actual_all, axis=0),
+                    "rewards": np.stack(rewards_all, axis=0),
+                    "start_clips": np.asarray(pose_clips, dtype=np.int64),
+                    "code_sequence": codes_arr,
+                    "phase_bounds": np.asarray(
+                        sinfo["phase_bounds"], dtype=np.int64,
+                    ),
+                    "phase_names": np.asarray(sinfo["names"], dtype=object),
+                    "phase_code_ints": np.asarray(
+                        sinfo["phase_code_ints"], dtype=np.int64,
+                    ),
+                    "pose_name": pose_name,
+                    "seq_name": seq_name,
+                    "probe_frame": np.int32(pose_to_probe_frame[pose_name]),
+                    "z_e_scale": np.float32(z_e_scale),
+                }
+                rollouts[(pose_name, seq_name)] = agg
+
+                # Per-rollout npz (granular, easy to re-render).
+                out_npz = (
+                    data_dir / f"hidden_{pose_name}_{seq_name}.npz"
+                )
+                np.savez_compressed(out_npz, **agg)
+                log.info(f"  Saved: {out_npz}")
 
     # ------------------------------------------------------------------
     # Joint PCA across all 6 rollouts

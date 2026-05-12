@@ -1,0 +1,21 @@
+# Mamba — selective state-space model.
+#
+# Sized for c2a data scale. Override on the command line:
+#   python -m c2a.ar_codegen.train model=mamba model.d_model=256
+
+_name: mamba
+
+# Architecture (vocab_size is set at runtime = num_codes + 1).
+d_model: 128
+n_layers: 4
+d_state: 16
+d_conv: 4
+expand: 2
+dt_rank: auto  # int or "auto" → ceil(d_model / 16)
+dt_min: 0.001
+dt_max: 0.1
+dt_init_floor: 1e-4
+conv_bias: true
+bias: false
+max_len: 256
+dropout_rate: 0.1

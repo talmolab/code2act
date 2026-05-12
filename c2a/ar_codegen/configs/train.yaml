@@ -1,0 +1,61 @@
+# Default training config for c2a.ar_codegen.train.
+#
+# Select a model with `model=<name>` (one of: gpt2 / mamba / s5 / hmm).
+# Defaults below are written for the c2a data scale (~70 clips × 250
+# frames, ~32-code vocab) — override per-key on the command line.
+
+defaults:
+  - _self_
+  - model: gpt2
+  - data: kpms_raw
+
+train_setup:
+  run_name: ${oc.env:USER,user}_${model._name}_${data._name}
+  output_root: ${oc.env:C2A_ROOT,.}/outputs/ar_codegen
+  seed: 42
+
+# Per-step training options consumed by every model's fit() — each model
+# uses the subset that applies (HMM only uses seed + num_states_sweep +
+# num_em_iters + train_ratio; neural models use the rest).
+training:
+  batch_size: 16
+  num_epochs: 200
+  learning_rate: 3e-4
+  weight_decay: 0.01
+  log_every: 1
+  seed: ${train_setup.seed}
+
+  # --- Early stopping (neural models only) ---
+  # When patience>0, training tracks the best val_loss seen so far and
+  # restores those params at the end. Stops early after `patience`
+  # consecutive epochs without an improvement of at least `min_delta`.
+  # Set patience=0 to disable.
+  early_stop_patience: 30
+  early_stop_min_delta: 1e-4
+
+  # --- Histogram logging (all models, when wandb is on) ---
+  # Frequency in epochs at which to log "actual vs predicted" code
+  # distributions for train and val splits. Set to 0 to log only at end.
+  histogram_log_every: 10
+
+  # --- HMM-specific ---
+  num_states_sweep: [4, 8, 16]
+  num_em_iters: 50
+  train_ratio: 0.8
+
+logging_config:
+  use_wandb: true
+  wandb_project: code2act_ar_codegen
+  wandb_entity: null
+  wandb_mode: online
+  wandb_tags: []
+
+hydra:
+  run:
+    dir: ${train_setup.output_root}/${model._name}/${now:%y%m%d_%H%M%S}_${oc.env:USER,user}
+  output_subdir: hydra
+  # Hydra 1.2+ defaults chdir to false — but our train.py uses Path.cwd()
+  # to know where to save meta.json + params.msgpack, so cd into the run
+  # dir to keep all per-run artifacts together.
+  job:
+    chdir: true

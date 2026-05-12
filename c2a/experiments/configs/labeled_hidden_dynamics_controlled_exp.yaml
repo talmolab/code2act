@@ -116,5 +116,16 @@ banner_h: 44
 azim_start: 140.0
 azim_end: 260.0
 
+# -----------------------------------------------------------------------------
+# Reuse cached rollouts. Default is false — always run fresh rollouts.
+# Set to true to skip the JIT-compile + 60-rollout loop when every
+# expected `hidden_<pose>_<seq>.npz` already exists under
+# output.base_dir/data/ (useful for iterating on the rendering /
+# PCA pass without redoing the ~hour of rollouts). Override on the CLI:
+#     python -m c2a.experiments.run_labeled_hidden_dynamics_controlled \
+#         reuse_rollouts=true
+# -----------------------------------------------------------------------------
+reuse_rollouts: false
+
 output:
   base_dir: ./outputs/labeled_hidden_dynamics_controlled

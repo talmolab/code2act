@@ -1,0 +1,10 @@
+# Categorical HMM via dynamax (moved from run_code_generation.py).
+#
+# The neural-model `training` block also carries HMM-specific keys
+# (num_states_sweep, num_em_iters, train_ratio). The HMM is fit by
+# EM and selected by validation marginal log-likelihood.
+
+_name: hmm
+
+# No architecture knobs at the model level — everything lives in
+# `training` (num_states_sweep, num_em_iters, train_ratio, seed).
