@@ -12,6 +12,9 @@ network, or the PPO loop:
         - ``"kpms_merged"``         — merged KPMS codes; requires the npz
                                        to carry ``is_merged=True`` (written
                                        by ``c2a.codegen.kpms.merge_states.reencode_codes_npz``).
+        - ``"shimoseq"``            — shMoSeq high-level state codes from a
+                                       sweep (written by
+                                       ``c2a.codegen.shimoseq.generate_codes``).
         - ``"gt_directional_turn"`` — 5-class ground-truth labels:
                                        Immobile, Rear, Walk, Turn_Left, Turn_Right.
 
@@ -46,12 +49,24 @@ log = logging.getLogger(__name__)
 # Code-source identifiers (kept in sync with the YAML doc).
 SOURCE_KPMS_RAW = "kpms_raw"
 SOURCE_KPMS_MERGED = "kpms_merged"
+SOURCE_SHIMOSEQ = "shimoseq"
 SOURCE_GT_DIRECTIONAL_TURN = "gt_directional_turn"
 SOURCE_RANDOM = "random"  # implicit when codes_path=null
+
+# Sources whose ``.npz`` file format is the shared CodesPayload schema
+# (written by ``c2a.codegen.shared.npz_schema.write_codes_npz``). All
+# share the same loader (`_load_kpms_npz`); the ``requested_source`` arg
+# is what differentiates them in WandB provenance.
+_NPZ_SCHEMA_SOURCES = frozenset({
+    SOURCE_KPMS_RAW,
+    SOURCE_KPMS_MERGED,
+    SOURCE_SHIMOSEQ,
+})
 
 VALID_SOURCES = {
     SOURCE_KPMS_RAW,
     SOURCE_KPMS_MERGED,
+    SOURCE_SHIMOSEQ,
     SOURCE_GT_DIRECTIONAL_TURN,
 }
 
@@ -133,13 +148,10 @@ def load_codes(
     n_train = int(train_indices.shape[0])
     n_test = int(test_indices.shape[0])
 
-    if codes_path is None and code_source in (
-        SOURCE_KPMS_RAW,
-        SOURCE_KPMS_MERGED,
-    ):
+    if codes_path is None and code_source in _NPZ_SCHEMA_SOURCES:
         # Smoke-test path. Random codes were the historical fallback when
-        # codes_path=null. We only honour it for KPMS sources; GT sources
-        # always require their CSV to exist.
+        # codes_path=null. We honour it for any npz-schema source (kpms*,
+        # shimoseq); GT sources always require their CSV to exist.
         return _generate_random(cfg, n_train, n_test, n_frames)
 
     if code_source == SOURCE_KPMS_RAW:
@@ -152,6 +164,12 @@ def load_codes(
         return _load_kpms_npz(
             codes_path, train_indices, test_indices, n_frames,
             require_merged=True, requested_source=SOURCE_KPMS_MERGED,
+        )
+
+    if code_source == SOURCE_SHIMOSEQ:
+        return _load_kpms_npz(
+            codes_path, train_indices, test_indices, n_frames,
+            require_merged=False, requested_source=SOURCE_SHIMOSEQ,
         )
 
     if code_source == SOURCE_GT_DIRECTIONAL_TURN:
