@@ -11,7 +11,7 @@ syllables can be compared against a fixed 6-behavior vocabulary:
   ``scipy.optimize.linear_sum_assignment``, report the matched-cell fraction.
 
 Both metrics ignore frames where the behavior label is ``UNLABELED`` (the
-sentinel from ``c2a.kpms.label_alignment``).
+sentinel from ``c2a.codegen.shared.label_alignment``).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from sklearn.metrics import normalized_mutual_info_score
 
-from c2a.kpms.label_alignment import UNLABELED
+from c2a.codegen.shared.label_alignment import UNLABELED
 
 log = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ def compute_coverage(
             ``all_clip_indices``. ``syllables_list[pos]`` has shape
             ``[n_frames]`` and corresponds to clip ``all_clip_indices[pos]``.
         frame_labels: Output of
-            ``c2a.kpms.label_alignment.load_behavior_frames`` — shape
+            ``c2a.codegen.shared.label_alignment.load_behavior_frames`` — shape
             ``[N_labeled_range, n_frames]``, dtype int32.
         labeled_clip_indices: Corresponding clip index array of shape
             ``[N_labeled_range]``.

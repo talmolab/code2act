@@ -35,7 +35,7 @@ Public API
   (12-class) per-frame integer arrays + clip indices + per-clip counts.
 * :func:`load_behavior_frames` — backward-compatible thin wrapper that
   returns just the behavior-track view as ``(frame_labels, clip_indices,
-  n_labeled_per_clip)``.  Used by older callers (``c2a.sweep.run_sweep``).
+  n_labeled_per_clip)``.  Used by older callers (``c2a.codegen.run_sweep``).
 
 Sentinel
 --------
@@ -70,7 +70,7 @@ BEHAVIOR_TO_INT: dict[str, int] = {b: i for i, b in enumerate(BEHAVIORS)}
 DIRECTION_TO_INT: dict[str, int] = {d: i for i, d in enumerate(DIRECTIONS)}
 COMBINED_TO_INT: dict[str, int] = {c: i for i, c in enumerate(COMBINED_LABELS)}
 
-# 5-class scheme used by ``c2a.code_sources.SOURCE_GT_DIRECTIONAL_TURN``
+# 5-class scheme used by ``c2a.codegen.code_sources.SOURCE_GT_DIRECTIONAL_TURN``
 # and by ``c2a.experiments.run_labeled_hidden_dynamics`` when configured
 # for a 5-class breakdown. Direction is collapsed for non-Turn behaviors:
 #

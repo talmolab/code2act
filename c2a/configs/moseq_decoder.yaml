@@ -106,7 +106,7 @@ render_config:
 #                             is_merged=True, but warns).
 #   "kpms_merged"          — merged KPMS codes; REQUIRES the .npz to carry
 #                             is_merged=True provenance (written by
-#                             c2a.kpms.merge_states.reencode_codes_npz).
+#                             c2a.codegen.kpms.merge_states.reencode_codes_npz).
 #                             Refuses to silently treat raw codes as merged.
 #   "gt_directional_turn"  — 5-class ground-truth labels:
 #                             0=Immobile, 1=Rear, 2=Walk,

@@ -100,7 +100,7 @@ REPO_ROOT = get_repo_root()
 from track_mjx.config import utils
 from vnl_playground.tasks.rodent.imitation import ReferenceClips
 
-from c2a.code_sources import (
+from c2a.codegen.code_sources import (
     SOURCE_GT_DIRECTIONAL_TURN,
     load_codes,
 )
@@ -110,7 +110,7 @@ from c2a.experiments.shared.checkpoint_utils import (
     make_inference_fn,
 )
 from c2a.experiments.shared.clip_selection import load_balanced_splits
-from c2a.kpms.label_alignment import (
+from c2a.codegen.shared.label_alignment import (
     BEHAVIORS,
     BEHAVIOR_TO_INT,
     DIRECTIONAL_TURN_LABELS,

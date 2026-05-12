@@ -9,7 +9,7 @@
 # captured cleanly.
 #
 # Labels source: KevinBian107/TopoMimic-annotation
-# Schema (5 classes, matching c2a.code_sources.gt_directional_turn):
+# Schema (5 classes, matching c2a.codegen.code_sources.gt_directional_turn):
 #   Immobile     (any direction)
 #   Rear         (any direction)
 #   Walk         (any direction)
@@ -30,7 +30,7 @@ checkpoint:
   step: null
 
 data:
-  # Codes are now loaded via ``c2a.code_sources.load_codes`` keyed off
+  # Codes are now loaded via ``c2a.codegen.code_sources.load_codes`` keyed off
   # ``ckpt_cfg.kpms_config`` (saved inside the checkpoint), so the
   # experiment automatically uses whichever code_source / codes_path /
   # labels_csv_path the policy was trained against. The field below is

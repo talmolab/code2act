@@ -1,4 +1,4 @@
-"""Tests for the AR-HMM auto-merge criterion in c2a.kpms.merge_states.
+"""Tests for the AR-HMM auto-merge criterion in c2a.codegen.kpms.merge_states.
 
 The criterion is a closed-form Bhattacharyya distance between AR-HMM
 emission distributions averaged over the empirical history. Two states
@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from c2a.kpms.merge_states import (
+from c2a.codegen.kpms.merge_states import (
     DEFAULT_BHATTACHARYYA_THRESHOLD,
     _bhattacharyya_pair,
     _build_history_vectors,

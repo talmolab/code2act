@@ -1,6 +1,6 @@
 """Data loading + batching for AR code-sequence training.
 
-Wraps :func:`c2a.code_sources.load_codes` so AR training inherits the
+Wraps :func:`c2a.codegen.code_sources.load_codes` so AR training inherits the
 exact same code-source dispatch (kpms_raw / kpms_merged /
 gt_directional_turn / random) used by the main decoder training. The
 clip-index alignment requirement is preserved: the npz's stored
@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
-from c2a.code_sources import CodesPayload, load_codes
+from c2a.codegen.code_sources import CodesPayload, load_codes
 from c2a.paths import get_repo_root
 
 log = logging.getLogger(__name__)

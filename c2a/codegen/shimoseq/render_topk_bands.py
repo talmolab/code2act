@@ -1,8 +1,8 @@
 """Top-K band figures + mp4s for a shMoSeq sweep.
 
-Mirror of :mod:`c2a.kpms.render_topk_bands`.  Loads top-K state arrays
+Mirror of :mod:`c2a.codegen.kpms.render_topk_bands`.  Loads top-K state arrays
 from ``topk_states.npz`` (produced by
-:func:`c2a.shimoseq.sweep_impl.run_sweep`), and uses the shared helpers
+:func:`c2a.codegen.shimoseq.sweep_impl.run_sweep`), and uses the shared helpers
 in :mod:`c2a.render.topk_bands_render` to emit:
 
   * ``topk_bands_loglik_clip{ci}.png`` — filmstrip + GT + K shMoSeq rows
@@ -15,8 +15,8 @@ duration-window filter.
 
 Usage::
 
-    python -m c2a.shimoseq.render_topk_bands --sweep-dir outputs/shimoseq_sweep
-    python -m c2a.shimoseq.render_topk_bands --sweep-dir outputs/shimoseq_sweep \\
+    python -m c2a.codegen.shimoseq.render_topk_bands --sweep-dir outputs/shimoseq_sweep
+    python -m c2a.codegen.shimoseq.render_topk_bands --sweep-dir outputs/shimoseq_sweep \\
         --top-k 5 --format both
 """
 
@@ -29,8 +29,8 @@ from pathlib import Path
 
 import numpy as np
 
-from c2a.kpms.label_alignment import load_label_frames
-from c2a.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
+from c2a.codegen.shared.label_alignment import load_label_frames
+from c2a.codegen.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
 from c2a.paths import get_repo_root
 from c2a.render.topk_bands_render import (
     auto_select_clips,

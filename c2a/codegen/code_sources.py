@@ -11,7 +11,10 @@ network, or the PPO loop:
         - ``"kpms_raw"``            — raw KPMS codes from a sweep (default).
         - ``"kpms_merged"``         — merged KPMS codes; requires the npz
                                        to carry ``is_merged=True`` (written
-                                       by ``c2a.kpms.merge_states.reencode_codes_npz``).
+                                       by ``c2a.codegen.kpms.merge_states.reencode_codes_npz``).
+        - ``"shimoseq"``            — shMoSeq high-level state codes from a
+                                       sweep (written by
+                                       ``c2a.codegen.shimoseq.generate_codes``).
         - ``"gt_directional_turn"`` — 5-class ground-truth labels:
                                        Immobile, Rear, Walk, Turn_Left, Turn_Right.
 
@@ -46,20 +49,32 @@ log = logging.getLogger(__name__)
 # Code-source identifiers (kept in sync with the YAML doc).
 SOURCE_KPMS_RAW = "kpms_raw"
 SOURCE_KPMS_MERGED = "kpms_merged"
+SOURCE_SHIMOSEQ = "shimoseq"
 SOURCE_GT_DIRECTIONAL_TURN = "gt_directional_turn"
 SOURCE_RANDOM = "random"  # implicit when codes_path=null
+
+# Sources whose ``.npz`` file format is the shared CodesPayload schema
+# (written by ``c2a.codegen.shared.npz_schema.write_codes_npz``). All
+# share the same loader (`_load_kpms_npz`); the ``requested_source`` arg
+# is what differentiates them in WandB provenance.
+_NPZ_SCHEMA_SOURCES = frozenset({
+    SOURCE_KPMS_RAW,
+    SOURCE_KPMS_MERGED,
+    SOURCE_SHIMOSEQ,
+})
 
 VALID_SOURCES = {
     SOURCE_KPMS_RAW,
     SOURCE_KPMS_MERGED,
+    SOURCE_SHIMOSEQ,
     SOURCE_GT_DIRECTIONAL_TURN,
 }
 
 
 # 5-class mapping for gt_directional_turn.
-# Behavior indices match c2a.kpms.label_alignment.BEHAVIORS:
+# Behavior indices match c2a.codegen.shared.label_alignment.BEHAVIORS:
 #   0=Immobile, 1=Rear, 2=Turn, 3=Walk
-# Direction indices match c2a.kpms.label_alignment.DIRECTIONS:
+# Direction indices match c2a.codegen.shared.label_alignment.DIRECTIONS:
 #   0=Left, 1=Right, 2=Straight
 GT_DIRECTIONAL_TURN_NUM_CODES = 5
 GT_DIRECTIONAL_TURN_NAMES = (
@@ -133,13 +148,10 @@ def load_codes(
     n_train = int(train_indices.shape[0])
     n_test = int(test_indices.shape[0])
 
-    if codes_path is None and code_source in (
-        SOURCE_KPMS_RAW,
-        SOURCE_KPMS_MERGED,
-    ):
+    if codes_path is None and code_source in _NPZ_SCHEMA_SOURCES:
         # Smoke-test path. Random codes were the historical fallback when
-        # codes_path=null. We only honour it for KPMS sources; GT sources
-        # always require their CSV to exist.
+        # codes_path=null. We honour it for any npz-schema source (kpms*,
+        # shimoseq); GT sources always require their CSV to exist.
         return _generate_random(cfg, n_train, n_test, n_frames)
 
     if code_source == SOURCE_KPMS_RAW:
@@ -152,6 +164,12 @@ def load_codes(
         return _load_kpms_npz(
             codes_path, train_indices, test_indices, n_frames,
             require_merged=True, requested_source=SOURCE_KPMS_MERGED,
+        )
+
+    if code_source == SOURCE_SHIMOSEQ:
+        return _load_kpms_npz(
+            codes_path, train_indices, test_indices, n_frames,
+            require_merged=False, requested_source=SOURCE_SHIMOSEQ,
         )
 
     if code_source == SOURCE_GT_DIRECTIONAL_TURN:
@@ -213,8 +231,8 @@ def _load_kpms_npz(
 ) -> CodesPayload:
     """Load codes from a KPMS-format .npz.
 
-    Format (written by ``c2a.codegen.generate_codes`` / merged by
-    ``c2a.kpms.merge_states.reencode_codes_npz``):
+    Format (written by ``c2a.codegen.kpms.generate_codes`` / merged by
+    ``c2a.codegen.kpms.merge_states.reencode_codes_npz``):
 
         * ``train_codes`` ``[N_train, T]`` int
         * ``test_codes``  ``[N_test,  T]`` int
@@ -260,8 +278,8 @@ def _load_kpms_npz(
         raise RuntimeError(
             f"code_source=kpms_merged requires the .npz at {p} to carry "
             f"`is_merged=True` provenance, but it does not. Re-encode the "
-            f"raw codes with `c2a.kpms.merge_states.reencode_codes_npz` "
-            f"(via `python -m c2a.kpms.merge_states ...`) so the file is "
+            f"raw codes with `c2a.codegen.kpms.merge_states.reencode_codes_npz` "
+            f"(via `python -m c2a.codegen.kpms.merge_states ...`) so the file is "
             f"marked as merged. Refusing to silently treat raw codes as "
             f"merged."
         )
@@ -287,7 +305,7 @@ def _load_kpms_npz(
                 f"npz at {p} has train_indices that do not match the loader's "
                 f"caller-provided train_indices. The codes file was generated "
                 f"against a different balanced split. Re-run "
-                f"`c2a.codegen.generate_codes` with the current split JSON."
+                f"`c2a.codegen.kpms.generate_codes` with the current split JSON."
             )
         if len(stored_test_idx) != len(test_indices) or not np.array_equal(
             np.asarray(stored_test_idx), test_indices
@@ -335,7 +353,7 @@ def _load_kpms_npz(
                 f"contain values up to {max_present}. The embedding table "
                 f"would be undersized. If this file came from a remap, the "
                 f"producer must update num_states (and ideally write "
-                f"is_merged=True) — see c2a.kpms.merge_states.reencode_codes_npz."
+                f"is_merged=True) — see c2a.codegen.kpms.merge_states.reencode_codes_npz."
             )
 
     _validate_codes_shape_and_range(
@@ -415,7 +433,7 @@ def _load_gt_directional_turn(
     """
     # Lazy import: label_alignment lives next to KPMS code and pulling it
     # eagerly into c2a/__init__.py would couple environments together.
-    from c2a.kpms.label_alignment import (
+    from c2a.codegen.shared.label_alignment import (
         BEHAVIOR_TO_INT, DIRECTION_TO_INT, UNLABELED, load_label_frames,
     )
 

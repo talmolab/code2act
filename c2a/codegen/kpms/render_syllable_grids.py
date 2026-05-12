@@ -27,7 +27,7 @@ clips).
 
 Usage::
 
-    python -m c2a.kpms.render_syllable_grids \\
+    python -m c2a.codegen.kpms.render_syllable_grids \\
         --sweep-dir outputs/kpms_sweep --top-k 5 --format both
 """
 
@@ -46,12 +46,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
-from c2a.kpms.render_topk_bands import (
+from c2a.codegen.kpms.render_topk_bands import (
     _load_balanced_split,
     _load_syllables_for_fit,
     _select_topk,
 )
-from c2a.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
+from c2a.codegen.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
 from c2a.paths import get_repo_root
 from c2a.render.topk_bands_render import _resolve_skeleton_edges
 

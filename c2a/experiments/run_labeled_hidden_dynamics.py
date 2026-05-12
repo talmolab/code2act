@@ -8,7 +8,7 @@ kinematic heuristics over KPMS codes.
 The schema is two-track: ``behavior`` ∈ {Immobile, Rear, Turn, Walk}
 crossed with ``direction`` ∈ {Left, Right, Straight}. This experiment
 projects the two tracks onto the **5-class directional-turn scheme**
-that mirrors ``c2a.code_sources.SOURCE_GT_DIRECTIONAL_TURN``: direction
+that mirrors ``c2a.codegen.code_sources.SOURCE_GT_DIRECTIONAL_TURN``: direction
 is collapsed for non-Turn behaviors so the rollouts cover
 
     Immobile, Rear, Walk, Turn_Left, Turn_Right.
@@ -109,7 +109,7 @@ from c2a.experiments.shared.ghost_rendering import (
 )
 from c2a.experiments.shared.plotting import get_trajectory_colors
 
-from c2a.kpms.label_alignment import (
+from c2a.codegen.shared.label_alignment import (
     DIRECTIONAL_TURN_LABELS,
     UNLABELED,
     directional_turn_array,
@@ -157,7 +157,7 @@ def _find_agreement_codes(
 
     Generic over the label scheme — pass any per-frame integer label
     array indexed by ``range(len(label_names))`` plus UNLABELED (-1).
-    Use :data:`c2a.kpms.label_alignment.COMBINED_LABELS` for the
+    Use :data:`c2a.codegen.shared.label_alignment.COMBINED_LABELS` for the
     12-class combined behavior×direction breakdown, or
     :data:`DIRECTIONAL_TURN_LABELS` for the 5-class
     {Immobile, Rear, Walk, Turn_Left, Turn_Right} breakdown.
@@ -443,7 +443,7 @@ def main(cfg: DictConfig) -> None:
     test_indices = np.asarray(splits["balanced"]["test_indices"], dtype=np.int64)
     clip_len = int(ckpt_cfg.env_config.clip_length)
 
-    from c2a.code_sources import load_codes
+    from c2a.codegen.code_sources import load_codes
     codes_payload = load_codes(ckpt_cfg, train_indices, test_indices, clip_len)
     train_codes = codes_payload.train_codes
     test_codes = codes_payload.test_codes
@@ -493,7 +493,7 @@ def main(cfg: DictConfig) -> None:
 
     # 5-class directional-turn scheme: collapse direction for non-Turn
     # behaviors so the experiment reports Immobile / Rear / Walk /
-    # Turn_Left / Turn_Right (mirrors c2a.code_sources.gt_directional_turn).
+    # Turn_Left / Turn_Right (mirrors c2a.codegen.code_sources.gt_directional_turn).
     label_names = DIRECTIONAL_TURN_LABELS
     label_array_5 = directional_turn_array(label_arrays)
 

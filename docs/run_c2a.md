@@ -62,7 +62,7 @@ orchestration details.
 ### Stage 1 — KPMS sweep
 
 ```bash
-python -m c2a.sweep.run_sweep --config c2a/configs/kpms_sweep.yaml
+python -m c2a.codegen.run_sweep --config c2a/configs/kpms_sweep.yaml
 ```
 
 Fits KPMS over `(num_states × kappa)` grid. Results → `c2a/outputs/kpms_sweep/sweep_results.json`.
@@ -71,12 +71,12 @@ Fits KPMS over `(num_states × kappa)` grid. Results → `c2a/outputs/kpms_sweep
 
 Single best model:
 ```bash
-python -m c2a.codegen.generate_codes
+python -m c2a.codegen.kpms.generate_codes
 ```
 
 Per-setting codes (for sweep):
 ```bash
-python -m c2a.codegen.generate_all_codes \
+python -m c2a.codegen.kpms.generate_all_codes \
     --sweep-results c2a/outputs/pipeline_sweep/kpms/sweep_results.json \
     --balanced-split data/rodent/rodent_balanced_splits.json \
     --output-dir c2a/outputs/pipeline_sweep/codes

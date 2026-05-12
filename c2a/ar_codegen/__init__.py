@@ -2,7 +2,7 @@
 
 This subpackage hosts model classes that fit a sequence prior over per-frame
 KPMS code sequences (or any compatible code source from
-:mod:`c2a.code_sources`) and emit new code sequences for downstream rollout
+:mod:`c2a.codegen.code_sources`) and emit new code sequences for downstream rollout
 through the trained MoSeq decoder policy.
 
 Four generators live here, sharing the unified

@@ -42,7 +42,7 @@ from track_mjx.config import utils
 from vnl_playground.tasks.rodent.imitation import ReferenceClips
 from c2a.moseq_env_wrapper import MoSeqImitation
 
-from c2a.code_sources import (
+from c2a.codegen.code_sources import (
     SOURCE_GT_DIRECTIONAL_TURN,
     SOURCE_KPMS_MERGED,
     SOURCE_KPMS_RAW,

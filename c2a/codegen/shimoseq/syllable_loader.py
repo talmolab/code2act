@@ -1,11 +1,11 @@
 """Load KPMS code sequences and batch them for shMoSeq.
 
 shMoSeq operates on per-frame syllable IDs as input.  In the c2a
-pipeline these come from :func:`c2a.kpms.sweep_impl.run_sweep` →
-:mod:`c2a.codegen.generate_codes`, which writes ``best_codes.npz``
+pipeline these come from :func:`c2a.codegen.kpms.sweep_impl.run_sweep` →
+:mod:`c2a.codegen.kpms.generate_codes`, which writes ``best_codes.npz``
 (typically at ``c2a/outputs/kpms_sweep/best_codes.npz``).
 
-The npz schema (set by :mod:`c2a.codegen.generate_codes`) is::
+The npz schema (set by :mod:`c2a.codegen.kpms.generate_codes`) is::
 
     all_codes: int (N_clips, T) — KPMS syllable per mocap frame
     train_codes / test_codes: convenience views
@@ -59,7 +59,7 @@ def load_kpms_codes(
             raise KeyError(
                 f"npz at {p} lacks 'all_codes'; got keys {sorted(data.files)}. "
                 f"This loader expects the schema written by "
-                f"c2a.codegen.generate_codes."
+                f"c2a.codegen.kpms.generate_codes."
             )
         all_codes = np.asarray(data["all_codes"], dtype=np.int32)
         provenance = {}

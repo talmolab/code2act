@@ -110,7 +110,7 @@ if [ "$SKIP_KPMS" = false ]; then
         cd "$CODE2ACT_ROOT"
         # run_sweep.py reads 'sweep' section from the config
         # It logs fitted vs actual signals to WandB
-        $VENV_PYTHON -m c2a.sweep.run_sweep --config "$CONFIG"
+        $VENV_PYTHON -m c2a.codegen.run_sweep --config "$CONFIG"
         echo "KPMS sweep complete."
     fi
 
@@ -121,7 +121,7 @@ if [ "$SKIP_KPMS" = false ]; then
         echo "[DRY RUN] Would generate codes from best KPMS model"
     else
         cd "$CODE2ACT_ROOT"
-        $VENV_PYTHON -m c2a.codegen.generate_codes \
+        $VENV_PYTHON -m c2a.codegen.kpms.generate_codes \
             --sweep-results "$SWEEP_RESULTS" \
             --balanced-split "$BALANCED_SPLIT" \
             --output-dir "$CODE2ACT_ROOT/$OUTPUT_DIR"

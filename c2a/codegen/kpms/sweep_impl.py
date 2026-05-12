@@ -17,7 +17,7 @@ EML → highest usage ratio") was **not** what the KPMS paper actually
 recommends — MSE is reported as a diagnostic but no longer used for
 selection.
 
-This module is invoked indirectly via ``c2a.sweep.run_sweep`` (the
+This module is invoked indirectly via ``c2a.codegen.run_sweep`` (the
 dispatcher).  The dispatcher reads the YAML config's ``model: kpms``
 field and routes here.
 
@@ -27,7 +27,7 @@ process from RL training (which uses float32 JAX).
 
 Usage::
 
-    python -m c2a.sweep.run_sweep --config c2a/configs/kpms_sweep.yaml
+    python -m c2a.codegen.run_sweep --config c2a/configs/kpms_sweep.yaml
 """
 
 import argparse
@@ -57,15 +57,15 @@ MOSEQ_DIR = get_c2a_root()
 REPO_ROOT = get_repo_root()
 import yaml
 
-from c2a.kpms.config import KPMSHyperparams
-from c2a.kpms.fit_kpms import fit_kpms_keypoints
-from c2a.kpms.label_alignment import (
+from c2a.codegen.kpms.config import KPMSHyperparams
+from c2a.codegen.kpms.fit_kpms import fit_kpms_keypoints
+from c2a.codegen.shared.label_alignment import (
     BEHAVIORS,
     COMBINED_LABELS,
     DIRECTIONS,
     load_label_frames,
 )
-from c2a.kpms.coverage_metrics import compute_coverage
+from c2a.codegen.shared.coverage_metrics import compute_coverage
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -663,7 +663,7 @@ def _compute_metrics(
         reconstructed: Flattened reconstructed data ``[N, T, K*D]``.
         n_states: Number of syllable states.
         label_arrays: Optional ``LabelArrays`` from
-            :func:`c2a.kpms.label_alignment.load_label_frames` containing
+            :func:`c2a.codegen.shared.label_alignment.load_label_frames` containing
             per-clip frame labels at three granularities (behavior,
             direction, combined).  Pass together with ``all_clip_indices``
             to enable coverage metrics (NMI + Hungarian purity).
@@ -937,7 +937,7 @@ def run_sweep(cfg: dict) -> dict:
     # 3-class direction, 12-class behavior×direction) alongside the existing
     # MSE-based metrics. Model selection stays on MSE — coverage is reported,
     # not selected on.
-    label_arrays = None  # type: c2a.kpms.label_alignment.LabelArrays | None
+    label_arrays = None  # type: c2a.codegen.shared.label_alignment.LabelArrays | None
     labels_path = cfg["data"].get("labels_path")
     if labels_path:
         _lp = Path(labels_path)
@@ -1171,9 +1171,9 @@ def run_sweep(cfg: dict) -> dict:
     #     merge grids share a layout for visual comparison.
     #   * ``syllable_grids`` (default OFF) — the legacy filmstrip /
     #     animated 3D-skeleton format from
-    #     ``c2a.kpms.render_syllable_grids``. Kept available for
+    #     ``c2a.codegen.kpms.render_syllable_grids``. Kept available for
     #     bout-by-bout inspection; the standalone CLI
-    #     ``python -m c2a.kpms.render_syllable_grids --sweep-dir ...``
+    #     ``python -m c2a.codegen.kpms.render_syllable_grids --sweep-dir ...``
     #     remains the way to re-render after the fact.
     auto_render_cfg = (cfg.get("auto_render") or {}) if isinstance(cfg, dict) else {}
     rank = auto_render_cfg.get("rank", "mse")
@@ -1181,7 +1181,7 @@ def run_sweep(cfg: dict) -> dict:
 
     if auto_render_cfg.get("trajectory_plots", True):
         try:
-            from c2a.kpms.native_viz import render_native_for_topk
+            from c2a.codegen.kpms.native_viz import render_native_for_topk
             traj_cfg = auto_render_cfg.get("trajectory_plots_kwargs", {}) or {}
             render_native_for_topk(
                 sweep_dir=output_dir,
@@ -1206,7 +1206,7 @@ def run_sweep(cfg: dict) -> dict:
 
     if auto_render_cfg.get("syllable_grids", False):
         try:
-            from c2a.kpms.render_syllable_grids import render as _render_grids
+            from c2a.codegen.kpms.render_syllable_grids import render as _render_grids
             _render_grids(
                 sweep_dir=output_dir,
                 rank=rank,
@@ -1224,17 +1224,17 @@ def run_sweep(cfg: dict) -> dict:
     return summary
 
 
-# Public alias: the dispatcher (c2a.sweep.run_sweep) imports `run_sweep`.
+# Public alias: the dispatcher (c2a.codegen.run_sweep) imports `run_sweep`.
 # Already defined above as `def run_sweep(cfg: dict) -> dict:`.
 
 
 def main():
     """Direct CLI entry point.
 
-    Prefer ``python -m c2a.sweep.run_sweep --config ...`` (the dispatcher),
+    Prefer ``python -m c2a.codegen.run_sweep --config ...`` (the dispatcher),
     which routes to this module when ``model: kpms`` in the YAML. This
     direct entry point exists for backward compatibility with bash
-    scripts that called ``python -m c2a.sweep.run_sweep`` before the
+    scripts that called ``python -m c2a.codegen.run_sweep`` before the
     dispatcher refactor.
     """
     parser = argparse.ArgumentParser(description="KPMS hyperparameter sweep")

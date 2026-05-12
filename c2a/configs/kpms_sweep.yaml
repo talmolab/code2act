@@ -9,10 +9,10 @@
 # because keypoint_moseq requires jax_enable_x64=True (process-global).
 #
 # Usage:
-#   python -m c2a.sweep.run_sweep --config c2a/configs/kpms_sweep.yaml
+#   python -m c2a.codegen.run_sweep --config c2a/configs/kpms_sweep.yaml
 # =============================================================================
 
-# Dispatcher reads this to route to c2a.kpms.sweep_impl.run_sweep.
+# Dispatcher reads this to route to c2a.codegen.kpms.sweep_impl.run_sweep.
 model: kpms
 
 data:

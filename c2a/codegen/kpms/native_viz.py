@@ -106,7 +106,7 @@ def _ensure_kpms_loaded():
 
 
 # =============================================================================
-# Rodent skeleton (matches c2a.kpms.sweep_impl.RODENT_SKELETON)
+# Rodent skeleton (matches c2a.codegen.kpms.sweep_impl.RODENT_SKELETON)
 # =============================================================================
 
 
@@ -848,10 +848,10 @@ def _load_keypoints_mm(
 ) -> tuple[np.ndarray, list[str]]:
     """Load FK keypoints filtered to the balanced split, scaled to mm.
 
-    Wraps ``c2a.kpms.sweep_impl._load_keypoints`` (which returns m-scale)
+    Wraps ``c2a.codegen.kpms.sweep_impl._load_keypoints`` (which returns m-scale)
     and applies the ×1000 factor KPMS's ``get_limits`` requires.
     """
-    from c2a.kpms.sweep_impl import _load_keypoints
+    from c2a.codegen.kpms.sweep_impl import _load_keypoints
 
     kp_4d, kp_names = _load_keypoints(
         str(reference_data_path), str(stac_xml_path), str(balanced_split_path),
@@ -894,8 +894,8 @@ def render_native_for_topk(
         Manifest dict ``{"M1": str, "M2": str, ...}`` mapping fit rank
         to its output directory.
     """
-    from c2a.kpms.keypoint_loader import prepare_keypoints_for_kpms
-    from c2a.kpms.render_topk_bands import _select_topk
+    from c2a.codegen.kpms.keypoint_loader import prepare_keypoints_for_kpms
+    from c2a.codegen.kpms.render_topk_bands import _select_topk
     from c2a.paths import get_repo_root
 
     sweep_dir = Path(sweep_dir).resolve()

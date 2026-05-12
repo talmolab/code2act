@@ -22,7 +22,7 @@ top of an existing KPMS code sequence (typically
    reproduces the same state partition under different random
    initializations.
 
-This module is invoked indirectly via ``c2a.sweep.run_sweep`` (the
+This module is invoked indirectly via ``c2a.codegen.run_sweep`` (the
 dispatcher) when the YAML has ``model: shimoseq``.
 
 **CRITICAL**: this module imports ``state_moseq`` which sets
@@ -31,7 +31,7 @@ from RL training.
 
 Usage::
 
-    python -m c2a.sweep.run_sweep --config c2a/configs/shimoseq_sweep.yaml
+    python -m c2a.codegen.run_sweep --config c2a/configs/shimoseq_sweep.yaml
 """
 
 from __future__ import annotations
@@ -58,9 +58,9 @@ import numpy as np
 from sklearn.metrics import adjusted_rand_score
 
 from c2a.paths import get_c2a_root, get_repo_root
-from c2a.shimoseq.config import ShimoseqHyperparams, hyperparams_to_dict
-from c2a.shimoseq.syllable_loader import batch_for_shimoseq, load_kpms_codes
-from c2a.shimoseq.fit_shimoseq import fit_shimoseq, ShimoseqFitResult
+from c2a.codegen.shimoseq.config import ShimoseqHyperparams, hyperparams_to_dict
+from c2a.codegen.shimoseq.syllable_loader import batch_for_shimoseq, load_kpms_codes
+from c2a.codegen.shimoseq.fit_shimoseq import fit_shimoseq, ShimoseqFitResult
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -91,7 +91,7 @@ def _lagged_mi_target_window(
     ``[peak * band_frac[0], peak * band_frac[1]]``.
 
     Args:
-        seqs, mask: from :func:`c2a.shimoseq.syllable_loader.batch_for_shimoseq`.
+        seqs, mask: from :func:`c2a.codegen.shimoseq.syllable_loader.batch_for_shimoseq`.
         lags: array of lag values (in input-frame units) at which to evaluate MI.
         duration_band_frac: ±fraction window around the peak lag.
 
@@ -447,7 +447,7 @@ def _plot_sweep_summary(
 def run_sweep(cfg: dict) -> dict:
     """Run a shMoSeq hyperparameter grid search.
 
-    The dispatcher (:mod:`c2a.sweep.run_sweep`) hands us a parsed,
+    The dispatcher (:mod:`c2a.codegen.run_sweep`) hands us a parsed,
     env-resolved config dict with at least:
 
     * ``data.codes_path`` — path to KPMS ``best_codes.npz``
@@ -654,7 +654,7 @@ def run_sweep(cfg: dict) -> dict:
         log.info(f"Saved best-fit states: {output_dir / 'best_states.npz'}")
 
     # Save per-clip state arrays for the top-K fits (used by
-    # c2a.shimoseq.render_topk_bands to draw the K-row band plots/videos).
+    # c2a.codegen.shimoseq.render_topk_bands to draw the K-row band plots/videos).
     # Keys are namespaced as ``m{rank}__{clip_key}`` (1-indexed rank), with
     # a parallel ``meta_m{rank}`` JSON-encoded string carrying that fit's
     # selection metadata.
@@ -694,7 +694,7 @@ def run_sweep(cfg: dict) -> dict:
 
 def main():
     """Direct CLI entry point. Prefer the dispatcher
-    ``python -m c2a.sweep.run_sweep`` which routes here when the YAML
+    ``python -m c2a.codegen.run_sweep`` which routes here when the YAML
     has ``model: shimoseq``."""
     parser = argparse.ArgumentParser(description="shMoSeq hyperparameter sweep")
     parser.add_argument("--config", type=str, default=None, help="Config YAML path")

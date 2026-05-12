@@ -1,6 +1,6 @@
 """shMoSeq hyperparameter configuration.
 
-Mirror of :mod:`c2a.kpms.config`.  The hyperparameters are those exposed
+Mirror of :mod:`c2a.codegen.kpms.config`.  The hyperparameters are those exposed
 by ``state_moseq.hhmm_efficient`` per the
 `tutorial <https://state-moseq.readthedocs.io/en/latest/example_data_tutorial.html>`_.
 """
