@@ -101,7 +101,7 @@ def pretrain_loss(
     decoder,
     predictor,
     enc_params,
-    bn_params,
+    bn_variables,
     dec_params,
     pred_params,
     inputs: jnp.ndarray,        # (B, w, feat)
@@ -111,8 +111,9 @@ def pretrain_loss(
     bottleneck_kwargs: Mapping[str, Any] | None = None,
     feat_mask: Optional[jnp.ndarray] = None,
     deterministic: bool = False,
-) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
-    """Single forward pass; return ``(total_loss, metrics)``.
+    bottleneck_mutable: list[str] | None = None,
+) -> tuple[jnp.ndarray, tuple[dict[str, jnp.ndarray], dict[str, Any]]]:
+    """Single forward pass; return ``(total_loss, (metrics, new_bn_variables))``.
 
     Weights:
         ``loss_weights['recon']``  — reconstruction MSE (default callers pass 1.0).
@@ -126,15 +127,37 @@ def pretrain_loss(
 
     ``bottleneck_kwargs`` carries per-step runtime arguments to the
     bottleneck that aren't loss coefficients — e.g. ``{"sigma_max":
-    <jnp scalar>}`` for the VAE σ-cap schedule, or ``{"tau":
-    <gumbel temperature>}`` for a Gumbel-VQ. Empty by default.
+    <jnp scalar>}`` for the VAE σ-cap schedule.
+
+    ``bottleneck_mutable`` is the list of Flax variable collections the
+    bottleneck mutates per forward — e.g. ``["vq_state"]`` for the
+    EMA-VQ bottlenecks (PS-VQVAE). When provided, ``bn_variables``
+    must be a Flax variables dict (``{"params": ..., "vq_state": ...}``);
+    when ``None`` (default — VAE / VQVAE), ``bn_variables`` is the bare
+    params subtree as before.
+
+    Returns:
+        ``(total_loss, (metrics, new_bn_variables))``. For the
+        non-mutable path ``new_bn_variables`` is None — the train loop
+        ignores it.
     """
     mean, logvar = encoder.apply(enc_params, inputs)
-    z, aux_losses, aux_metrics = bottleneck.apply(
-        bn_params, mean, logvar, rng,
-        deterministic=deterministic,
-        **(bottleneck_kwargs or {}),
-    )
+    if bottleneck_mutable:
+        # Mutable-state path: bn_variables is a full Flax variables dict.
+        (z, aux_losses, aux_metrics), new_bn_state = bottleneck.apply(
+            bn_variables, mean, logvar, rng,
+            deterministic=deterministic,
+            mutable=list(bottleneck_mutable),
+            **(bottleneck_kwargs or {}),
+        )
+    else:
+        # Pure-function path: bn_variables IS the params subtree.
+        z, aux_losses, aux_metrics = bottleneck.apply(
+            bn_variables, mean, logvar, rng,
+            deterministic=deterministic,
+            **(bottleneck_kwargs or {}),
+        )
+        new_bn_state = None
     recon = decoder.apply(dec_params, z)
     pred = predictor.apply(pred_params, z)
 
@@ -154,4 +177,4 @@ def pretrain_loss(
     }
     metrics.update(aux_losses)
     metrics.update(aux_metrics)
-    return total, metrics
+    return total, (metrics, new_bn_state)

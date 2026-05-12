@@ -184,6 +184,115 @@ def plot_latent_vqvae(
     return fig
 
 
+def plot_latent_ps_vqvae(
+    z_e: np.ndarray,
+    per_group_codes: np.ndarray,
+    group_dims: list[int],
+    group_codebook_sizes: list[int],
+    behavior_labels: np.ndarray,
+    *,
+    n_max: int = 20_000,
+    seed: int = 0,
+    title: Optional[str] = None,
+) -> plt.Figure:
+    """PS-VQVAE: per-group 3-cols × 2-rows (GT vs per-group code).
+
+    The continuous latent ``z_e`` (shape ``(N, sum(group_dims))``) is
+    split along the channel axis into G groups; each group is projected
+    independently via PCA / t-SNE / UMAP and colored by (a) the ground-
+    truth behavior label, (b) the discovered per-group code.
+
+    Use :func:`plot_ps_vqvae_joint_heatmap` separately to inspect the
+    joint K_i × K_j occupancy heatmap that diagnoses whether the
+    factors are actually decorrelated (paper expects them to be).
+    """
+    G = int(per_group_codes.shape[-1])
+    assert G == len(group_dims) == len(group_codebook_sizes)
+    z_sub, idx = subsample(z_e, n_max=n_max, seed=seed)
+    log.info(
+        "plot_latent_ps_vqvae: %d points -> %d sampled, G=%d groups",
+        z_e.shape[0], z_sub.shape[0], G,
+    )
+
+    offsets = np.cumsum([0] + group_dims)
+    fig, axes = plt.subplots(
+        2 * G, 3, figsize=(15, 5 * G), constrained_layout=True,
+    )
+    if G == 1:
+        axes = axes[np.newaxis, :]
+
+    for g in range(G):
+        z_g = z_sub[:, offsets[g]:offsets[g + 1]]
+        codes_g = per_group_codes[idx, g]
+        proj_pca = pca_2d(z_g, seed=seed)
+        proj_tsne = tsne_2d(z_g, seed=seed)
+        proj_umap = umap_2d(z_g, seed=seed)
+        cols = [("PCA", proj_pca), ("t-SNE", proj_tsne), ("UMAP", proj_umap)]
+        for j, (col_name, xy) in enumerate(cols):
+            _scatter_panel(
+                axes[2 * g, j], xy, behavior_labels[idx],
+                cmap="tab10",
+                title=f"group {g} (dim={group_dims[g]}) {col_name} — GT",
+            )
+            _scatter_panel(
+                axes[2 * g + 1, j], xy, codes_g,
+                cmap="tab20",
+                title=f"group {g} (K={group_codebook_sizes[g]}) {col_name} — code",
+            )
+
+    if title:
+        fig.suptitle(title, fontsize=12)
+    return fig
+
+
+def plot_ps_vqvae_joint_heatmap(
+    per_group_codes: np.ndarray,
+    group_codebook_sizes: list[int],
+    *,
+    title: Optional[str] = None,
+) -> plt.Figure:
+    """K_i × K_j joint-occupancy heatmaps for every pair of groups.
+
+    Per VQ-MAP paper, the product-space groups should factorize into
+    near-independent factors. A diagonal-aligned occupancy heatmap
+    means the factors are correlated (degenerate product space); a
+    uniform-ish heatmap means they're independent — the desired state.
+    """
+    G = len(group_codebook_sizes)
+    if per_group_codes.shape[-1] != G:
+        raise ValueError(
+            f"per_group_codes last axis {per_group_codes.shape[-1]} != G={G}."
+        )
+    pairs = [(i, j) for i in range(G) for j in range(i + 1, G)]
+    n_pairs = len(pairs)
+    if n_pairs == 0:
+        # Only one group — joint heatmap doesn't apply.
+        fig, ax = plt.subplots(figsize=(4, 3), constrained_layout=True)
+        ax.text(0.5, 0.5, "G=1 — no pairs to show",
+                ha="center", va="center")
+        ax.set_axis_off()
+        return fig
+
+    fig, axes = plt.subplots(
+        1, n_pairs, figsize=(4 * n_pairs, 3.5), constrained_layout=True,
+    )
+    if n_pairs == 1:
+        axes = [axes]
+    flat = per_group_codes.reshape(-1, G)
+    for ax, (i, j) in zip(axes, pairs):
+        Ki, Kj = int(group_codebook_sizes[i]), int(group_codebook_sizes[j])
+        heat = np.zeros((Ki, Kj), dtype=np.int64)
+        np.add.at(heat, (flat[:, i].astype(np.int64), flat[:, j].astype(np.int64)), 1)
+        im = ax.imshow(heat, cmap="viridis", aspect="auto")
+        ax.set_xlabel(f"group {j} (K={Kj})")
+        ax.set_ylabel(f"group {i} (K={Ki})")
+        ax.set_title(f"joint occupancy ({i}, {j})")
+        fig.colorbar(im, ax=ax)
+    if title:
+        fig.suptitle(title, fontsize=12)
+    return fig
+
+
 def plot_code_usage_hist(
     codes: np.ndarray,
     num_codes: int,

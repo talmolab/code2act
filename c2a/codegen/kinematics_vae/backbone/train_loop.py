@@ -371,6 +371,7 @@ def _save_checkpoint(
     *,
     enc_params,
     bn_params,
+    bn_buffers,
     dec_params,
     pred_params,
     modules: BackboneModules,
@@ -388,6 +389,12 @@ def _save_checkpoint(
     }
     for name, b in bytes_payload.items():
         (out / f"{name}.msgpack").write_bytes(b)
+    # Non-trainable bottleneck buffers (EMA state for PS-VQVAE) — save
+    # only when non-empty so VAE / VQVAE checkpoints stay compact.
+    if bn_buffers:
+        (out / "bottleneck_buffers.msgpack").write_bytes(
+            flax.serialization.to_bytes(bn_buffers),
+        )
 
     np.savez(
         out / "normalizer.npz",
@@ -500,9 +507,24 @@ def train(
     enc_params = modules.encoder.init(k_enc, dummy_in)
     dummy_mu = jnp.zeros((1, sum(branch_latent_dims)), dtype=jnp.float32)
     dummy_lv = jnp.zeros_like(dummy_mu)
-    bn_params = modules.bottleneck.init(
+    bn_init_out = modules.bottleneck.init(
         k_bn, dummy_mu, dummy_lv, k_bn, deterministic=True,
     )
+    # Mutable-state bottlenecks (PS-VQVAE) return a variables dict
+    # ``{"params": ..., "vq_state": ...}``; pure ones (VAE / VQVAE)
+    # return just the params subtree. Split into (trainable params,
+    # frozen buffers) so the optimizer only touches what it should.
+    if "params" in bn_init_out and any(
+        k != "params" for k in bn_init_out.keys()
+    ):
+        bn_params = bn_init_out["params"]
+        bn_buffers = {k: v for k, v in bn_init_out.items() if k != "params"}
+    elif "params" in bn_init_out:
+        bn_params = bn_init_out["params"]
+        bn_buffers = {}
+    else:
+        bn_params = bn_init_out
+        bn_buffers = {}
     dummy_z = jnp.zeros_like(dummy_mu)
     dec_params = modules.decoder.init(k_dec, dummy_z)
     pred_params = modules.predictor.init(k_pred, dummy_z)
@@ -545,25 +567,42 @@ def train(
                 bn_kwargs[k] = sched_fn(step)
         return weights, bn_kwargs
 
-    def _loss_fn(params, inputs, targets, rng, weights, bn_kwargs):
+    bn_mutable = list(getattr(bottleneck_mod, "mutable_collections", ()))
+
+    def _loss_fn(params, buffers, inputs, targets, rng, weights, bn_kwargs):
+        # Reassemble the full bottleneck variables dict from (trainable
+        # params, frozen buffers) — used by mutable-state bottlenecks
+        # (PS-VQVAE) only; for VAE / VQVAE ``buffers`` is None and we
+        # pass the params subtree directly as the bottleneck variables.
+        if bn_mutable:
+            bn_variables = {"params": params["bottleneck"], **buffers}
+        else:
+            bn_variables = params["bottleneck"]
         return pretrain_loss(
             encoder, bottleneck_mod, decoder, predictor,
-            params["encoder"], params["bottleneck"],
+            params["encoder"], bn_variables,
             params["decoder"], params["predictor"],
             inputs, targets, rng,
             loss_weights=weights,
             bottleneck_kwargs=bn_kwargs,
+            bottleneck_mutable=bn_mutable or None,
         )
 
     @jax.jit
-    def train_step(params, opt_state, inputs, targets, rng, step):
+    def train_step(params, buffers, opt_state, inputs, targets, rng, step):
         weights, bn_kwargs = _resolve_at_step(step)
-        (loss, metrics), grads = jax.value_and_grad(_loss_fn, has_aux=True)(
-            params, inputs, targets, rng, weights, bn_kwargs,
-        )
+        (loss, (metrics, new_bn_state)), grads = jax.value_and_grad(
+            _loss_fn, has_aux=True,
+        )(params, buffers, inputs, targets, rng, weights, bn_kwargs)
         updates, opt_state = tx.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
-        return params, opt_state, loss, metrics, weights, bn_kwargs
+        # Apply mutable-collection updates to buffers (no optimizer
+        # involvement — these are forward-only side effects).
+        if bn_mutable and new_bn_state is not None:
+            new_buffers = {k: v for k, v in new_bn_state.items() if k != "params"}
+        else:
+            new_buffers = buffers
+        return params, new_buffers, opt_state, loss, metrics, weights, bn_kwargs
 
     # --- Loop ----------------------------------------------------------------
     np_rng = np.random.default_rng(int(seed))
@@ -577,8 +616,8 @@ def train(
         x_b = jnp.asarray(inputs[batch_idx])
         y_b = jnp.asarray(targets[batch_idx])
         key, k_step = jax.random.split(key)
-        all_params, opt_state, loss, metrics, used_weights, used_kwargs = train_step(
-            all_params, opt_state, x_b, y_b, k_step,
+        all_params, bn_buffers, opt_state, loss, metrics, used_weights, used_kwargs = train_step(
+            all_params, bn_buffers, opt_state, x_b, y_b, k_step,
             jnp.asarray(step, dtype=jnp.int32),
         )
 
@@ -625,12 +664,16 @@ def train(
         if is_ckpt:
             # Re-compute metrics_py at the ckpt step so meta.json never
             # records stale values from the previous log_every step.
-            metrics_at_ckpt = {k: float(v) for k, v in metrics.items()}
+            metrics_at_ckpt = {
+                k: float(v) for k, v in metrics.items()
+                if v.ndim == 0
+            }
             metrics_at_ckpt["loss"] = float(loss)
             _save_checkpoint(
                 ckpt_dir, step,
                 enc_params=all_params["encoder"],
                 bn_params=all_params["bottleneck"],
+                bn_buffers=bn_buffers,
                 dec_params=all_params["decoder"],
                 pred_params=all_params["predictor"],
                 modules=modules,
@@ -642,10 +685,11 @@ def train(
         ckpt_dir, num_steps,
         enc_params=all_params["encoder"],
         bn_params=all_params["bottleneck"],
+        bn_buffers=bn_buffers,
         dec_params=all_params["decoder"],
         pred_params=all_params["predictor"],
         modules=modules,
-        metrics={"loss": float(loss), "eval_score": float(loss)},
+        metrics={"loss": float(loss)},
     )
     log.info("Done. Final ckpt at %s", ckpt_dir / f"step_{num_steps:07d}")
     return ckpt_dir

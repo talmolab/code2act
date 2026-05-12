@@ -164,6 +164,19 @@ def load_checkpoint(
     pred_params = flax.serialization.from_bytes(
         pred_template, (ckpt_dir / "predictor.msgpack").read_bytes(),
     )
+    # PS-VQVAE-style bottlenecks ship their EMA buffers in a separate
+    # ``bottleneck_buffers.msgpack`` file (saved by
+    # ``train_loop._save_checkpoint`` when ``bn_buffers`` is non-empty).
+    # For VAE / VQVAE that file doesn't exist and bn_params already
+    # carries everything.
+    buffers_path = ckpt_dir / "bottleneck_buffers.msgpack"
+    if buffers_path.exists():
+        buf_template = {k: v for k, v in bn_template.items() if k != "params"}
+        bn_buffers = flax.serialization.from_bytes(
+            buf_template, buffers_path.read_bytes(),
+        )
+    else:
+        bn_buffers = {}
 
     modules = BackboneModules(
         encoder=encoder,
@@ -180,6 +193,7 @@ def load_checkpoint(
     all_params = {
         "encoder": enc_params,
         "bottleneck": bn_params,
+        "bottleneck_buffers": bn_buffers,
         "decoder": dec_params,
         "predictor": pred_params,
     }
@@ -234,6 +248,7 @@ def encode_balanced_clips(
     enc_params,
     bn_params,
     *,
+    bn_buffers: dict | None = None,
     n_joints: int = 67,
     use_qvel: bool = False,
     window_len: int = 10,
@@ -310,12 +325,21 @@ def encode_balanced_clips(
     encoder = modules.encoder
     bottleneck_mod = modules.bottleneck
 
+    # PS-VQVAE-style bottlenecks ship buffers separately and need their
+    # variables dict reassembled for ``apply``. VAE / VQVAE just pass
+    # bn_params unchanged.
+    bn_uses_buffers = bool(bn_buffers)
+
     @jax.jit
-    def _encode_batch(enc_p, bn_p, x_batch, rng):
+    def _encode_batch(enc_p, bn_p, bn_buf, x_batch, rng):
         # x_batch: (B, w, feat_dim)
         mean, logvar = encoder.apply(enc_p, x_batch)
+        if bn_uses_buffers:
+            bn_variables = {"params": bn_p, **bn_buf}
+        else:
+            bn_variables = bn_p
         z, aux_losses, aux_metrics = bottleneck_mod.apply(
-            bn_p, mean, logvar, rng,
+            bn_variables, mean, logvar, rng,
             deterministic=deterministic,
             **(bottleneck_kwargs or {}),
         )
@@ -327,13 +351,16 @@ def encode_balanced_clips(
     aux_per_window: dict[str, list[np.ndarray]] = {}
 
     key = jax.random.PRNGKey(int(rng_seed))
+    bn_buf_arg = bn_buffers if bn_uses_buffers else {}
     for start in range(0, n_clips, batch_size_clips):
         end = min(start + batch_size_clips, n_clips)
         x = windows[start:end]  # (b, n_w, w, feat)
         b = end - start
         x_flat = jnp.asarray(x.reshape(b * n_windows_per_clip, window_len, feat_dim))
         key, k = jax.random.split(key)
-        mean, logvar, z, aux_metrics = _encode_batch(enc_params, bn_params, x_flat, k)
+        mean, logvar, z, aux_metrics = _encode_batch(
+            enc_params, bn_params, bn_buf_arg, x_flat, k,
+        )
         latent_dim = z.shape[-1]
         means_out.append(np.asarray(mean).reshape(b, n_windows_per_clip, latent_dim))
         lvs_out.append(np.asarray(logvar).reshape(b, n_windows_per_clip, latent_dim))

@@ -197,7 +197,7 @@ def test_pretrain_loss_weighted_sum_matches_metrics():
     pred_p = pred.init(key, mu_dummy)
 
     weights = {"recon": 1.0, "pred": 0.3, "kl": 0.005, "sigma_pen": 1.0}
-    loss, metrics = pretrain_loss(
+    loss, (metrics, _) = pretrain_loss(
         enc, bn, dec, pred,
         enc_p, bn_p, dec_p, pred_p,
         inputs, targets, key,
@@ -225,7 +225,7 @@ def test_pretrain_loss_missing_weight_defaults_to_zero():
 
     # Drop the codebook weight — the loss should ONLY include recon + pred + commit.
     weights = {"recon": 1.0, "pred": 0.3, "commit": 0.25}
-    loss, metrics = pretrain_loss(
+    loss, (metrics, _) = pretrain_loss(
         enc, bn, dec, pred,
         enc_p, bn_p, dec_p, pred_p,
         inputs, targets, key,
