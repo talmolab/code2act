@@ -22,8 +22,20 @@ Required fields (every tokenizer):
                                   "vqvae", "ps_vqvae")
 
 Optional fields (write when meaningful; reader gracefully ignores unknown):
-    all_codes      : (N_total, T) int32 — concatenation for convenience;
-                                          some downstream plots want it.
+    all_codes      : (N_total, T) int32 — codes for every clip in the
+                                          balanced split union, in
+                                          **sorted-union order**:
+                                          ``all_codes[i]`` ↔ clip with
+                                          H5 id ``sorted(set(train_indices) |
+                                          set(test_indices))[i]``.
+                                          NOT ``np.concatenate([train, test])``.
+                                          Several downstream experiments
+                                          (``run_gait_dynamics``,
+                                          ``run_inception_distance``, …)
+                                          index this by position, so writers
+                                          MUST match this ordering. Pass
+                                          ``all_indices`` to have the writer
+                                          enforce the contract row-by-row.
     kappa          : float — smoothing hyperparam for kpms/shimoseq fits.
     mean_duration  : float — paper-faithful "best fit" mean state duration.
     is_merged      : bool  — produced by ``merge_states.reencode_codes_npz``;
@@ -68,6 +80,7 @@ def write_codes_npz(
     num_states: int,
     model_type: str,
     all_codes: np.ndarray | None = None,
+    all_indices: np.ndarray | None = None,
     kappa: float | None = None,
     mean_duration: float | None = None,
     is_merged: bool = False,
@@ -92,9 +105,21 @@ def write_codes_npz(
         model_type: Short tag identifying the tokenizer family. Stored as
             a numpy bytes-array; downstream reads it with ``.item()``.
         all_codes: Optional ``(N_train+N_test, T)`` convenience array.
-            When provided, must be a positional concatenation matching
-            ``np.concatenate([train_codes, test_codes], axis=0)`` order
-            up to the union-sort of indices.
+            When provided, MUST be in **sorted-union order**: ``all_codes[i]``
+            corresponds to H5 clip id ``sorted(set(train_indices) |
+            set(test_indices))[i]``. (NOT the same as
+            ``np.concatenate([train_codes, test_codes], axis=0)``.) Several
+            downstream experiments index this array by sorted-union
+            position; emitting a different ordering would silently
+            misalign every cross-tokenizer plot.
+        all_indices: Optional ``(N_train+N_test,)`` sorted-union of
+            ``train_indices ∪ test_indices``. When provided alongside
+            ``all_codes``, the writer cross-checks every row: for each
+            ``i in train_indices``, asserts
+            ``all_codes[all_indices.tolist().index(i)] ==
+            train_codes[train_indices.tolist().index(i)]``. Catches
+            wrong-order ``all_codes`` arrays at write time rather than
+            in some downstream plot.
         kappa, mean_duration, is_merged, original_num_states,
         new_num_states: Optional provenance carried verbatim into the
             payload's ``provenance`` dict.
@@ -154,6 +179,21 @@ def write_codes_npz(
                 f"all_codes.shape[1]={all_codes.shape[1]} != "
                 f"train_codes.shape[1] ({train_codes.shape[1]})."
             )
+        if all_indices is not None:
+            all_indices_arr = np.asarray(all_indices, dtype=np.int64)
+            if all_indices_arr.shape[0] != expected_total:
+                raise ValueError(
+                    f"all_indices length {all_indices_arr.shape[0]} != "
+                    f"train+test ({expected_total})."
+                )
+            _check_all_codes_ordering(
+                all_codes=all_codes,
+                all_indices=all_indices_arr,
+                train_codes=train_codes,
+                train_indices=train_indices,
+                test_codes=test_codes,
+                test_indices=test_indices,
+            )
         payload["all_codes"] = all_codes.astype(np.int32, copy=False)
 
     if kappa is not None:
@@ -185,6 +225,50 @@ def write_codes_npz(
         len(extra) if extra else 0,
     )
     return output_path.resolve()
+
+
+def _check_all_codes_ordering(
+    *,
+    all_codes: np.ndarray,
+    all_indices: np.ndarray,
+    train_codes: np.ndarray,
+    train_indices: np.ndarray,
+    test_codes: np.ndarray,
+    test_indices: np.ndarray,
+) -> None:
+    """Verify ``all_codes`` is in sorted-union order by cross-checking
+    every row against ``train_codes`` / ``test_codes``.
+
+    Enforces the contract documented on :func:`write_codes_npz`: for each
+    H5 clip id ``i`` in ``train_indices``,
+    ``all_codes[all_indices.tolist().index(i)] ==
+    train_codes[train_indices.tolist().index(i)]``. Same for test.
+
+    Raises ``ValueError`` on any mismatch — refuses to write a misordered
+    ``all_codes``. Cheap (O(N*T) one-time) compared to a silently corrupt
+    downstream plot.
+    """
+    # Build a map from H5 id → row in all_codes once.
+    idx_to_pos = {int(c): pos for pos, c in enumerate(all_indices.tolist())}
+
+    def _check(side: str, codes: np.ndarray, indices: np.ndarray) -> None:
+        for i_pos, h5_id in enumerate(indices.tolist()):
+            all_pos = idx_to_pos.get(int(h5_id))
+            if all_pos is None:
+                raise ValueError(
+                    f"all_indices does not contain {side}_indices[{i_pos}]"
+                    f"={h5_id}; cannot align all_codes."
+                )
+            if not np.array_equal(all_codes[all_pos], codes[i_pos]):
+                raise ValueError(
+                    f"all_codes ordering mismatch: all_codes[{all_pos}] "
+                    f"(corresponds to H5 clip {h5_id}) disagrees with "
+                    f"{side}_codes[{i_pos}]. Pass all_codes in "
+                    f"sorted-union order (see write_codes_npz docstring)."
+                )
+
+    _check("train", train_codes, train_indices)
+    _check("test", test_codes, test_indices)
 
 
 def _validate_arrays(

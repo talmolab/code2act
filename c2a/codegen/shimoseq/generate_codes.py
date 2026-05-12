@@ -177,7 +177,21 @@ def generate_codes(
             f"embedding table."
         )
 
-    all_codes = np.concatenate([train_codes, test_codes], axis=0)
+    # all_codes follows the KPMS convention (see
+    # ``c2a.codegen.kpms.generate_codes`` and the loader contract in
+    # ``c2a.codegen.shared.npz_schema``): row ``i`` corresponds to the
+    # clip at *sorted-union position ``i``* (NOT caller-train-then-test
+    # order). Several downstream analyses (``c2a.experiments.run_gait_dynamics``,
+    # ``c2a.experiments.run_inception_distance``, …) index
+    # ``all_codes[clip_idx, ...]`` with a sorted-union position. Emitting
+    # a different ordering would silently misalign every cross-tokenizer
+    # plot that compares shMoSeq with KPMS or future kinematics-VAE
+    # variants. shMoSeq's clip_arrays are already keyed by sorted-union
+    # position via ``syllable_loader.load_kpms_codes``, so this is a
+    # cheap restack.
+    all_codes = np.stack(
+        [clip_arrays[p] for p in range(len(all_indices))], axis=0,
+    ).astype(np.int32)
 
     output_path = Path(output_path)
     out = write_codes_npz(
@@ -189,6 +203,7 @@ def generate_codes(
         num_states=n_states,
         model_type="shimoseq",
         all_codes=all_codes,
+        all_indices=np.asarray(all_indices, dtype=np.int64),
         kappa=trans_kappa,
         mean_duration=mean_duration,
         extra={
