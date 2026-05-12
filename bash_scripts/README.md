@@ -27,9 +27,9 @@ uv pip install -e .
 
 Reads `c2a/configs/pipeline_sweep.yaml` and chains:
 
-1. **Stage 1** — `c2a.sweep.run_sweep` fits KPMS for every
+1. **Stage 1** — `c2a.codegen.run_sweep` fits KPMS for every
    `(num_states × kappa)` combination.
-2. **Stage 2** — `c2a.codegen.generate_all_codes` emits one `.npz` per KPMS
+2. **Stage 2** — `c2a.codegen.kpms.generate_all_codes` emits one `.npz` per KPMS
    setting + a `manifest.json` index.
 3. **Stage 3** — `c2a.train_moseq_decoder` runs a decoder for every
    `(code_set × latent_dim × kl_weight)` combination.

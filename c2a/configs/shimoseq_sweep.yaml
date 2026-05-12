@@ -13,13 +13,13 @@
 # Prerequisites:
 #   - A finished KPMS sweep with `best_codes.npz` at data.codes_path
 #     (defaults to the canonical 400-ms-median-duration KPMS fit produced
-#     by `python -m c2a.sweep.run_sweep --config c2a/configs/kpms_sweep.yaml`).
+#     by `python -m c2a.codegen.run_sweep --config c2a/configs/kpms_sweep.yaml`).
 #
 # Usage:
-#   python -m c2a.sweep.run_sweep --config c2a/configs/shimoseq_sweep.yaml
+#   python -m c2a.codegen.run_sweep --config c2a/configs/shimoseq_sweep.yaml
 # =============================================================================
 
-# Dispatcher reads this to route to c2a.shimoseq.sweep_impl.run_sweep.
+# Dispatcher reads this to route to c2a.codegen.shimoseq.sweep_impl.run_sweep.
 model: shimoseq
 
 data:

@@ -11,7 +11,7 @@ network, or the PPO loop:
         - ``"kpms_raw"``            — raw KPMS codes from a sweep (default).
         - ``"kpms_merged"``         — merged KPMS codes; requires the npz
                                        to carry ``is_merged=True`` (written
-                                       by ``c2a.kpms.merge_states.reencode_codes_npz``).
+                                       by ``c2a.codegen.kpms.merge_states.reencode_codes_npz``).
         - ``"gt_directional_turn"`` — 5-class ground-truth labels:
                                        Immobile, Rear, Walk, Turn_Left, Turn_Right.
 
@@ -57,9 +57,9 @@ VALID_SOURCES = {
 
 
 # 5-class mapping for gt_directional_turn.
-# Behavior indices match c2a.kpms.label_alignment.BEHAVIORS:
+# Behavior indices match c2a.codegen.kpms.label_alignment.BEHAVIORS:
 #   0=Immobile, 1=Rear, 2=Turn, 3=Walk
-# Direction indices match c2a.kpms.label_alignment.DIRECTIONS:
+# Direction indices match c2a.codegen.kpms.label_alignment.DIRECTIONS:
 #   0=Left, 1=Right, 2=Straight
 GT_DIRECTIONAL_TURN_NUM_CODES = 5
 GT_DIRECTIONAL_TURN_NAMES = (
@@ -213,8 +213,8 @@ def _load_kpms_npz(
 ) -> CodesPayload:
     """Load codes from a KPMS-format .npz.
 
-    Format (written by ``c2a.codegen.generate_codes`` / merged by
-    ``c2a.kpms.merge_states.reencode_codes_npz``):
+    Format (written by ``c2a.codegen.kpms.generate_codes`` / merged by
+    ``c2a.codegen.kpms.merge_states.reencode_codes_npz``):
 
         * ``train_codes`` ``[N_train, T]`` int
         * ``test_codes``  ``[N_test,  T]`` int
@@ -260,8 +260,8 @@ def _load_kpms_npz(
         raise RuntimeError(
             f"code_source=kpms_merged requires the .npz at {p} to carry "
             f"`is_merged=True` provenance, but it does not. Re-encode the "
-            f"raw codes with `c2a.kpms.merge_states.reencode_codes_npz` "
-            f"(via `python -m c2a.kpms.merge_states ...`) so the file is "
+            f"raw codes with `c2a.codegen.kpms.merge_states.reencode_codes_npz` "
+            f"(via `python -m c2a.codegen.kpms.merge_states ...`) so the file is "
             f"marked as merged. Refusing to silently treat raw codes as "
             f"merged."
         )
@@ -287,7 +287,7 @@ def _load_kpms_npz(
                 f"npz at {p} has train_indices that do not match the loader's "
                 f"caller-provided train_indices. The codes file was generated "
                 f"against a different balanced split. Re-run "
-                f"`c2a.codegen.generate_codes` with the current split JSON."
+                f"`c2a.codegen.kpms.generate_codes` with the current split JSON."
             )
         if len(stored_test_idx) != len(test_indices) or not np.array_equal(
             np.asarray(stored_test_idx), test_indices
@@ -335,7 +335,7 @@ def _load_kpms_npz(
                 f"contain values up to {max_present}. The embedding table "
                 f"would be undersized. If this file came from a remap, the "
                 f"producer must update num_states (and ideally write "
-                f"is_merged=True) — see c2a.kpms.merge_states.reencode_codes_npz."
+                f"is_merged=True) — see c2a.codegen.kpms.merge_states.reencode_codes_npz."
             )
 
     _validate_codes_shape_and_range(
@@ -415,7 +415,7 @@ def _load_gt_directional_turn(
     """
     # Lazy import: label_alignment lives next to KPMS code and pulling it
     # eagerly into c2a/__init__.py would couple environments together.
-    from c2a.kpms.label_alignment import (
+    from c2a.codegen.kpms.label_alignment import (
         BEHAVIOR_TO_INT, DIRECTION_TO_INT, UNLABELED, load_label_frames,
     )
 

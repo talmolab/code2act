@@ -2,7 +2,7 @@
 
 Wraps ``state_moseq.hhmm_efficient`` so callers don't have to manage
 PRNG keys and Gibbs-loop bookkeeping themselves.  Mirror of
-:func:`c2a.kpms.fit_kpms.fit_kpms_keypoints` for the hierarchical layer.
+:func:`c2a.codegen.kpms.fit_kpms.fit_kpms_keypoints` for the hierarchical layer.
 
 **CRITICAL**: imports from ``state_moseq`` set ``jax_enable_x64 = True``
 process-globally (consistent with the upstream ``jax_moseq`` convention).
@@ -32,7 +32,7 @@ try:
 except ImportError as _e:
     HAS_SHIMOSEQ = False
 
-from c2a.shimoseq.config import ShimoseqHyperparams, hyperparams_to_dict
+from c2a.codegen.shimoseq.config import ShimoseqHyperparams, hyperparams_to_dict
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def fit_shimoseq(
 
     Args:
         seqs: ``(B, L)`` int — batched low-level syllable sequences from
-            :func:`c2a.shimoseq.syllable_loader.batch_for_shimoseq`.
+            :func:`c2a.codegen.shimoseq.syllable_loader.batch_for_shimoseq`.
         mask: ``(B, L)`` bool — valid-timepoint mask from the same call.
         metadata: opaque metadata returned by ``state_moseq.batch``;
             needed to ``unbatch`` final states back to per-clip arrays.

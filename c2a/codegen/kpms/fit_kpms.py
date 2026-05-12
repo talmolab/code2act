@@ -28,8 +28,8 @@ except ImportError as _e:
     # CUDA driver mismatch, (3) mujoco SO not loadable.
     KPMS_IMPORT_ERROR = _e
 
-from c2a.kpms.config import KPMSHyperparams
-from c2a.kpms.keypoint_loader import prepare_keypoints_for_kpms
+from c2a.codegen.kpms.config import KPMSHyperparams
+from c2a.codegen.kpms.keypoint_loader import prepare_keypoints_for_kpms
 
 
 @dataclass

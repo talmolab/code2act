@@ -1,7 +1,7 @@
 # `c2a.ar_codegen` — autoregressive code-sequence generators
 
 Trains and serves four unconditional generators over per-frame KPMS codes
-(or any compatible source from `c2a.code_sources`). All four obey one
+(or any compatible source from `c2a.codegen.code_sources`). All four obey one
 `CodeGenerator.fit / sample / save / load` contract so
 `c2a/experiments/run_code_generation.py` can load any of them by path.
 
@@ -18,12 +18,12 @@ scale up.
 
 ## Code-source genericity
 
-Every generator consumes the standard `c2a.code_sources.CodesPayload`
+Every generator consumes the standard `c2a.codegen.code_sources.CodesPayload`
 (`train_codes`, `test_codes` of shape `[N, T]` int32 in `[0, num_codes)`).
 The training entry point selects the source via `data=<name>`:
 
 * `data=kpms_raw`            — raw KPMS sweep output (default)
-* `data=kpms_merged`         — KPMS codes after `c2a.kpms.merge_states`
+* `data=kpms_merged`         — KPMS codes after `c2a.codegen.kpms.merge_states`
 * `data=gt_directional_turn` — 5-class manual labels from
   `data/rodent/rodent_labels.csv`
 

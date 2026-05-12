@@ -14,7 +14,7 @@ primitives (`IntentionEncoder`, `IntentionDecoder`, `reparameterize`). The
 c2a package on top contributes:
 
 - KPMS hyperparameter sweep and code generation (`c2a.sweep`, `c2a.codegen`,
-  `c2a.kpms`).
+  `c2a.codegen.kpms`).
 - `MoSeqImitation` — env subclass that injects KPMS codes into the
   observation dict.
 - `MoSeqRecurrentDecoderNetwork` — encoder–GRU–decoder policy with optional
@@ -152,15 +152,15 @@ These labels are sourced from
 [KevinBian107/TopoMimic-annotation](https://github.com/KevinBian107/TopoMimic-annotation)
 and are used by:
 
-- `c2a.kpms.label_alignment` (loader / coverage metrics)
-- `c2a.sweep.run_sweep` (NMI + Hungarian-purity reporting at three
+- `c2a.codegen.kpms.label_alignment` (loader / coverage metrics)
+- `c2a.codegen.run_sweep` (NMI + Hungarian-purity reporting at three
   granularities: behavior / direction / combined)
 - `c2a.experiments.run_labeled_hidden_dynamics` (label-anchored hidden
   state experiment)
 
 The CSV is annotated against the original 30 fps videos (500 frames per
 clip). The H5 mocap data is at half the rate (250 frames per clip), so
-``c2a.kpms.label_alignment`` divides CSV frame numbers by 2 by default
+``c2a.codegen.kpms.label_alignment`` divides CSV frame numbers by 2 by default
 (``csv_to_h5_subsample=2``).
 
 ```bash
@@ -217,7 +217,7 @@ using the AR-HMM Bhattacharyya criterion, and re-render the merged
 trajectory grids:
 
 ```bash
-python -m c2a.kpms.merge_states --sweep-dir outputs/kpms_sweep
+python -m c2a.codegen.kpms.merge_states --sweep-dir outputs/kpms_sweep
 ```
 
 By default this ranks the top-K fits by the **Weinreb 2024**

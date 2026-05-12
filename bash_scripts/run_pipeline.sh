@@ -130,10 +130,10 @@ if [ "$SKIP_KPMS" = false ]; then
     echo ""
 
     if [ "$DRY_RUN" = true ]; then
-        echo "[DRY RUN] Would run: $VENV_PYTHON -m c2a.sweep.run_sweep --config $CONFIG"
+        echo "[DRY RUN] Would run: $VENV_PYTHON -m c2a.codegen.run_sweep --config $CONFIG"
     else
         cd "$CODE2ACT_ROOT"
-        $VENV_PYTHON -m c2a.sweep.run_sweep --config "$CONFIG"
+        $VENV_PYTHON -m c2a.codegen.run_sweep --config "$CONFIG"
         echo "KPMS sweep complete. Results: $SWEEP_RESULTS"
     fi
 else
@@ -169,13 +169,13 @@ if [ "$SKIP_CODEGEN" = false ]; then
     fi
 
     if [ "$DRY_RUN" = true ]; then
-        echo "[DRY RUN] Would run: $VENV_PYTHON -m c2a.codegen.generate_all_codes \\"
+        echo "[DRY RUN] Would run: $VENV_PYTHON -m c2a.codegen.kpms.generate_all_codes \\"
         echo "    --sweep-results $RESOLVED_SWEEP_RESULTS \\"
         echo "    --balanced-split $BALANCED_SPLIT \\"
         echo "    --output-dir $CODES_OUTPUT"
     else
         cd "$CODE2ACT_ROOT"
-        $VENV_PYTHON -m c2a.codegen.generate_all_codes \
+        $VENV_PYTHON -m c2a.codegen.kpms.generate_all_codes \
             --sweep-results "$RESOLVED_SWEEP_RESULTS" \
             --balanced-split "$BALANCED_SPLIT" \
             --output-dir "$CODES_OUTPUT"

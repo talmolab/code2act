@@ -236,8 +236,8 @@ def generate_codes(
             from jax_moseq.models.keypoint_slds.alignment import estimate_coordinates
             from jax_moseq.utils import unbatch
 
-            from c2a.kpms.keypoint_loader import prepare_keypoints_for_kpms
-            from c2a.sweep.run_sweep import (
+            from c2a.codegen.kpms.keypoint_loader import prepare_keypoints_for_kpms
+            from c2a.codegen.run_sweep import (
                 _load_keypoints,
                 _plot_reconstruction,
                 _render_keypoint_video,

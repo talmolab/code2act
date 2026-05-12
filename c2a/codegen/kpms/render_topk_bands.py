@@ -13,10 +13,10 @@ skeleton, behavior-band coloring) lives in
 
 Usage::
 
-    python -m c2a.kpms.render_topk_bands --sweep-dir outputs/kpms_sweep
-    python -m c2a.kpms.render_topk_bands --sweep-dir outputs/kpms_sweep \\
+    python -m c2a.codegen.kpms.render_topk_bands --sweep-dir outputs/kpms_sweep
+    python -m c2a.codegen.kpms.render_topk_bands --sweep-dir outputs/kpms_sweep \\
         --rank nmi --top-k 5
-    python -m c2a.kpms.render_topk_bands --sweep-dir outputs/kpms_sweep \\
+    python -m c2a.codegen.kpms.render_topk_bands --sweep-dir outputs/kpms_sweep \\
         --clips 700 720 735
 
 Defaults: ``--top-k 5``, ``--rank mse``. Clip selection heuristic picks one
@@ -34,8 +34,8 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from c2a.kpms.label_alignment import load_behavior_frames
-from c2a.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
+from c2a.codegen.kpms.label_alignment import load_behavior_frames
+from c2a.codegen.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
 from c2a.paths import get_repo_root
 from c2a.render.topk_bands_render import (
     auto_select_clips,
@@ -91,7 +91,7 @@ def _select_topk(
         ``median_duration`` falls in the 400 ms ±30% window (4.2–7.8
         frames at 15 Hz), then rank by ``eml_score`` descending with
         ``syllable_usage_ratio`` as tiebreaker. Mirrors what
-        :func:`c2a.kpms.sweep_impl._select_best_kpms` does for the
+        :func:`c2a.codegen.kpms.sweep_impl._select_best_kpms` does for the
         single ``best_model`` pick. Falls back to the K fits whose
         ``median_duration`` is closest to target if the window is empty.
     """

@@ -1,4 +1,4 @@
-"""Tests for ``c2a.kpms.label_alignment`` — two-track schema.
+"""Tests for ``c2a.codegen.kpms.label_alignment`` — two-track schema.
 
 The CSV at ``data/rodent/rodent_labels.csv`` has two parallel tracks
 (``behavior`` and ``direction``); the loader returns three views (4-class
@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from c2a.kpms.label_alignment import (
+from c2a.codegen.kpms.label_alignment import (
     BEHAVIOR_TO_INT,
     BEHAVIORS,
     COMBINED_LABELS,

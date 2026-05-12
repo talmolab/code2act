@@ -15,7 +15,7 @@ downstream re-fits use the merged model).
 
 Usage::
 
-    python -m c2a.kpms.merge_states \\
+    python -m c2a.codegen.kpms.merge_states \\
         --checkpoint outputs/kpms_sweep/.../checkpoint.h5 \\
         --merge "1,3" --merge "4,5,12" \\
         --output  outputs/kpms_sweep/.../checkpoint_merged.h5
@@ -422,7 +422,7 @@ def reencode_codes_npz(
     downstream policy training sees the merged labels.
 
     The output npz carries explicit provenance fields so downstream loaders
-    (``c2a.code_sources.load_codes`` with ``code_source: kpms_merged``) can
+    (``c2a.codegen.code_sources.load_codes`` with ``code_source: kpms_merged``) can
     verify that they aren't being handed a raw file by mistake:
 
     * ``is_merged``  — boolean True (np.bool_).
@@ -890,7 +890,7 @@ def auto_merge_topk(
             f"sweep_results.json not under {sweep_dir}; cannot pick top-K."
         )
     # Lazy import to avoid pulling matplotlib into pure auto-merge runs.
-    from c2a.kpms.render_topk_bands import _select_topk
+    from c2a.codegen.kpms.render_topk_bands import _select_topk
     from c2a.paths import get_repo_root
 
     with results_path.open() as f:
@@ -906,7 +906,7 @@ def auto_merge_topk(
     # Codes-npz auto-detection: if the user didn't pass --codes-in, look
     # for the canonical {sweep_dir}/best_codes.npz. We only re-encode it
     # for the M{k} whose (setting, seed) matches sweep_results.json's
-    # best_model — the npz comes from c2a.codegen.generate_codes which
+    # best_model — the npz comes from c2a.codegen.kpms.generate_codes which
     # is keyed off that single fit. Other top-K fits don't have an
     # auto-matching codes file (they'd need generate_all_codes), so we
     # skip them silently.
@@ -955,8 +955,8 @@ def auto_merge_topk(
     # Lazy-import the renderer (avoid heavy deps if render=False).
     coordinates = None
     if render:
-        from c2a.kpms.keypoint_loader import prepare_keypoints_for_kpms
-        from c2a.kpms.native_viz import _load_keypoints_mm
+        from c2a.codegen.kpms.keypoint_loader import prepare_keypoints_for_kpms
+        from c2a.codegen.kpms.native_viz import _load_keypoints_mm
 
         if balanced_split_path is None:
             balanced_split_path = (
@@ -1085,8 +1085,8 @@ def _render_merged_fit_native(
     fit's ``results.h5`` syllable arrays and substitutes them into the
     ``results`` dict that KPMS's native trajectory renderer consumes.
     """
-    from c2a.kpms.native_viz import render_native_for_fit
-    from c2a.kpms.render_topk_bands import _load_syllables_for_fit
+    from c2a.codegen.kpms.native_viz import render_native_for_fit
+    from c2a.codegen.kpms.render_topk_bands import _load_syllables_for_fit
 
     try:
         sylls_orig = _load_syllables_for_fit(project_dir, model_name)

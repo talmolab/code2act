@@ -1,4 +1,4 @@
-"""Tests for c2a.kpms.coverage_metrics."""
+"""Tests for c2a.codegen.kpms.coverage_metrics."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ import math
 import numpy as np
 import pytest
 
-from c2a.kpms.coverage_metrics import (
+from c2a.codegen.kpms.coverage_metrics import (
     compute_coverage,
     compute_nmi,
     compute_purity,
 )
-from c2a.kpms.label_alignment import UNLABELED
+from c2a.codegen.kpms.label_alignment import UNLABELED
 
 
 def test_nmi_perfect_match_is_one():

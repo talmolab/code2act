@@ -1,4 +1,4 @@
-# KPMS merged codes (after c2a.kpms.merge_states).
+# KPMS merged codes (after c2a.codegen.kpms.merge_states).
 # Requires the .npz to carry is_merged=True provenance.
 
 _name: kpms_merged

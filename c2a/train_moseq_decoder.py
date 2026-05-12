@@ -42,7 +42,7 @@ from c2a.moseq_ppo_networks import (
 )
 from c2a.moseq_ppo import train as moseq_train
 from c2a.moseq_env_wrapper import MoSeqImitation
-from c2a.code_sources import load_codes
+from c2a.codegen.code_sources import load_codes
 
 
 def _setup_environment() -> None:
@@ -462,7 +462,7 @@ def main(cfg: DictConfig) -> None:
 
     # Load codes from the configured source (kpms_raw / kpms_merged /
     # gt_directional_turn / random for null codes_path). All validation,
-    # provenance, and source-specific quirks live in c2a.code_sources.
+    # provenance, and source-specific quirks live in c2a.codegen.code_sources.
     payload = load_codes(
         cfg=cfg,
         train_indices=train_indices,

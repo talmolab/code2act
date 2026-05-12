@@ -12,7 +12,7 @@
 # The grid below brackets the live zone tightly so the lagged-MI duration
 # filter can do its job and pick the right cell.  Run with:
 #
-#   python -m c2a.sweep.run_sweep --config c2a/configs/shimoseq_sweep_smoke.yaml
+#   python -m c2a.codegen.run_sweep --config c2a/configs/shimoseq_sweep_smoke.yaml
 # =============================================================================
 
 model: shimoseq

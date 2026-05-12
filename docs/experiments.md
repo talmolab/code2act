@@ -102,13 +102,13 @@ Each writes a checkpoint at `outputs/ar_codegen/{model}/{run_id}/` with
 
 **Code-source compatibility.** All seven trainable + quick generators
 consume the same per-frame integer code arrays produced by
-`c2a.code_sources.load_codes` (validated as `int32`, values in
+`c2a.codegen.code_sources.load_codes` (validated as `int32`, values in
 `[0, num_codes)`). They are therefore **generic over code source**:
 
 | `data.code_source`     | What it loads                                                  |
 |------------------------|----------------------------------------------------------------|
 | `kpms_raw`             | Raw KPMS codes from the sweep (`c2a/outputs/kpms_sweep/best_codes.npz`) |
-| `kpms_merged`          | KPMS codes after `c2a.kpms.merge_states` (requires `is_merged=True` in the .npz) |
+| `kpms_merged`          | KPMS codes after `c2a.codegen.kpms.merge_states` (requires `is_merged=True` in the .npz) |
 | `gt_directional_turn`  | 5-class manual labels from `data/rodent/rodent_labels.csv` (Immobile / Rear / Walk / Turn_Left / Turn_Right) |
 | (`null` for AR models) | Random codes — smoke test only                                 |
 
@@ -155,7 +155,7 @@ histogram across the label's frames) and sustains that code for
 `target_steps` control steps × `K_per_label` starting body positions,
 capturing hidden / qpos / proprio / codes per timestep.
 
-Label scheme (5 classes, mirrors `c2a.code_sources.gt_directional_turn`):
+Label scheme (5 classes, mirrors `c2a.codegen.code_sources.gt_directional_turn`):
 
 * `Immobile`   (any direction collapsed)
 * `Rear`       (any direction collapsed)

@@ -1,4 +1,4 @@
-"""Tests for ``c2a.code_sources.load_codes``.
+"""Tests for ``c2a.codegen.code_sources.load_codes``.
 
 The loader is the single source-of-truth for behavioral codes feeding
 the MoSeq decoder. These tests exercise the contract every downstream
@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 from omegaconf import OmegaConf
 
-from c2a.code_sources import (
+from c2a.codegen.code_sources import (
     GT_DIRECTIONAL_TURN_NUM_CODES,
     SOURCE_GT_DIRECTIONAL_TURN,
     SOURCE_KPMS_MERGED,
