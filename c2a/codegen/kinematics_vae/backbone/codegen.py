@@ -155,8 +155,11 @@ def load_checkpoint(
     enc_params = flax.serialization.from_bytes(
         enc_template, (ckpt_dir / "encoder.msgpack").read_bytes(),
     )
+    # Saved bottleneck params follow the same {"params": ...} wrapper as
+    # train_loop builds in bn_params; mirror that template.
+    bn_template_params = {"params": bn_template.get("params", {})}
     bn_params = flax.serialization.from_bytes(
-        bn_template, (ckpt_dir / "bottleneck.msgpack").read_bytes(),
+        bn_template_params, (ckpt_dir / "bottleneck.msgpack").read_bytes(),
     )
     dec_params = flax.serialization.from_bytes(
         dec_template, (ckpt_dir / "decoder.msgpack").read_bytes(),
@@ -334,8 +337,10 @@ def encode_balanced_clips(
     def _encode_batch(enc_p, bn_p, bn_buf, x_batch, rng):
         # x_batch: (B, w, feat_dim)
         mean, logvar = encoder.apply(enc_p, x_batch)
+        # bn_p is already a full ``{"params": ...}`` wrapper; merge in
+        # the (optional) buffer collections for PS-VQVAE-style bottlenecks.
         if bn_uses_buffers:
-            bn_variables = {"params": bn_p, **bn_buf}
+            bn_variables = {**bn_p, **bn_buf}
         else:
             bn_variables = bn_p
         z, aux_losses, aux_metrics = bottleneck_mod.apply(

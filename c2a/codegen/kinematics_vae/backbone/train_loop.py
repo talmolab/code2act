@@ -87,15 +87,23 @@ class _Clips:
 def _load_clips_h5(
     h5_path: str | Path,
     keep_clips_idx: Optional[np.ndarray] = None,
+    n_frames_per_clip: int = 250,
 ) -> _Clips:
-    """Load clips from the rodent reference H5.
+    """Load clips from the rodent reference H5 via vnl_playground.
+
+    Delegates to ``vnl_playground.tasks.rodent.imitation.ReferenceClips``
+    so the H5 schema (flat ``qpos``/``qvel`` arrays of shape
+    ``(N_frames, qpos_dim)`` reshaped into clips) is tracked by the
+    upstream loader, matching every other c2a entry point that consumes
+    this file (``train_moseq_decoder``, ``train_mimic_encoder``).
 
     Args:
         h5_path: Absolute path to ``rodent_reference_clips.h5``.
         keep_clips_idx: Optional indices into the full clip set; if
             ``None`` returns all clips.
+        n_frames_per_clip: Frames per clip in the H5 (default 250).
     """
-    import h5py
+    from vnl_playground.tasks.reference_clips import ReferenceClips
 
     h5_path = Path(h5_path)
     if not h5_path.exists():
@@ -103,31 +111,28 @@ def _load_clips_h5(
             f"rodent_reference_clips.h5 not found at {h5_path}"
         )
 
-    with h5py.File(h5_path, "r") as f:
-        clip_keys = sorted(f.keys(), key=lambda k: int(k.split("_")[-1]))
-        if keep_clips_idx is not None:
-            keep = set(int(i) for i in keep_clips_idx)
-            # Clip keys look like "clip_<id>"; pick the matching subset.
-            clip_keys = [k for k in clip_keys
-                         if int(k.split("_")[-1]) in keep]
-        qpos_list = [np.asarray(f[k]["walker/qpos"]) for k in clip_keys]
-        qvel_list = [np.asarray(f[k]["walker/qvel"]) for k in clip_keys]
-        joint_names_attr = f.attrs.get("joint_names", None)
-        if joint_names_attr is not None:
-            joint_names = [
-                s.decode() if isinstance(s, bytes) else str(s)
-                for s in joint_names_attr
-            ]
-        else:
-            # Fall back: infer joint count from qpos shape; no names.
-            n_joints = qpos_list[0].shape[-1] - 7
-            joint_names = [f"joint_{i}" for i in range(n_joints)]
-
-    return _Clips(
-        qpos=np.stack(qpos_list, axis=0).astype(np.float32),
-        qvel=np.stack(qvel_list, axis=0).astype(np.float32),
-        joint_names=joint_names,
+    rc = ReferenceClips(
+        data_path=str(h5_path),
+        n_frames_per_clip=int(n_frames_per_clip),
+        keep_clips_idx=(
+            np.asarray(keep_clips_idx, dtype=np.int64)
+            if keep_clips_idx is not None
+            else None
+        ),
     )
+    qpos = np.asarray(rc.qpos, dtype=np.float32)
+    qvel = np.asarray(rc.qvel, dtype=np.float32)
+    # joint_names lives on the H5 ``names_qpos`` dataset (incl. the 7 free-
+    # joint entries we want to drop). Strip the first 7 to get the
+    # articulated-joint names matching qpos[..., 7:].
+    import h5py
+    with h5py.File(h5_path, "r") as f:
+        all_names = [
+            s.decode() if isinstance(s, bytes) else str(s)
+            for s in f["names_qpos"][:]
+        ]
+    joint_names = all_names[7:]  # length = qpos.shape[-1] - 7 = n_joints
+    return _Clips(qpos=qpos, qvel=qvel, joint_names=joint_names)
 
 
 def _load_train_indices(
@@ -510,21 +515,22 @@ def train(
     bn_init_out = modules.bottleneck.init(
         k_bn, dummy_mu, dummy_lv, k_bn, deterministic=True,
     )
-    # Mutable-state bottlenecks (PS-VQVAE) return a variables dict
-    # ``{"params": ..., "vq_state": ...}``; pure ones (VAE / VQVAE)
-    # return just the params subtree. Split into (trainable params,
-    # frozen buffers) so the optimizer only touches what it should.
-    if "params" in bn_init_out and any(
-        k != "params" for k in bn_init_out.keys()
-    ):
-        bn_params = bn_init_out["params"]
-        bn_buffers = {k: v for k, v in bn_init_out.items() if k != "params"}
-    elif "params" in bn_init_out:
-        bn_params = bn_init_out["params"]
-        bn_buffers = {}
-    else:
-        bn_params = bn_init_out
-        bn_buffers = {}
+    # Split init result into:
+    #   ``bn_variables`` — the full Flax variables dict shape, always
+    #     including a (possibly empty) ``"params"`` key. Passed to
+    #     ``apply`` as-is on the non-mutable fast path.
+    #   ``bn_buffers``   — non-params collections (e.g. ``"vq_state"``
+    #     for PS-VQVAE). Threaded separately through the train step so
+    #     the optimizer doesn't see them.
+    # ``bn_init_out`` may legitimately be missing either side:
+    #   VAE  → ``{"params": {}}``               (no learnable, no buffers)
+    #   VQVAE → ``{"params": {...codebook...}}``
+    #   PS-VQVAE → ``{"vq_state": {...}}``      (no learnable, EMA buffers)
+    bn_params_subtree = bn_init_out.get("params", {})
+    bn_buffers = {k: v for k, v in bn_init_out.items() if k != "params"}
+    # bn_params (the value stored under params["bottleneck"]) is the
+    # FULL ``{"params": ...}`` wrapper so apply() accepts it directly.
+    bn_params = {"params": bn_params_subtree}
     dummy_z = jnp.zeros_like(dummy_mu)
     dec_params = modules.decoder.init(k_dec, dummy_z)
     pred_params = modules.predictor.init(k_pred, dummy_z)
@@ -570,12 +576,11 @@ def train(
     bn_mutable = list(getattr(bottleneck_mod, "mutable_collections", ()))
 
     def _loss_fn(params, buffers, inputs, targets, rng, weights, bn_kwargs):
-        # Reassemble the full bottleneck variables dict from (trainable
-        # params, frozen buffers) — used by mutable-state bottlenecks
-        # (PS-VQVAE) only; for VAE / VQVAE ``buffers`` is None and we
-        # pass the params subtree directly as the bottleneck variables.
+        # Both the non-mutable (VAE / VQVAE) and mutable (PS-VQVAE) paths
+        # call bottleneck.apply with a full Flax variables dict. The only
+        # difference is whether non-params collections come along.
         if bn_mutable:
-            bn_variables = {"params": params["bottleneck"], **buffers}
+            bn_variables = {**params["bottleneck"], **buffers}
         else:
             bn_variables = params["bottleneck"]
         return pretrain_loss(
@@ -624,7 +629,14 @@ def train(
         if step % log_every == 0:
             dt = time.time() - last_log
             last_log = time.time()
-            metrics_py = {k: float(v) for k, v in metrics.items()}
+            # Filter to scalar metrics for logging (variant-specific aux
+            # like VQ `codes` shape (B,) is non-scalar and can't be cast
+            # to float — it lives in aux_metrics for downstream use, not
+            # for the log line).
+            metrics_py = {
+                k: float(v) for k, v in metrics.items()
+                if hasattr(v, "ndim") and v.ndim == 0
+            }
             metrics_py["loss"] = float(loss)
             metrics_py["lr"] = float(lr_schedule(step))
             for k, v in used_weights.items():
