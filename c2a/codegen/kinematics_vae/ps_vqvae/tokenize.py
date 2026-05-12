@@ -36,6 +36,7 @@ from c2a.codegen.kinematics_vae.backbone.codegen import (
     load_checkpoint,
 )
 from c2a.codegen.kinematics_vae.ps_vqvae.bottleneck import PSVQVAEBottleneck
+from c2a.codegen.kinematics_vae.viz.run import write_ps_vqvae_viz
 from c2a.codegen.shared.npz_schema import write_codes_npz
 from c2a.codegen.kinematics_vae.vae.tokenize import _estimate_mean_duration
 from c2a.paths import get_repo_root
@@ -94,6 +95,8 @@ def tokenize(
     use_qvel: bool = False,
     window_len: int = 10,
     horizon: int = 5,
+    labels_csv_path: str | Path | None = None,
+    write_viz: bool = True,
 ) -> Path:
     """Encode every clip frame and write the unified codes npz."""
     ckpt_dir = Path(ckpt_dir)
@@ -199,6 +202,26 @@ def tokenize(
     }
     meta_path.write_text(json.dumps(meta, indent=2))
     log.info("Saved tokenize metadata to %s", meta_path)
+
+    if write_viz:
+        labels_csv_path = labels_csv_path or (
+            get_repo_root() / "data" / "rodent" / "rodent_labels.csv"
+        )
+        try:
+            write_ps_vqvae_viz(
+                output_path.parent,
+                z_e=encoded.mean,                    # (n_clips, n_frames, latent_dim)
+                per_group_codes=per_group_codes,     # (n_clips, n_frames, G)
+                product_codes=all_codes,             # (n_clips, n_frames) folded
+                clip_indices=all_indices,
+                train_indices=train_indices,
+                group_dims=group_dims,
+                group_codebook_sizes=group_codebook_sizes,
+                num_codes_product=K_total,
+                labels_csv_path=labels_csv_path,
+            )
+        except Exception as e:
+            log.warning("PS-VQVAE viz step failed (non-fatal): %s", e)
 
     return out
 

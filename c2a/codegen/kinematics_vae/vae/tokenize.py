@@ -39,6 +39,7 @@ from c2a.codegen.kinematics_vae.backbone.codegen import (
     load_checkpoint,
 )
 from c2a.codegen.kinematics_vae.vae.bottleneck import GaussianBottleneck
+from c2a.codegen.kinematics_vae.viz.run import write_vae_viz
 from c2a.codegen.shared.npz_schema import write_codes_npz
 from c2a.paths import get_repo_root
 
@@ -61,6 +62,8 @@ def tokenize(
     window_len: int = 10,
     horizon: int = 5,
     save_tokenizer: bool = True,
+    labels_csv_path: str | Path | None = None,
+    write_viz: bool = True,
 ) -> Path:
     """Build per-frame codes for every balanced-split clip and write
     the unified codes npz.
@@ -224,6 +227,24 @@ def tokenize(
     }
     meta_path.write_text(json.dumps(meta, indent=2))
     log.info("Saved tokenize metadata to %s", meta_path)
+
+    if write_viz:
+        labels_csv_path = labels_csv_path or (
+            get_repo_root() / "data" / "rodent" / "rodent_labels.csv"
+        )
+        try:
+            write_vae_viz(
+                output_path.parent,
+                z=z,                            # (n_clips, n_frames, latent_dim)
+                codes=all_codes,                # (n_clips, n_frames)
+                clip_indices=all_indices,
+                train_indices=train_indices,
+                num_codes=int(num_codes),
+                labels_csv_path=labels_csv_path,
+                seed=int(seed),
+            )
+        except Exception as e:
+            log.warning("VAE viz step failed (non-fatal): %s", e)
 
     return out
 

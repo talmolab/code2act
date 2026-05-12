@@ -31,6 +31,8 @@ dependencies = [
     "omegaconf",
     "h5py",
     "imageio[ffmpeg]",
+    "scikit-learn",          # K-Means + PCA + t-SNE for kinematics-VAE tokenize / viz
+    "umap-learn",            # UMAP panel in the kinematics-VAE latent viz
 ]
 
 [project.optional-dependencies]
