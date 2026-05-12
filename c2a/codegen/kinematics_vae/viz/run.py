@@ -30,6 +30,7 @@ from c2a.codegen.kinematics_vae.viz.plot_latent import (
     plot_latent_ps_vqvae,
     plot_latent_vae,
     plot_latent_vqvae,
+    plot_pca_pairs,
     plot_ps_vqvae_joint_heatmap,
 )
 from c2a.codegen.shared.label_alignment import load_label_frames
@@ -120,6 +121,14 @@ def write_vae_viz(
     )
     p = output_dir / "viz_code_usage_kinematics_vae.png"
     fig.savefig(p, dpi=150); plt.close(fig); saved.append(p)
+
+    # Scott-style PC-pair diagnostic on the full 24-D latent.
+    fig = plot_pca_pairs(
+        z_flat, gt,
+        title="kinematics-VAE — PCA pairs on latent (train frames)",
+    )
+    p = output_dir / "viz_pca_pairs_kinematics_vae.png"
+    fig.savefig(p, dpi=150); plt.close(fig); saved.append(p)
     log.info("Wrote %d viz PNGs to %s", len(saved), output_dir)
     return saved
 
@@ -161,6 +170,13 @@ def write_vqvae_viz(
         codes_flat, num_codes, title="VQVAE — codebook usage",
     )
     p = output_dir / "viz_code_usage_vqvae.png"
+    fig.savefig(p, dpi=150); plt.close(fig); saved.append(p)
+
+    # Scott-style PC-pair diagnostic on the full 24-D z_e.
+    fig = plot_pca_pairs(
+        z_flat, gt, title="VQVAE — PCA pairs on z_e (train frames)",
+    )
+    p = output_dir / "viz_pca_pairs_vqvae.png"
     fig.savefig(p, dpi=150); plt.close(fig); saved.append(p)
     log.info("Wrote %d viz PNGs to %s", len(saved), output_dir)
     return saved
@@ -219,6 +235,13 @@ def write_ps_vqvae_viz(
         title=f"PS-VQVAE — product-index usage (K={num_codes_product})",
     )
     p = output_dir / "viz_code_usage_ps_vqvae.png"
+    fig.savefig(p, dpi=150); plt.close(fig); saved.append(p)
+
+    # Scott-style PC-pair diagnostic on the full concatenated z_e.
+    fig = plot_pca_pairs(
+        z_flat, gt, title="PS-VQVAE — PCA pairs on z_e (train frames)",
+    )
+    p = output_dir / "viz_pca_pairs_ps_vqvae.png"
     fig.savefig(p, dpi=150); plt.close(fig); saved.append(p)
     log.info("Wrote %d viz PNGs to %s", len(saved), output_dir)
     return saved

@@ -41,6 +41,18 @@ def pca_2d(x: np.ndarray, seed: int = 0) -> np.ndarray:
     return p.fit_transform(x).astype(np.float32)
 
 
+def pca_2d_with_variance(
+    x: np.ndarray, seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``pca_2d`` variant that also returns the per-component explained
+    variance ratio (length 2), for plotting on the axis label."""
+    from sklearn.decomposition import PCA
+
+    p = PCA(n_components=2, random_state=int(seed))
+    proj = p.fit_transform(x).astype(np.float32)
+    return proj, p.explained_variance_ratio_.astype(np.float64)
+
+
 def tsne_2d(
     x: np.ndarray,
     perplexity: float = 30.0,
