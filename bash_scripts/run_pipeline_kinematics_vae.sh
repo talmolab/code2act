@@ -180,10 +180,18 @@ fi
 # ---------------------------------------------------------------------------
 # Stage 4 — decoder RL (uses the unified code_source dispatch)
 # ---------------------------------------------------------------------------
+# Map variant slug -> code_source token. The VAE variant's dispatch
+# token is "kinematics_vae" (not "vae"); the other two match the slug.
+case "$VARIANT" in
+    vae)      CODE_SOURCE="kinematics_vae" ;;
+    vqvae)    CODE_SOURCE="vqvae" ;;
+    ps_vqvae) CODE_SOURCE="ps_vqvae" ;;
+esac
+
 if ! $SKIP_DECODER; then
-    log "Stage 4 — decoder RL with code_source=$VARIANT"
+    log "Stage 4 — decoder RL with code_source=$CODE_SOURCE"
     run "$VENV_PYTHON" -m c2a.train_moseq_decoder \
-        kpms_config.code_source="$VARIANT" \
+        kpms_config.code_source="$CODE_SOURCE" \
         kpms_config.codes_path="$CODES_NPZ" \
         train_setup.run_name="kinematics_vae_${VARIANT}_$(date +%Y%m%d_%H%M%S)"
 else
