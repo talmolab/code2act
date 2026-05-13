@@ -23,8 +23,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-MOSEQ_DIR = get_c2a_root()
-OUTPUT_DIR = MOSEQ_DIR / "figures" / "outputs" / "kid_rollout_length"
+MOSEQ_DIR = get_repo_root()
+OUTPUT_DIR = MOSEQ_DIR / "outputs" / "figures" / "kid_rollout_length"
 
 LENGTHS = [250, 500, 1000, 2000]
 RESULT_PATHS = {

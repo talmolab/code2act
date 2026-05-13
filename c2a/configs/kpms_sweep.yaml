@@ -55,12 +55,12 @@ selection:
   tolerance_frac: 0.3           # ±30% acceptance window around target
 
 output:
-  base_dir: outputs/kpms_sweep
+  base_dir: outputs/tokenizer/kpms_sweep
 
 codegen:
-  sweep_results: outputs/kpms_sweep/sweep_results.json
+  sweep_results: outputs/tokenizer/kpms_sweep/sweep_results.json
   balanced_split: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
-  output: outputs/kpms_sweep/best_codes.npz
+  output: outputs/tokenizer/kpms_sweep/best_codes.npz
 
 # Auto-render top-K syllable visualizations after the sweep finishes.
 # trajectory_plots ON by default = the canonical KPMS-native MoSeq grid.

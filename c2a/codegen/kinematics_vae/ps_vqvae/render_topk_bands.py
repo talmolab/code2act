@@ -21,8 +21,8 @@ CLI knobs:
 Usage::
 
     python -m c2a.codegen.kinematics_vae.ps_vqvae.render_topk_bands \\
-        --codes-npz trained_kinematics_vae_ckpts/ps_vqvae/best_codes.npz \\
-        --output-dir trained_kinematics_vae_ckpts/ps_vqvae/ \\
+        --codes-npz outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae/best_codes.npz \\
+        --output-dir outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae/ \\
         --all-groups --format both
 """
 

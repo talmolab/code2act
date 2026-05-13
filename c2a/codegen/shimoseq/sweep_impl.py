@@ -2,7 +2,7 @@
 
 Sweeps ``trans_kappa × n_states × seed`` over a hierarchical-HMM fit on
 top of an existing KPMS code sequence (typically
-``c2a/outputs/kpms_sweep/best_codes.npz``).  Selection follows
+``outputs/tokenizer/kpms_sweep/best_codes.npz``).  Selection follows
 **Weinreb, Kannan, …, Linderman 2026 (Neuron)** —
 *"Spontaneous behavior is a succession of self-directed tasks"*:
 

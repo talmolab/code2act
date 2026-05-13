@@ -9,8 +9,8 @@ render_topk_bands` exactly, except there's one model row per figure
 Usage::
 
     python -m c2a.codegen.kinematics_vae.vae.render_topk_bands \\
-        --codes-npz trained_kinematics_vae_ckpts/vae/best_codes.npz \\
-        --output-dir trained_kinematics_vae_ckpts/vae/ \\
+        --codes-npz outputs/tokenizer/trained_kinematics_vae_ckpts/vae/best_codes.npz \\
+        --output-dir outputs/tokenizer/trained_kinematics_vae_ckpts/vae/ \\
         --format both
 """
 

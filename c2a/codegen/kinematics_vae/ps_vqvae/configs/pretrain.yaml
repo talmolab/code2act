@@ -52,7 +52,7 @@ train:
   log_every: 250
   eval_every: 500
   ckpt_every: 5000
-  ckpt_dir: ${oc.env:C2A_ROOT,.}/trained_kinematics_vae_ckpts/ps_vqvae
+  ckpt_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae
 
 # VQ-MAP paper p.24 l.757-758: alpha_commit=0.02. L_embedding replaced
 # by EMA — no separate codebook loss term. We drop the L_assign +

@@ -3,7 +3,7 @@
 shMoSeq operates on per-frame syllable IDs as input.  In the c2a
 pipeline these come from :func:`c2a.codegen.kpms.sweep_impl.run_sweep` →
 :mod:`c2a.codegen.kpms.generate_codes`, which writes ``best_codes.npz``
-(typically at ``c2a/outputs/kpms_sweep/best_codes.npz``).
+(typically at ``outputs/tokenizer/kpms_sweep/best_codes.npz``).
 
 The npz schema (set by :mod:`c2a.codegen.kpms.generate_codes`) is::
 

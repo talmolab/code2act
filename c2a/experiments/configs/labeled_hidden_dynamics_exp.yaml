@@ -23,7 +23,7 @@
 
 checkpoint:
   # Latest decoder, trained against KPMS-merged M1 codes
-  # (outputs/kpms_sweep/auto_merged/M1/codes_merged.npz). Keep this
+  # (outputs/tokenizer/kpms_sweep/auto_merged/M1/codes_merged.npz). Keep this
   # in sync with whichever moseq_decoder.yaml configuration produced
   # the active model.
   path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260508_190937_955263/
@@ -35,7 +35,7 @@ data:
   # experiment automatically uses whichever code_source / codes_path /
   # labels_csv_path the policy was trained against. The field below is
   # **informational only** — kept for documentation / forward-compat.
-  codes_path: ${oc.env:C2A_ROOT,.}/outputs/kpms_sweep/auto_merged/M1/codes_merged.npz
+  codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/auto_merged/M1/codes_merged.npz
   balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
   reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
   labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv

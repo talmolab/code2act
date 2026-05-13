@@ -9,7 +9,7 @@ new_data:
   path: ${oc.env:C2A_GENERALIZATION_H5,./data/external/transform_art_2020_12_22_1.h5}
 
 kpms:
-  model_dir: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/s50_k1e+04_l10_arhmm/seed1
+  model_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/s50_k1e+04_l10_arhmm/seed1
   model_name: keypoint_arhmm_states50_seed1
   num_iters: 200
 

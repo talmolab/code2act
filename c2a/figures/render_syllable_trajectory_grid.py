@@ -36,9 +36,9 @@ from keypoint_moseq import io as kpms_io
 from keypoint_moseq import viz as kpms_viz
 
 SCRIPT_DIR = Path(__file__).parent
-MOSEQ_DIR = get_c2a_root()
+MOSEQ_DIR = get_repo_root()
 REPO_ROOT = get_repo_root()
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "syllable_trajectory_grid"
+OUTPUT_DIR = REPO_ROOT / "outputs" / "figures" / "syllable_trajectory_grid"
 
 from c2a.experiments.shared.keypoint_fk import setup_stac_model, qpos_to_keypoints_fk
 from c2a.experiments.shared.clip_selection import load_balanced_splits
@@ -51,7 +51,7 @@ from kpms.keypoint_loader import prepare_keypoints_for_kpms
 DEFAULT_H5 = str(REPO_ROOT / "data/rodent/rodent_reference_clips.h5")
 DEFAULT_SPLITS = str(REPO_ROOT / "data/rodent/rodent_balanced_splits.json")
 DEFAULT_KPMS_DIR = str(
-    MOSEQ_DIR / "outputs/kpms_sweep/s50_k1e+04_l10_arhmm/seed1"
+    MOSEQ_DIR / "outputs/tokenizer/kpms_sweep/s50_k1e+04_l10_arhmm/seed1"
 )
 DEFAULT_MODEL = "keypoint_arhmm_states50_seed1"
 

@@ -70,7 +70,7 @@ def tokenize(
 
     Args:
         ckpt_dir: Checkpoint dir from VAE pretraining (e.g.
-            ``trained_kinematics_vae_ckpts/vae/step_0030000``).
+            ``outputs/tokenizer/trained_kinematics_vae_ckpts/vae/step_0030000``).
         reference_data_path: Path to ``rodent_reference_clips.h5``.
         balanced_split_path: Path to ``rodent_balanced_splits.json``.
         output_path: Target ``.npz`` (typically ``<sweep_dir>/

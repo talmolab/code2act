@@ -14,7 +14,7 @@ data:
   balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
 
 kpms_model:
-  project_dir: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/s50_k1e+04_l10_arhmm/seed1
+  project_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/s50_k1e+04_l10_arhmm/seed1
   model_name: keypoint_arhmm_states50_seed1
 
 keypoints:

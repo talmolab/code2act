@@ -105,6 +105,7 @@ def _draw_gt_row(ax, row: np.ndarray, n_frames: int, show_xticks: bool = True) -
     ax.set_ylabel("GT", fontsize=9, labelpad=8, rotation=0, ha="right", va="center")
     if not show_xticks:
         ax.tick_params(axis="x", labelbottom=False, length=0)
+        plt.setp(ax.get_xticklabels(), visible=False)
     for spine in ax.spines.values():
         spine.set_visible(False)
 
@@ -144,6 +145,7 @@ def _draw_model_row(
     ax.set_ylabel(title, fontsize=7, rotation=0, labelpad=8, ha="right", va="center")
     if not show_xticks:
         ax.tick_params(axis="x", labelbottom=False, length=0)
+        plt.setp(ax.get_xticklabels(), visible=False)
     for spine in ax.spines.values():
         spine.set_visible(False)
 

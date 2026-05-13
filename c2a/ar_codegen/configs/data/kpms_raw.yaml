@@ -4,7 +4,7 @@
 _name: kpms_raw
 
 code_source: kpms_raw
-codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/best_codes.npz
+codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/best_codes.npz
 labels_csv_path: null
 csv_to_h5_subsample: 2
 

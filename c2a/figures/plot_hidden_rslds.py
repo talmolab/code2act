@@ -30,11 +30,11 @@ If the GRU implements distinct per-syllable dynamics, NMI should be high
 Outputs
 -------
 * ``figures/data/rslds_results.npz`` — fit results for re-plotting.
-* ``figures/outputs/hidden_dynamics/rslds_confusion.{pdf,png,svg}``
+* ``outputs/figures/hidden_dynamics/rslds_confusion.{pdf,png,svg}``
   — Behavior × discovered-regime confusion matrix (frame-fraction).
-* ``figures/outputs/hidden_dynamics/rslds_regime_traces.{pdf,png,svg}``
+* ``outputs/figures/hidden_dynamics/rslds_regime_traces.{pdf,png,svg}``
   — Per-trial regime trace, K timelines per behavior.
-* ``figures/outputs/hidden_dynamics/rslds_summary.{pdf,png,svg}``
+* ``outputs/figures/hidden_dynamics/rslds_summary.{pdf,png,svg}``
   — NMI + per-trial purity bar chart.
 
 Requires::
@@ -62,9 +62,11 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import normalized_mutual_info_score
 
 # ── Paths ────────────────────────────────────────────────────────────────────
+from c2a.paths import get_repo_root
+
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "hidden_dynamics"
+OUTPUT_DIR = get_repo_root() / "outputs" / "figures" / "hidden_dynamics"
 
 # ── Default label aliases (legacy npz) ──────────────────────────────────────
 LEGACY_BEHAVIORS = [

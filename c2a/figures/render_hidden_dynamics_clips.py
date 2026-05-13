@@ -55,7 +55,7 @@ OUTPUT_DIR = SCRIPT_DIR / "outputs" / "hidden_dynamics"
 
 # Same config as run_hidden_dynamics
 CKPT_PATH = str(get_repo_root() / "model_checkpoints" / "260407_031233_484020") + "/"
-CODES_PATH = str(get_c2a_root() / "outputs" / "kpms_sweep" / "best_codes.npz")
+CODES_PATH = str(get_repo_root() / "outputs" / "tokenizer" / "kpms_sweep" / "best_codes.npz")
 SPLIT_PATH = str(get_repo_root() / "data" / "rodent" / "rodent_balanced_splits.json")
 REF_PATH = str(get_repo_root() / "data" / "rodent" / "rodent_reference_clips.h5")
 

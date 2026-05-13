@@ -6,7 +6,7 @@ same K-body parade from a side + slightly elevated viewpoint so that
 rearing behavior is clearly visible.
 
 Outputs:
-    figures/outputs/behavior_parade_side.mp4
+    outputs/figures/behavior_parade_side.mp4
 
 Usage:
     cd moseq_jax
@@ -33,9 +33,9 @@ import mujoco
 import numpy as np
 
 SCRIPT_DIR = Path(__file__).parent
-MOSEQ_DIR = get_c2a_root()
+MOSEQ_DIR = get_repo_root()
 REPO_ROOT = get_repo_root()
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "behavior_parade_side"
+OUTPUT_DIR = REPO_ROOT / "outputs" / "figures" / "behavior_parade_side"
 
 from c2a.experiments.shared.ghost_rendering import build_ghost_model
 from c2a.rendering_utils import add_multi_line_overlay
@@ -246,7 +246,7 @@ def main():
         splits = json.load(f)
     test_indices = splits["balanced"]["test_indices"]
 
-    codes_data = np.load(MOSEQ_DIR / "outputs" / "kpms_sweep" / "best_codes.npz")
+    codes_data = np.load(get_repo_root() / "outputs" / "tokenizer" / "kpms_sweep" / "best_codes.npz")
     test_codes = codes_data["test_codes"]
 
     test_clips = ReferenceClips(

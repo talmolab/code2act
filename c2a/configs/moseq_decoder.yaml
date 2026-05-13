@@ -124,7 +124,7 @@ kpms_config:
   code_source: kpms_merged
   # Path to pre-computed KPMS codes (.npz file from generate_codes.py).
   # Only used when code_source ∈ {kpms_raw, kpms_merged}.
-  codes_path: ${oc.env:C2A_ROOT,.}/outputs/kpms_sweep/auto_merged/M1/codes_merged.npz
+  codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/auto_merged/M1/codes_merged.npz
   # Ground-truth labels CSV. Only used when code_source = gt_*.
   labels_csv_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
   # CSV is annotated at 30 fps; H5 is at 15 fps -> divide by 2.

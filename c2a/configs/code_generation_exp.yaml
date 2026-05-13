@@ -10,7 +10,7 @@ checkpoint:
   step: 70
 
 data:
-  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/best_codes.npz
+  codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/best_codes.npz
   balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
   reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
 
@@ -25,7 +25,7 @@ generation:
     temperatures: [0.5, 1.0, 2.0]
 
   arhmm:
-    model_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/s50_k1e+04_l10_arhmm/seed1/keypoint_arhmm_states50_seed1/checkpoint.h5
+    model_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/s50_k1e+04_l10_arhmm/seed1/keypoint_arhmm_states50_seed1/checkpoint.h5
     snapshot_idx: 50
 
   num_sequences: 10

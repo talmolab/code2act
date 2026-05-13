@@ -7,8 +7,8 @@ assignment.
 Usage::
 
     python -m c2a.codegen.kinematics_vae.vqvae.render_topk_bands \\
-        --codes-npz trained_kinematics_vae_ckpts/vqvae/best_codes.npz \\
-        --output-dir trained_kinematics_vae_ckpts/vqvae/ \\
+        --codes-npz outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/best_codes.npz \\
+        --output-dir outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/ \\
         --format both
 """
 

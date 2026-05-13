@@ -39,7 +39,7 @@ train:
   log_every: 250
   eval_every: 500
   ckpt_every: 5000
-  ckpt_dir: ${oc.env:C2A_ROOT,.}/trained_kinematics_vae_ckpts/vqvae
+  ckpt_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae
 
 # van den Oord 2017 weights: recon=1, β_commit=0.25, codebook implicit
 # at coefficient 1 (codebook loss term in the gradient codebook variant

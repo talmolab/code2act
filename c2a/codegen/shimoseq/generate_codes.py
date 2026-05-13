@@ -15,15 +15,15 @@ script bridges the two:
 Usage::
 
     python -m c2a.codegen.shimoseq.generate_codes \\
-        --sweep-dir outputs/shimoseq_sweep \\
+        --sweep-dir outputs/tokenizer/shimoseq_sweep \\
         --balanced-split data/rodent/rodent_balanced_splits.json \\
-        --output outputs/shimoseq_sweep/best_codes.npz
+        --output outputs/tokenizer/shimoseq_sweep/best_codes.npz
 
 With the unified file written, the decoder trainer reads::
 
     kpms_config:
       code_source: shimoseq
-      codes_path: outputs/shimoseq_sweep/best_codes.npz
+      codes_path: outputs/tokenizer/shimoseq_sweep/best_codes.npz
 """
 
 from __future__ import annotations

@@ -13,10 +13,10 @@ skeleton, behavior-band coloring) lives in
 
 Usage::
 
-    python -m c2a.codegen.kpms.render_topk_bands --sweep-dir outputs/kpms_sweep
-    python -m c2a.codegen.kpms.render_topk_bands --sweep-dir outputs/kpms_sweep \\
+    python -m c2a.codegen.kpms.render_topk_bands --sweep-dir outputs/tokenizer/kpms_sweep
+    python -m c2a.codegen.kpms.render_topk_bands --sweep-dir outputs/tokenizer/kpms_sweep \\
         --rank nmi --top-k 5
-    python -m c2a.codegen.kpms.render_topk_bands --sweep-dir outputs/kpms_sweep \\
+    python -m c2a.codegen.kpms.render_topk_bands --sweep-dir outputs/tokenizer/kpms_sweep \\
         --clips 700 720 735
 
 Defaults: ``--top-k 5``, ``--rank mse``. Clip selection heuristic picks one

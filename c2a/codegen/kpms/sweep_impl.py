@@ -1164,22 +1164,19 @@ def run_sweep(cfg: dict) -> dict:
 
     # Auto-render top-K syllable grids. Two render styles available:
     #
-    #   * ``trajectory_plots`` (default ON, NEW) — KPMS-native
-    #     ``generate_trajectory_plots`` output: per-syllable trajectory
-    #     panels in the canonical MoSeq format. The same renderer is
-    #     used by the auto-merge orchestrator so sweep-time and post-
-    #     merge grids share a layout for visual comparison.
+    #   * ``trajectory_plots`` (default OFF) — KPMS-native
+    #     ``generate_trajectory_plots`` output. Disabled by default at the
+    #     sweep stage; rerun via the standalone CLI
+    #     ``python -m c2a.codegen.kpms.native_viz --sweep-dir ...`` when needed.
     #   * ``syllable_grids`` (default OFF) — the legacy filmstrip /
     #     animated 3D-skeleton format from
-    #     ``c2a.codegen.kpms.render_syllable_grids``. Kept available for
-    #     bout-by-bout inspection; the standalone CLI
-    #     ``python -m c2a.codegen.kpms.render_syllable_grids --sweep-dir ...``
-    #     remains the way to re-render after the fact.
+    #     ``c2a.codegen.kpms.render_syllable_grids``. Standalone CLI
+    #     ``python -m c2a.codegen.kpms.render_syllable_grids --sweep-dir ...``.
     auto_render_cfg = (cfg.get("auto_render") or {}) if isinstance(cfg, dict) else {}
     rank = auto_render_cfg.get("rank", "mse")
     top_k = int(auto_render_cfg.get("top_k", 5))
 
-    if auto_render_cfg.get("trajectory_plots", True):
+    if auto_render_cfg.get("trajectory_plots", False):
         try:
             from c2a.codegen.kpms.native_viz import render_native_for_topk
             traj_cfg = auto_render_cfg.get("trajectory_plots_kwargs", {}) or {}

@@ -24,7 +24,7 @@ import imageio
 import mujoco
 import numpy as np
 
-MOSEQ_DIR = get_c2a_root()
+MOSEQ_DIR = get_repo_root()
 REPO_ROOT = get_repo_root()
 from c2a.rendering_utils import add_multi_line_overlay
 from c2a.rendering_utils import (
@@ -43,7 +43,7 @@ DEFAULT_SUFFIX = "2000"
 DEFAULT_ROLLOUT_PATH = MOSEQ_DIR / "outputs" / f"moseq_generalization_kid_{DEFAULT_SUFFIX}" / "data" / "rollouts.npz"
 DEFAULT_SEGMENT_PATH = MOSEQ_DIR / "outputs" / f"moseq_generalization_kid_{DEFAULT_SUFFIX}" / "data" / "segments.h5"
 DEFAULT_RESULTS_PATH = MOSEQ_DIR / "outputs" / f"moseq_generalization_kid_{DEFAULT_SUFFIX}" / "results.json"
-DEFAULT_OUTPUT_DIR = MOSEQ_DIR / "figures" / "outputs" / f"generalization_comparison_{DEFAULT_SUFFIX}"
+DEFAULT_OUTPUT_DIR = MOSEQ_DIR / "outputs" / "figures" / f"generalization_comparison_{DEFAULT_SUFFIX}"
 
 # Semi-transparent ghost colors (RGBA) — 10 distinct hues
 GHOST_COLORS_10 = [
@@ -252,7 +252,7 @@ def main():
     if args.results is None:
         args.results = str(MOSEQ_DIR / f"outputs/moseq_generalization_kid_{sfx}/results.json")
     if args.output_dir is None:
-        args.output_dir = str(MOSEQ_DIR / f"figures/outputs/generalization_comparison_{sfx}")
+        args.output_dir = str(MOSEQ_DIR / f"outputs/figures/generalization_comparison_{sfx}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
