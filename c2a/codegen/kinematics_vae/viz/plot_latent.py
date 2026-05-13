@@ -325,6 +325,7 @@ def plot_latent_ps_vqvae(
     group_codebook_sizes: list[int],
     gt_labels: np.ndarray,
     *,
+    product_codes: Optional[np.ndarray] = None,
     n_max: int = 20_000,
     seed: int = 0,
     title: Optional[str] = None,
@@ -335,6 +336,14 @@ def plot_latent_ps_vqvae(
     that group's sub-latent slice) and colored by (a) GT behavior, (b)
     discovered per-group code. Legend on row 0 of group 0; per-group
     colorbar on each code row.
+
+    If ``product_codes`` (folded mixed-radix index ``c_0 * K_1 * K_2 + …
+    + c_{G-1}``) is provided, an extra bottom row is appended showing
+    PCA / t-SNE / UMAP of the **full concatenated** ``z_e`` colored by
+    the product code, i.e. the actual "product space" the bottleneck
+    operates in. K_total may be large (e.g. 1024 here), so the panel
+    uses a continuous colormap with a colorbar rather than a per-class
+    legend.
 
     Use :func:`plot_ps_vqvae_joint_heatmap` separately for the K_i × K_j
     factor-decorrelation diagnostic.
@@ -347,12 +356,15 @@ def plot_latent_ps_vqvae(
         z_e.shape[0], z_sub.shape[0], G,
     )
 
+    has_product = product_codes is not None
+    n_rows = 2 * G + (1 if has_product else 0)
+
     offsets = np.cumsum([0] + group_dims)
     sub_labels = gt_labels[idx]
     fig, axes = plt.subplots(
-        2 * G, 3, figsize=(16, 5 * G), constrained_layout=True,
+        n_rows, 3, figsize=(16, 5 * (n_rows / 2)), constrained_layout=True,
     )
-    if G == 1:
+    if n_rows == 1:
         axes = axes[np.newaxis, :]
 
     last_code_sc = None
@@ -386,6 +398,40 @@ def plot_latent_ps_vqvae(
         ).set_label(
             f"group {g} code (K={group_codebook_sizes[g]})", fontsize=8,
         )
+
+    # Extra final row: full-latent (product-space) PCA / t-SNE / UMAP,
+    # colored by the folded product code. Uses a continuous colormap +
+    # colorbar because K_total = prod(K_i) is typically much larger than
+    # a discrete legend can carry (1024 in our default).
+    if has_product:
+        prod_sub = product_codes[idx]
+        K_total = int(np.prod(group_codebook_sizes))
+        proj_pca_full, pca_var_full = pca_2d_with_variance(z_sub, seed=seed)
+        proj_tsne_full = tsne_2d(z_sub, seed=seed)
+        proj_umap_full = umap_2d(z_sub, seed=seed)
+        cols_full = [
+            ("PCA", proj_pca_full,
+             (_pc_label("PC1", pca_var_full[0]),
+              _pc_label("PC2", pca_var_full[1]))),
+            ("t-SNE", proj_tsne_full, ("t-SNE 1", "t-SNE 2")),
+            ("UMAP", proj_umap_full, ("UMAP 1", "UMAP 2")),
+        ]
+        prod_sc = None
+        D_full = int(z_sub.shape[1])
+        for j, (col_name, xy, (xlab, ylab)) in enumerate(cols_full):
+            prod_sc = _scatter_code_panel(
+                axes[2 * G, j], xy, prod_sub,
+                title=(
+                    f"full z_e (dim={D_full}, K={K_total}) "
+                    f"{col_name} — product code"
+                ),
+                xlabel=xlab, ylabel=ylab,
+                cmap="viridis",
+            )
+        fig.colorbar(
+            prod_sc, ax=axes[2 * G, -1],
+            fraction=0.04, pad=0.04,
+        ).set_label(f"product code (K={K_total})", fontsize=8)
 
     # Single GT legend on the top-right of the figure.
     axes[0, -1].legend(

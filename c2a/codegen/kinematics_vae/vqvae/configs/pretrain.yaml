@@ -24,7 +24,7 @@ arch:
   predictor_layer_sizes: [384, 256]
 
 codebook:
-  size: 128                 # K — number of discrete codes
+  size: 30                  # K — number of discrete codes
                             # code_dim is auto-derived from sum(branch_latent_dims)
 
 train:

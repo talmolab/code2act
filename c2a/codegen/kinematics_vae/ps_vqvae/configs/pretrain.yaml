@@ -34,7 +34,7 @@ product_bottleneck:
   # Per-group code_dim. Must sum to sum(arch.branch_latent_dims) = 24.
   group_dims: [4, 8, 12]
   # Per-group codebook size.
-  group_codebook_sizes: [8, 8, 16]
+  group_codebook_sizes: [4, 4, 4]
   # EMA hyperparams from VQ-MAP csbev (paper text only says "EMA").
   decay: 0.99
   reset_threshold: 1.0

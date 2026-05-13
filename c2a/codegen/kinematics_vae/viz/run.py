@@ -223,8 +223,9 @@ def write_ps_vqvae_viz(
     saved: list[Path] = []
     fig = plot_latent_ps_vqvae(
         z_flat, codes_flat, list(group_dims), list(group_codebook_sizes), gt,
+        product_codes=prod_flat,
         n_max=n_max, seed=seed,
-        title="PS-VQVAE per-group latent — train frames",
+        title="PS-VQVAE per-group latent + product space — train frames",
     )
     p = output_dir / "viz_latent_ps_vqvae.png"
     fig.savefig(p, dpi=150); plt.close(fig); saved.append(p)
