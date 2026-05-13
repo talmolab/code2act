@@ -28,7 +28,7 @@ clips).
 Usage::
 
     python -m c2a.codegen.kpms.render_syllable_grids \\
-        --sweep-dir outputs/kpms_sweep --top-k 5 --format both
+        --sweep-dir outputs/tokenizer/kpms_sweep --top-k 5 --format both
 """
 
 from __future__ import annotations

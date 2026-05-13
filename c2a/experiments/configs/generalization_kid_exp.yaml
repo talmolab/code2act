@@ -17,7 +17,7 @@ new_data:
 
 # KPMS model for code extraction
 kpms:
-  model_dir: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/s50_k1e+04_l10_arhmm/seed1
+  model_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/s50_k1e+04_l10_arhmm/seed1
   model_name: keypoint_arhmm_states50_seed1
   num_iters: 200
 
@@ -49,7 +49,7 @@ kid_eval:
   # Training data for VAE (mimic-MJX oracle rollouts on reference clips)
   reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
   balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
-  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/best_codes.npz
+  codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/best_codes.npz
   vae_training_clips: 400   # Number of mimic rollouts for VAE training
   vae_training_seed: 42
 

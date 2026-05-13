@@ -36,15 +36,15 @@ correctly detects known-different A matrices at rank=20.
 
 Outputs
 -------
-* ``figures/outputs/hidden_dynamics/dsa_vanilla_heatmap.{pdf,png,svg}``
+* ``outputs/figures/hidden_dynamics/dsa_vanilla_heatmap.{pdf,png,svg}``
   — PRIMARY: vanilla DSA on PCA-32 hidden, rank=20.
-* ``figures/outputs/hidden_dynamics/dsa_centered_heatmap.{pdf,png,svg}``
+* ``outputs/figures/hidden_dynamics/dsa_centered_heatmap.{pdf,png,svg}``
   — vanilla DSA on per-trial-centered hidden state (recurrent-only).
-* ``figures/outputs/hidden_dynamics/dsa_inputdsa_heatmap.{pdf,png,svg}``
+* ``outputs/figures/hidden_dynamics/dsa_inputdsa_heatmap.{pdf,png,svg}``
   — DIAGNOSTIC: InputDSA with qpos as control.
-* ``figures/outputs/hidden_dynamics/dsa_within_between.{pdf,png,svg}``
+* ``outputs/figures/hidden_dynamics/dsa_within_between.{pdf,png,svg}``
   — Bar chart: within vs between for all three methods, side by side.
-* ``figures/outputs/hidden_dynamics/dsa_rank_sweep.{pdf,png,svg}``
+* ``outputs/figures/hidden_dynamics/dsa_rank_sweep.{pdf,png,svg}``
   — within/between ratio as a function of rank, all three methods.
 * ``figures/data/dsa_distances.npz`` — cached distance matrices for
   all three methods + rank sweep results.
@@ -68,9 +68,11 @@ import numpy as np
 from sklearn.decomposition import PCA
 
 # ── Paths ────────────────────────────────────────────────────────────────────
+from c2a.paths import get_repo_root
+
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "hidden_dynamics"
+OUTPUT_DIR = get_repo_root() / "outputs" / "figures" / "hidden_dynamics"
 
 # ── Default label aliases (legacy npz from run_hidden_dynamics) ─────────────
 # The list also serves as the preferred display order in legacy mode —

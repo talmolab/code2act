@@ -15,8 +15,8 @@ duration-window filter.
 
 Usage::
 
-    python -m c2a.codegen.shimoseq.render_topk_bands --sweep-dir outputs/shimoseq_sweep
-    python -m c2a.codegen.shimoseq.render_topk_bands --sweep-dir outputs/shimoseq_sweep \\
+    python -m c2a.codegen.shimoseq.render_topk_bands --sweep-dir outputs/tokenizer/shimoseq_sweep
+    python -m c2a.codegen.shimoseq.render_topk_bands --sweep-dir outputs/tokenizer/shimoseq_sweep \\
         --top-k 5 --format both
 """
 

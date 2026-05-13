@@ -4,7 +4,7 @@
 _name: kpms_merged
 
 code_source: kpms_merged
-codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/auto_merged/M1/best_codes_merged.npz
+codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/auto_merged/M1/best_codes_merged.npz
 labels_csv_path: null
 csv_to_h5_subsample: 2
 

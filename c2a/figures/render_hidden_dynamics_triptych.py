@@ -217,7 +217,7 @@ def main():
         splits = json.load(f)
     test_indices = splits["balanced"]["test_indices"]
     codes_data = np.load(
-        str(MOSEQ_DIR / "outputs" / "kpms_sweep" / "best_codes.npz"),
+        str(get_repo_root() / "outputs" / "tokenizer" / "kpms_sweep" / "best_codes.npz"),
     )
     test_codes = codes_data["test_codes"]
 

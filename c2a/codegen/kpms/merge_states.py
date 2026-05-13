@@ -16,9 +16,9 @@ downstream re-fits use the merged model).
 Usage::
 
     python -m c2a.codegen.kpms.merge_states \\
-        --checkpoint outputs/kpms_sweep/.../checkpoint.h5 \\
+        --checkpoint outputs/tokenizer/kpms_sweep/.../checkpoint.h5 \\
         --merge "1,3" --merge "4,5,12" \\
-        --output  outputs/kpms_sweep/.../checkpoint_merged.h5
+        --output  outputs/tokenizer/kpms_sweep/.../checkpoint_merged.h5
 
 You can repeat ``--merge`` for as many groups as you need.  States not
 in any group keep their identities.  After all merges, indices are
@@ -413,6 +413,75 @@ def merge_checkpoint(
 # =============================================================================
 # best_codes.npz re-encode
 # =============================================================================
+
+
+def build_per_m_merged_codes(
+    project_dir: Path,
+    model_name: str,
+    old_to_new: dict[int, int],
+    balanced_split_path: Path,
+    output_npz: Path,
+) -> bool:
+    """Extract syllable labels from ``results.h5`` and apply the M-level
+    old_to_new merge map, writing a CodesPayload-compatible npz.
+
+    Differs from :func:`reencode_codes_npz` in the source: this function
+    reads each fit's own ``results.h5`` rather than re-encoding the global
+    ``best_codes.npz`` (which would only be semantically valid for the
+    best-match fit). Returns True on write, False if results.h5 is missing
+    or recording count does not match the balanced split.
+    """
+    import h5py
+    from c2a.codegen.shared.npz_schema import write_codes_npz
+
+    results_h5 = project_dir / model_name / "results.h5"
+    if not results_h5.exists():
+        log.warning(f"  per-M codes: results.h5 missing at {results_h5}")
+        return False
+
+    with open(balanced_split_path) as f:
+        splits = json.load(f)
+    train_indices = splits["balanced"]["train_indices"]
+    test_indices = splits["balanced"]["test_indices"]
+    all_indices = sorted(set(train_indices) | set(test_indices))
+
+    with h5py.File(str(results_h5), "r") as f:
+        rec_names = sorted(f.keys())
+        all_labels = [f[rn]["syllable"][:] for rn in rec_names]
+
+    if len(all_labels) != len(all_indices):
+        log.warning(
+            f"  per-M codes: results.h5 has {len(all_labels)} recordings, "
+            f"balanced split expects {len(all_indices)}. Skipping."
+        )
+        return False
+
+    all_codes_raw = np.array(all_labels, dtype=np.int32)
+    remap = np.vectorize(old_to_new.get)
+    all_codes = remap(all_codes_raw).astype(np.int32)
+
+    idx_to_pos = {idx: pos for pos, idx in enumerate(all_indices)}
+    train_codes = all_codes[[idx_to_pos[i] for i in train_indices]]
+    test_codes = all_codes[[idx_to_pos[i] for i in test_indices]]
+
+    original_K = int(all_codes_raw.max()) + 1
+    new_K = len(set(old_to_new.values()))
+
+    write_codes_npz(
+        output_npz,
+        train_codes=train_codes,
+        test_codes=test_codes,
+        train_indices=np.array(train_indices),
+        test_indices=np.array(test_indices),
+        num_states=new_K,
+        model_type="arhmm",
+        all_codes=all_codes,
+        all_indices=np.array(all_indices),
+        is_merged=True,
+        original_num_states=original_K,
+        new_num_states=new_K,
+    )
+    return True
 
 
 def reencode_codes_npz(
@@ -952,12 +1021,11 @@ def auto_merge_topk(
         "fits": {},
     }
 
-    # Lazy-import the renderer (avoid heavy deps if render=False).
-    coordinates = None
+    # Per-M rendering needs the balanced split (codes alignment) and the
+    # reference data / stac xml (FK for the top-codes movement). We resolve
+    # defaults here once, but defer keypoint loading to the renderer itself
+    # so we don't pay the ~30s cost when no fit produces merges.
     if render:
-        from c2a.codegen.kpms.keypoint_loader import prepare_keypoints_for_kpms
-        from c2a.codegen.kpms.native_viz import _load_keypoints_mm
-
         if balanced_split_path is None:
             balanced_split_path = (
                 repo_root / "data" / "rodent" / "rodent_balanced_splits.json"
@@ -969,13 +1037,7 @@ def auto_merge_topk(
         if stac_xml_path is None:
             stac_xml_path = repo_root / "c2a" / "assets" / "rodent.xml"
 
-        log.info("Loading FK keypoints (one-time; ~30s)...")
-        keypoints_mm, _kp_names = _load_keypoints_mm(
-            reference_data_path, stac_xml_path, balanced_split_path,
-        )
-        coordinates, _ = prepare_keypoints_for_kpms(keypoints_mm)
-        log.info(f"  {len(coordinates)} recordings (mm-scaled).")
-
+    keypoints_cache: tuple | None = None
     for k, r in enumerate(top, start=1):
         project_dir = Path(r["project_dir"])
         if not project_dir.is_absolute():
@@ -1031,21 +1093,29 @@ def auto_merge_topk(
             )
 
         if render and report["groups"]:
-            _render_merged_fit_native(
-                fit_rank=k,
-                merged_ckpt=Path(report["checkpoint_out"]),
+            per_m_codes = m_dir / "codes_merged.npz"
+            with h5py.File(ckpt_out, "r") as f:
+                mp = f["merge_provenance/old_to_new"][()]
+            old_to_new_m = {int(kk): int(vv) for kk, vv in mp}
+            built = build_per_m_merged_codes(
                 project_dir=project_dir,
                 model_name=r["model_name"],
-                coordinates=coordinates,
-                output_dir=m_dir / "trajectory_plots",
-                pre=pre, post=post,
-                min_frequency=min_frequency, min_duration=min_duration,
-                n_snapshots=n_snapshots,
-                n_samples_per_syllable=n_samples_per_syllable,
-                fps=fps, projection_planes=list(projection_planes),
-                keypoint_colormap=keypoint_colormap,
-                save_png=save_png, save_gifs=save_gifs,
+                old_to_new=old_to_new_m,
+                balanced_split_path=balanced_split_path,
+                output_npz=per_m_codes,
             )
+            if built:
+                report["per_m_codes"] = str(per_m_codes)
+                keypoints_cache = _render_per_m_top_codes_movement(
+                    fit_rank=k,
+                    codes_npz=per_m_codes,
+                    output_dir=m_dir,
+                    fps=fps,
+                    reference_data_path=reference_data_path,
+                    stac_xml_path=stac_xml_path,
+                    balanced_split_path=balanced_split_path,
+                    keypoints_cache=keypoints_cache,
+                )
         elif render and not report["groups"]:
             log.info(f"  M{k}: nothing merged; skipping render for this fit.")
 
@@ -1054,6 +1124,85 @@ def auto_merge_topk(
         json.dump(manifest, f, indent=2)
     log.info(f"Auto-merge done. Manifest: {manifest_path}")
     return manifest
+
+
+def _factor_grid(n: int, preferred_cols: int = 5) -> tuple[int, int]:
+    """Pick ``(rows, cols)`` with ``rows * cols == n``, as close to square
+    as possible. ``preferred_cols`` is honored when it divides ``n``.
+    """
+    if n <= 0:
+        return 1, 1
+    if n % preferred_cols == 0:
+        return n // preferred_cols, preferred_cols
+    candidates = [(n // c, c) for c in range(1, n + 1) if n % c == 0]
+    candidates.sort(key=lambda rc: (abs(rc[0] - rc[1]), -rc[1]))
+    return candidates[0]
+
+
+def _render_per_m_top_codes_movement(
+    fit_rank: int,
+    codes_npz: Path,
+    output_dir: Path,
+    *,
+    fps: int,
+    reference_data_path: Path | None = None,
+    stac_xml_path: Path | None = None,
+    balanced_split_path: Path | None = None,
+    keypoints_cache: tuple | None = None,
+    n_top: int = 20,
+    n_samples: int = 3,
+    grid_cols: int = 5,
+) -> tuple | None:
+    """Render per-M top-N syllable movement video into ``output_dir``.
+
+    Writes ``output_dir/top20_codes_movement.mp4`` (filename auto-set by
+    :func:`render_top_codes_movement` from ``n_top``). Falls back to a
+    warning on render failure so the merge pipeline keeps going. Returns
+    the loaded ``(keypoints, kp_names)`` so the caller can reuse them on
+    subsequent Ms; pass that back in via ``keypoints_cache`` to avoid the
+    ~30s FK reload.
+    """
+    import math
+    try:
+        from c2a.codegen.kinematics_vae.render_common import load_fk_keypoints
+        from c2a.codegen.kinematics_vae.render_top_codes import (
+            render_top_codes_movement,
+        )
+    except Exception as e:
+        log.warning(f"M{fit_rank}: top-codes movement renderer unavailable: {e}")
+        return keypoints_cache
+
+    with np.load(codes_npz, allow_pickle=True) as data:
+        K = int(np.asarray(data["num_states"]))
+    n_top_effective = min(n_top, K)
+    grid_rows, grid_cols = _factor_grid(n_top_effective, preferred_cols=grid_cols)
+
+    try:
+        if keypoints_cache is None:
+            keypoints, kp_names, _ = load_fk_keypoints(
+                reference_data_path=reference_data_path,
+                stac_xml_path=stac_xml_path,
+                balanced_split_path=balanced_split_path,
+            )
+            keypoints_cache = (keypoints, kp_names)
+        else:
+            keypoints, kp_names = keypoints_cache
+        render_top_codes_movement(
+            codes_npz_path=codes_npz,
+            output_dir=output_dir,
+            variant_label=f"KPMS-merged M{fit_rank}",
+            n_top=n_top_effective,
+            n_samples_per_code=n_samples,
+            grid_rows=grid_rows,
+            grid_cols=grid_cols,
+            fps=fps,
+            keypoints=keypoints,
+            kp_names=kp_names,
+        )
+        log.info(f"  M{fit_rank}: wrote top-codes movement to {output_dir}/")
+    except Exception as e:
+        log.warning(f"M{fit_rank}: top-codes movement render failed: {e}")
+    return keypoints_cache
 
 
 def _render_merged_fit_native(

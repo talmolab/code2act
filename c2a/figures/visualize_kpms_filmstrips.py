@@ -35,7 +35,7 @@ from PIL import Image
 # ── Paths ────────────────────────────────────────────────────────────────────
 from c2a.paths import get_asset_path, get_c2a_root, get_repo_root
 
-DEFAULT_CODES = str(get_c2a_root() / "outputs/kpms_sweep/best_codes.npz")
+DEFAULT_CODES = str(get_repo_root() / "outputs/tokenizer/kpms_sweep/best_codes.npz")
 DEFAULT_H5 = str(get_repo_root() / "data/rodent/rodent_reference_clips.h5")
 
 

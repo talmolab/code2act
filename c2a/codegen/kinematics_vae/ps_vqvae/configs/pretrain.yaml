@@ -1,0 +1,63 @@
+# c2a product-space VQVAE pretraining config — paper-faithful per
+# VQ-MAP (Li, Klibaite, Akoad, Wu, Dunn 2025).
+#
+# Default groups follow Scott v15's body-part split (root/axial/limb)
+# as the natural product-space factorization for the rodent backbone.
+# To approximate the paper's headline C=2 with (K1=8, K2=16), set:
+#   product_bottleneck.group_dims=[12, 12]
+#   product_bottleneck.group_codebook_sizes=[8, 16]
+# (root+axial concatenated; limb separately).
+
+defaults:
+  - _self_
+
+seed: 0
+
+data:
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+
+arch:
+  n_joints: 67
+  use_qvel: false
+  auto_detect_threshold: 1.0e-3
+  branch_latent_dims: [4, 8, 12]
+  window_len: 10
+  horizon: 5
+  conv_channels: [64, 128, 256]
+  conv_kernel_size: 3
+  conv_head_layers: [256]
+  decoder_layer_sizes: [256, 256, 256]
+  predictor_layer_sizes: [384, 256]
+
+product_bottleneck:
+  # Per-group code_dim. Must sum to sum(arch.branch_latent_dims) = 24.
+  group_dims: [4, 8, 12]
+  # Per-group codebook size.
+  group_codebook_sizes: [4, 4, 4]
+  # EMA hyperparams from VQ-MAP csbev (paper text only says "EMA").
+  decay: 0.99
+  reset_threshold: 1.0
+  reseed_jitter: 0.01
+
+train:
+  batch_size: 8192
+  num_steps: 30000
+  learning_rate: 3.0e-4
+  lr_warmup_frac: 0.04
+  lr_hold_frac: 0.20
+  lr_end_value: 3.0e-5
+  weight_decay: 1.0e-3
+  grad_clip: 1.0
+  log_every: 250
+  eval_every: 500
+  ckpt_every: 5000
+  ckpt_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae
+
+# VQ-MAP paper p.24 l.757-758: alpha_commit=0.02. L_embedding replaced
+# by EMA — no separate codebook loss term. We drop the L_assign +
+# velocity + correlation losses (zero-weighted in paper headline).
+loss_weights:
+  recon: 1.0
+  pred: 0.3
+  commit: 0.02

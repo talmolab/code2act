@@ -251,44 +251,8 @@ python -m c2a.experiments.run_generalization_kid
 
 ## Repository layout
 
-```
-code2act/
-├── README.md                       # this file
-├── pyproject.toml                  # package "c2a"
-├── .gitignore                      # ignores track-mjx/, .venv/, data/*.h5, checkpoints
-├── bash_scripts/                   # pipeline orchestration (see README)
-│   ├── README.md
-│   ├── run_pipeline.sh
-│   └── run_pipeline_best_kpms.sh
-├── docs/
-│   ├── run_c2a.md                  # single-run + sweep
-│   ├── moseq_decoder_config.md     # every yaml key explained
-│   └── experiments.md              # 13 analysis scripts
-├── c2a/                            # pip-installable package
-│   ├── assets/rodent.xml
-│   ├── configs/                    # Hydra YAMLs
-│   ├── codegen/                    # generate_codes, generate_all_codes
-│   ├── kpms/                       # keypoint-moseq fitting helpers
-│   ├── sweep/                      # grid runner
-│   ├── experiments/                # 13 evaluation scripts + shared/
-│   ├── figures/                    # publication figures + plots
-│   ├── tests/
-│   ├── paths.py                    # get_repo_root() / get_c2a_root()
-│   ├── rendering_utils.py          # vendored video-overlay helpers
-│   ├── moseq_env_wrapper.py        # MoSeqImitation(Imitation)
-│   ├── moseq_decoder_network.py    # MoSeqRecurrentDecoderNetwork
-│   ├── moseq_losses.py
-│   ├── moseq_ppo.py                # PPO wrapper (monkey-patches ff_ppo)
-│   ├── moseq_ppo_networks.py
-│   ├── train_mimic_encoder.py      # pretrain the distill target
-│   └── train_moseq_decoder.py      # main entry
-├── Code2Act-website/               # Astro site for kbian.org/Code2Act-website
-├── track-mjx/                      # ★ user-cloned sibling, gitignored
-├── .venv/                          # ★ user-created, gitignored
-├── data/rodent/                    # H5 reference clips (gitignored)
-├── trained_mimic_ckpts/            # distillation-target checkpoints (gitignored)
-└── model_checkpoints/              # decoder RL checkpoints (gitignored)
-```
+See [`docs/codebase_structure.md`](docs/codebase_structure.md) for the
+authoritative tree and the location of every output / checkpoint.
 
 ## License
 
