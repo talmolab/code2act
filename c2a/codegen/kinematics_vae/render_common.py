@@ -64,6 +64,35 @@ def _load_codes_npz(codes_npz_path: Path) -> dict:
     return out
 
 
+def load_fk_keypoints(
+    reference_data_path: Path | None = None,
+    stac_xml_path: Path | None = None,
+    balanced_split_path: Path | None = None,
+) -> tuple[np.ndarray, list[str], list[tuple[int, int]]]:
+    """One-stop FK loader for variant render scripts.
+
+    Returns ``(keypoints, kp_names, edges)`` for the balanced clips,
+    where ``edges`` is the ``RODENT_SKELETON`` adjacency resolved
+    against the actual keypoint name ordering. Useful when a caller
+    wants to run multiple renderers (e.g. band figures + top-codes
+    movement video) without paying the FK cost twice.
+    """
+    repo = get_repo_root()
+    if reference_data_path is None:
+        reference_data_path = repo / "data" / "rodent" / "rodent_reference_clips.h5"
+    if stac_xml_path is None:
+        stac_xml_path = repo / "c2a" / "assets" / "rodent.xml"
+    if balanced_split_path is None:
+        balanced_split_path = repo / "data" / "rodent" / "rodent_balanced_splits.json"
+
+    from c2a.render.topk_bands_render import _resolve_skeleton_edges
+    keypoints, kp_names = _load_keypoints(
+        str(reference_data_path), str(stac_xml_path), str(balanced_split_path),
+    )
+    edges = _resolve_skeleton_edges(kp_names, RODENT_SKELETON)
+    return keypoints, kp_names, edges
+
+
 def render_topk_bands(
     *,
     codes_npz_path: Path,
@@ -81,6 +110,8 @@ def render_topk_bands(
     n_snapshots: int = 8,
     output_format: str = "both",
     fps: int = 30,
+    keypoints: np.ndarray | None = None,
+    kp_names: list[str] | None = None,
 ) -> None:
     """End-to-end orchestrator for kinematics-VAE-family band rendering.
 
@@ -150,12 +181,16 @@ def render_topk_bands(
         f"{int(intersect_mask.sum())}"
     )
 
-    # 4. Keypoints via forward kinematics (one-time cost, ~30s).
-    log.info("Loading keypoints via FK (one-time; ~30s)...")
-    keypoints, kp_names = _load_keypoints(
-        str(reference_data_path), str(stac_xml_path), str(balanced_split_path),
-    )
-    log.info(f"Keypoints loaded: {keypoints.shape}")
+    # 4. Keypoints via forward kinematics (one-time cost, ~30s) — skip
+    # if the caller already loaded them (e.g. when also running the
+    # top-codes-movement renderer right after).
+    if keypoints is None or kp_names is None:
+        log.info("Loading keypoints via FK (one-time; ~30s)...")
+        keypoints, kp_names = _load_keypoints(
+            str(reference_data_path), str(stac_xml_path),
+            str(balanced_split_path),
+        )
+        log.info(f"Keypoints loaded: {keypoints.shape}")
 
     # 5. Select the 3 demo clips.
     if clips is not None:
