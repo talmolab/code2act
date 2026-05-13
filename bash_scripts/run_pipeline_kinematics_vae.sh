@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Code2Act kinematics-VAE pipeline:
-#   pretrain encoder -> tokenize codes -> decoder RL training
+#   pretrain encoder -> tokenize codes -> render bands/mp4s -> decoder RL
 # =============================================================================
 #
 # Variants:
@@ -40,6 +40,7 @@ NUM_STEPS=""
 CKPT_DIR=""
 SKIP_PRETRAIN=false
 SKIP_TOKENIZE=false
+SKIP_RENDER=false
 SKIP_DECODER=false
 DRY_RUN=false
 
@@ -55,9 +56,10 @@ Variants:
 Flags:
   --ckpt-dir DIR     Use a specific pretrain ckpt for tokenize / decoder stages.
                      Default: trained_kinematics_vae_ckpts/<variant>/step_<num_steps>.
-  --skip-pretrain    Skip Stage 1.
-  --skip-tokenize    Skip Stage 2.
-  --skip-decoder     Skip Stage 3.
+  --skip-pretrain    Skip Stage 1 (pretrain encoder/codebook).
+  --skip-tokenize    Skip Stage 2 (write best_codes.npz + viz PNGs).
+  --skip-render      Skip Stage 3 (per-clip band figures + MP4s).
+  --skip-decoder     Skip Stage 4 (PPO decoder RL).
   --dry-run          Print commands without executing.
   -h, --help         Show this help.
 
@@ -81,6 +83,7 @@ while [[ $# -gt 0 ]]; do
         --ckpt-dir) CKPT_DIR="$2"; shift 2 ;;
         --skip-pretrain) SKIP_PRETRAIN=true; shift ;;
         --skip-tokenize) SKIP_TOKENIZE=true; shift ;;
+        --skip-render)   SKIP_RENDER=true;   shift ;;
         --skip-decoder)  SKIP_DECODER=true;  shift ;;
         --dry-run)       DRY_RUN=true; shift ;;
         -h|--help) show_help; exit 0 ;;
@@ -108,13 +111,16 @@ CODES_NPZ="$WORKDIR/best_codes.npz"
 # ---------------------------------------------------------------------------
 case "$VARIANT" in
     vae)
-        TOKENIZE_ARGS=(--num-codes 50 --pca-dim 8)
+        TOKENIZE_ARGS=(--num-codes 30 --pca-dim 8)
+        RENDER_ARGS=()
         ;;
     vqvae)
-        TOKENIZE_ARGS=(--codebook-size 128 --code-dim 24)
+        TOKENIZE_ARGS=(--codebook-size 30 --code-dim 24)
+        RENDER_ARGS=()
         ;;
     ps_vqvae)
-        TOKENIZE_ARGS=(--group-dims 4 8 12 --group-codebook-sizes 8 8 16)
+        TOKENIZE_ARGS=(--group-dims 4 8 12 --group-codebook-sizes 4 4 4)
+        RENDER_ARGS=(--all-groups)
         ;;
 esac
 
@@ -158,16 +164,30 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Stage 3 — decoder RL (uses the unified code_source dispatch)
+# Stage 3 — top-K band figures + MP4s (kpms / shimoseq parity)
+# ---------------------------------------------------------------------------
+if ! $SKIP_RENDER; then
+    log "Stage 3 — render top-K bands for $VARIANT"
+    run "$VENV_PYTHON" -m "c2a.codegen.kinematics_vae.$VARIANT.render_topk_bands" \
+        --codes-npz "$CODES_NPZ" \
+        --output-dir "$WORKDIR" \
+        --format both --fps 30 \
+        "${RENDER_ARGS[@]}"
+else
+    log "Stage 3 — SKIPPED (--skip-render)"
+fi
+
+# ---------------------------------------------------------------------------
+# Stage 4 — decoder RL (uses the unified code_source dispatch)
 # ---------------------------------------------------------------------------
 if ! $SKIP_DECODER; then
-    log "Stage 3 — decoder RL with code_source=$VARIANT"
+    log "Stage 4 — decoder RL with code_source=$VARIANT"
     run "$VENV_PYTHON" -m c2a.train_moseq_decoder \
         kpms_config.code_source="$VARIANT" \
         kpms_config.codes_path="$CODES_NPZ" \
         train_setup.run_name="kinematics_vae_${VARIANT}_$(date +%Y%m%d_%H%M%S)"
 else
-    log "Stage 3 — SKIPPED (--skip-decoder)"
+    log "Stage 4 — SKIPPED (--skip-decoder)"
 fi
 
 log "Pipeline complete."
