@@ -526,14 +526,16 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
 
     def _e2e_forward(
         self, motion_window_stack: jnp.ndarray, rng: jax.Array,
+        code_override: jnp.ndarray | None = None,
     ) -> dict:
         """Run live VQ-VAE on the per-step window stack — see FF variant docstring.
 
-        Returns a dict with keys ``z_st_flat`` (flattened straight-through z_q
-        for the GRU input), ``live_codes`` (discrete code indices),
-        ``recon_pred`` (decoder output for the recon loss), and scalar VQ
-        aux losses + diagnostics (``commit``, ``codebook``, ``perplexity``,
-        ``utilization``).
+        When ``code_override`` is provided (shape ``(..., stack)`` int32), skip
+        the encoder + nearest-neighbour quantization entirely and use
+        ``codebook[code_override]`` for the z_q stack. This is the inference-time
+        hook used by the live-vs-fixed-codes experiment to force the policy
+        to act on a pre-computed code sequence (e.g. the pretrained tokenizer's
+        encoding of the GT clip).
         """
         if not self.e2e_mode:
             raise RuntimeError(
@@ -543,6 +545,24 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
         stack = int(motion_window_stack.shape[-3])
         w = int(motion_window_stack.shape[-2])
         feat_dim = int(motion_window_stack.shape[-1])
+        if code_override is not None:
+            # Bypass encoder + bottleneck — pick z_q straight from the codebook.
+            # codebook_lookup returns (..., stack, code_dim).
+            z_st_full = self.vqvae_bottleneck.codebook_lookup(
+                code_override.astype(jnp.int32)
+            )
+            return {
+                "z_st_flat": z_st_full.reshape(*leading, -1),
+                "live_codes": code_override.astype(jnp.int32),
+                "recon_pred": jnp.zeros(
+                    leading + (stack, w, feat_dim),
+                    dtype=motion_window_stack.dtype,
+                ),
+                "commit": jnp.float32(0.0),
+                "codebook": jnp.float32(0.0),
+                "perplexity": jnp.float32(0.0),
+                "utilization": jnp.float32(0.0),
+            }
         flat = motion_window_stack.reshape(-1, w, feat_dim)
         mean, logvar = self.vqvae_encoder(flat)
         z_st_flat, aux_losses, aux_metrics = self.vqvae_bottleneck(
@@ -598,7 +618,12 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
             # but `bottleneck.apply` expects a single rank-1 PRNG key.
             if e2e_rng.ndim > 1:
                 e2e_rng = e2e_rng.reshape(-1, e2e_rng.shape[-1])[0]
-            e2e_aux = self._e2e_forward(obs["motion_window_stack"], e2e_rng)
+            # Inference-time hook: if obs carries ``code_override`` we skip the
+            # live encoder and feed codebook[override] straight to the policy.
+            code_override = obs.get("code_override", None) if isinstance(obs, dict) else None
+            e2e_aux = self._e2e_forward(
+                obs["motion_window_stack"], e2e_rng, code_override=code_override,
+            )
             code_emb = e2e_aux["z_st_flat"]
         else:
             all_code_idx = jnp.round(kpms_code).astype(jnp.int32)

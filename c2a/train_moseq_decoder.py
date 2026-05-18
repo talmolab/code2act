@@ -569,6 +569,10 @@ def main(cfg: DictConfig) -> None:
     e2e_w_commit = 0.0
     e2e_w_codebook = 0.0
     e2e_log_split_grads_at_eval = False
+    e2e_anneal_schedule = "none"
+    e2e_anneal_start_mul = 1.0
+    e2e_anneal_end_mul = 1.0
+    e2e_anneal_end_frac = 0.3
 
     if e2e_mode:
         if payload.code_source != _SOURCE_VQVAE:
@@ -632,6 +636,11 @@ def main(cfg: DictConfig) -> None:
         e2e_log_split_grads_at_eval = bool(
             e2e_cfg.get("log_split_grads_at_eval", True)
         )
+        _anneal_cfg = e2e_cfg.get("anneal", {})
+        e2e_anneal_schedule = str(_anneal_cfg.get("schedule", "none"))
+        e2e_anneal_start_mul = float(_anneal_cfg.get("start_multiplier", 1.0))
+        e2e_anneal_end_mul = float(_anneal_cfg.get("end_multiplier", 1.0))
+        e2e_anneal_end_frac = float(_anneal_cfg.get("end_frac", 0.3))
 
     # MoSeqImitation overrides _get_obs to inject kpms_code, flatten nested
     # obs, and strip the "state" hierarchy — all inline. No wrapper chain
@@ -788,6 +797,33 @@ def main(cfg: DictConfig) -> None:
             )
         else:
             logging.warning(f"Unknown kl_schedule '{kl_schedule}', using constant kl_weight")
+
+    # e2e weight anneal: returns a per-step multiplier applied to all three
+    # e2e weights (recon, commit, codebook). Linear ramp from start_multiplier
+    # to end_multiplier over [0, end_frac * num_evals_total]. After end_frac,
+    # multiplier stays at end_multiplier.
+    e2e_weight_fn = None
+    if e2e_mode and e2e_anneal_schedule == "ramp":
+        _e2e_end = e2e_anneal_end_frac * num_evals_total
+        _e2e_range = max(_e2e_end, 1.0)
+        _e2e_sm = e2e_anneal_start_mul
+        _e2e_em = e2e_anneal_end_mul
+
+        def e2e_weight_fn(step, _r=_e2e_range, _e=_e2e_end, sm=_e2e_sm, em=_e2e_em):
+            frac = jnp.clip(step / _r, 0.0, 1.0)
+            mul = sm + (em - sm) * frac
+            return jnp.where(step >= _e, em, mul)
+
+        logging.info(
+            f"e2e weight anneal: multiplier {_e2e_sm}->{_e2e_em} over steps "
+            f"0-{_e2e_end:.0f} (of {num_evals_total} evals); base weights "
+            f"recon={e2e_w_recon}, commit={e2e_w_commit}, codebook={e2e_w_codebook}"
+        )
+    elif e2e_mode and e2e_anneal_schedule != "none":
+        logging.warning(
+            f"Unknown e2e anneal schedule '{e2e_anneal_schedule}', "
+            f"using constant base weights"
+        )
 
     # e2e network-factory kwargs (empty when e2e_mode is off — backward compat)
     _e2e_factory_kwargs: dict[str, Any] = {"e2e_mode": e2e_mode}
@@ -1107,6 +1143,7 @@ def main(cfg: DictConfig) -> None:
         e2e_w_recon=e2e_w_recon,
         e2e_w_commit=e2e_w_commit,
         e2e_w_codebook=e2e_w_codebook,
+        e2e_weight_fn=e2e_weight_fn,
     )
 
     # Rollout env for logging

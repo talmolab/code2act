@@ -260,10 +260,25 @@ train_setup:
 e2e_config:
   e2e_mode: false
   pretrained_vqvae_ckpt: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/step_0030000
+  # Base e2e loss weights. v8 ran with recon=0.05, commit=0.25 and tracking
+  # plateaued because the codebook drifted faster than the GRU could refit
+  # (codebook_loss climbed 1.30 -> 2.64, agreement collapsed 0.45 -> 0.16).
+  # v9 bumps recon + commit so the codebook stays kinematically anchored
+  # and z_e -> z_q gap is tighter.
   loss_weights:
-    recon: 0.05                  # smaller weight per spec; tune up if recon collapses
-    commit: 0.25                 # van den Oord β
+    recon: 1.0                   # was 0.05 (v8) — keep kinematic anchor strong
+    commit: 1.0                  # was 0.25 (v8) — tighten z_e -> z_q gap
     codebook: 1.0                # gradient codebook coefficient
+  # Anneal multiplier applied to ALL three e2e weights as a function of
+  # eval-step. start_multiplier > end_multiplier means "lock the codebook
+  # tightly early (so the GRU sees a stable z_st_flat distribution) then
+  # relax later to let the codebook adapt." When schedule='none' the
+  # multiplier is always 1.0 (no anneal).
+  anneal:
+    schedule: ramp               # 'ramp' (linear start->end) or 'none'
+    start_multiplier: 2.0        # extra-tight lock during warmup
+    end_multiplier: 1.0          # relax to base weights at end_frac
+    end_frac: 0.3                # fraction of total evals at which anneal completes
   log_split_grads_at_eval: true
 
   # Pretrain-arch knobs the loader passes to load_pretrained_vqvae. These

@@ -14,7 +14,7 @@ code2act/
 │   ├── codebase_structure.md  # THIS file
 │   ├── run_c2a.md             # single-run + sweep + tokenize + decoder
 │   ├── moseq_decoder_config.md# every yaml key explained
-│   └── experiments.md         # 13 analysis scripts
+│   └── experiments.md         # 18 analysis scripts
 ├── bash_scripts/              # pipeline orchestration
 │   ├── README.md
 │   ├── run_pipeline.sh                    # KPMS × decoder grid
@@ -123,7 +123,11 @@ c2a/
 │   └── pipeline_best_kpms.yaml
 │
 ├── ar_codegen/                # AR sequence-model code generators (HMM/GPT2-xs/Mamba)
-├── experiments/               # 13 evaluation scripts + experiments/configs/
+├── experiments/               # 18 evaluation scripts + experiments/configs/
+│                              #   experiments/shared/: code_labels.py
+│                              #   (per-code majority-label helpers) +
+│                              #   behavior_mmd.py (MMD/KID + GT-segment
+│                              #   helpers, mirrors TopoVNL feature_analysis/mmd_kid)
 ├── figures/                   # ~20 publication-figure scripts
 ├── tests/                     # pytest suite (load-bearing; see CLAUDE.md)
 │
@@ -199,4 +203,4 @@ c2a/
 - `CLAUDE.md` — project conventions, code style, JAX/Flax patterns, pitfalls.
 - `docs/run_c2a.md` — how to run each stage of the pipeline.
 - `docs/moseq_decoder_config.md` — every Hydra key in `moseq_decoder.yaml`.
-- `docs/experiments.md` — the 13 analysis scripts.
+- `docs/experiments.md` — the 18 analysis scripts.

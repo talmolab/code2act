@@ -1,0 +1,115 @@
+# =============================================================================
+# Code Grid Rollouts Experiment (tokenizer-agnostic)
+# =============================================================================
+# For each tokenizer code (top-N by usage), hold the code for hold_frames in
+# decoder-only mode (z_e_scale=0) from two controlled starting poses
+# (walking-pose / rearing-pose), with K bodies per (pose, code) cell. Each
+# (pose, code) cell becomes one panel in a 5x5 grid video.
+#
+# Two phases share this config:
+#   1. python -m c2a.experiments.run_code_grid_rollouts
+#        -> rollouts + raw 5x5 grids + MMD merge + merged grids
+#   2. python -m c2a.experiments.run_code_grid_dynamics
+#        -> DSA + rSLDS on the merged-cluster hidden trajectories
+# =============================================================================
+
+checkpoint:
+  # User-specified RNN decoder checkpoint. Tokenizer is read from the
+  # checkpoint config (kpms_config.code_source). Works for any source.
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260513_062522_599062/
+  step: null  # null = latest
+  # Override the codes_path baked into the checkpoint's saved config.
+  # Use when the checkpoint was saved with a relative path that no longer
+  # resolves under the current C2A_ROOT layout (e.g. tokenizer files
+  # moved into outputs/tokenizer/). null = use whatever the ckpt has.
+  #
+  # WARNING: this MUST match the tokenizer that produced the codes the
+  # checkpoint was trained with. Setting this to a different tokenizer
+  # (e.g. pointing PS-VQVAE checkpoint at the VAE codes file) silently
+  # rewrites top_codes + usage_rank.npz with the wrong codebook and can
+  # clobber cached rollouts whose file names overlap. Default null —
+  # specify per-checkpoint on CLI.
+  codes_path_override: null
+
+data:
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  labeled_clip_range: [0, 841]
+  csv_to_h5_subsample: 2
+
+# Hold each code for this many ctrl steps (env runs at 100 Hz).
+hold_frames: 500
+
+# K bodies per (pose, code) panel. Each body uses a different starting
+# clip (sampled from the K test-clips matching the pose).
+K_per_panel: 5
+
+# Top-N codes by usage frequency across train+test code time series.
+# For tokenizers with fewer than N codes, all codes are used.
+top_n_codes: 50
+
+# Panels per grid (5x5 = 25). With top_n_codes=50, that's 2 grids per
+# pose; with 30 codes, just 2 grids per pose with the last partially
+# empty (padded). Set grid_rows*grid_cols >= panels_per_grid.
+grid_rows: 5
+grid_cols: 5
+
+# Starting-pose configuration. Identical to the reference experiment.
+start_pose:
+  probe_frame: 20
+  probe_frame_max: 200
+  walking_label: Walk
+  rearing_label: Rear
+
+# Decoder-only mode. z_e_scale=0 zeroes the encoder so only code+proprio
+# drive the GRU; the held code's effect is isolated.
+z_e_scale: 0.0
+
+seed: 42
+
+# Reuse cached rollout npzs if present. Set true to iterate on rendering /
+# merging without re-running the rollouts.
+reuse_rollouts: false
+
+# Reuse cached merge assignments (MMD + clusters) if present.
+reuse_merge: false
+
+# Reuse cached per-code labels (labels/code_labels.json) if present.
+# Default true so re-renders don't unnecessarily rerun the TopoMimic
+# auto-labeler over every rollout.
+reuse_labels: true
+
+# -----------------------------------------------------------------------------
+# MMD merge configuration (per pose, separately for walk and rear)
+# -----------------------------------------------------------------------------
+merge:
+  # Per-frame qpos dim used in MMD. Strip the global root translation
+  # (first 3 dims) so trajectories starting from slightly different
+  # world positions are compared on body posture, not on world location.
+  strip_root_pos: true
+  # Gaussian-kernel bandwidth heuristic: 'median' (median Euclidean
+  # distance across pooled qpos vectors) or a positive float to fix.
+  kernel_sigma: median
+  # Cluster cutoff strategy: 'elbow' (auto: kneed point on sorted UPGMA
+  # merge heights) or 'fixed_k' (fixed cluster count) or 'frac_median'.
+  cutoff: elbow
+  fixed_k: 10            # only used when cutoff='fixed_k'
+  frac_median: 0.5       # only used when cutoff='frac_median'
+
+# -----------------------------------------------------------------------------
+# Rendering configuration
+# -----------------------------------------------------------------------------
+render_video: true
+render_fps: 50
+panel_w: 256
+panel_h: 192
+panel_banner_h: 28      # per-panel title bar height
+grid_banner_h: 44       # top-level grid title bar height
+camera_distance: 0.8
+camera_elevation: -30.0
+camera_azimuth: 135.0
+
+output:
+  base_dir: ./outputs/code_grid_rollouts
+  run_name: default

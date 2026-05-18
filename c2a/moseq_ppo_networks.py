@@ -200,7 +200,15 @@ def _zero_dummy(size, batch_size: int | None = None) -> jnp.ndarray:
 # drops anything the running-stats state didn't see). kpms_code is the
 # pretrained-code float-as-int the env injects; motion_window_stack is the
 # already-normalized VQ-VAE input the env injects under e2e_mode.
-_PRESERVE_RAW_OBS_KEYS: tuple[str, ...] = ("kpms_code", "motion_window_stack")
+_PRESERVE_RAW_OBS_KEYS: tuple[str, ...] = (
+    "kpms_code",
+    "motion_window_stack",
+    # Inference-time hook: when present, the e2e policy bypasses its live
+    # encoder/bottleneck and uses ``codebook[code_override]`` instead.
+    # See ``MoSeqRecurrentDecoderNetwork._e2e_forward`` and the
+    # ``c2a.experiments.run_e2e_live_vs_fixed_codes`` experiment.
+    "code_override",
+)
 
 
 def _make_moseq_policy_network(
