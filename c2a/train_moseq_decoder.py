@@ -20,11 +20,19 @@ import functools
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import hydra
 import jax
 import jax.numpy as jnp
 import numpy as np
+
+# Workaround for venv's orbax-checkpoint (0.11.24) calling jax.monitoring.record_scalar,
+# which was removed from JAX. Pure telemetry call — safe to stub. Without this, the
+# async checkpoint save thread crashes at step 0 and kills training.
+if not hasattr(jax.monitoring, "record_scalar"):
+    jax.monitoring.record_scalar = lambda *a, **k: None
+
 import orbax.checkpoint as ocp
 import wandb
 from mujoco_playground import wrapper as playground_wrappers
@@ -43,6 +51,13 @@ from c2a.moseq_ppo_networks import (
 from c2a.moseq_ppo import train as moseq_train
 from c2a.moseq_env_wrapper import MoSeqImitation
 from c2a.codegen.code_sources import load_codes
+from c2a.codegen.code_sources import SOURCE_VQVAE as _SOURCE_VQVAE
+from c2a.e2e_vqvae import (
+    E2EVQVAEContext,
+    assign_vqvae_to_policy_params,
+    build_motion_norm_padded,
+    load_pretrained_vqvae,
+)
 
 
 def _setup_environment() -> None:
@@ -68,11 +83,15 @@ def _run_eval_rollouts(
     """Run eval rollouts and return raw data (no logging).
 
     Returns:
-        ``(all_indices, all_states, all_rewards, final_key)``
+        ``(all_indices, all_states, all_rewards, all_live_indices, final_key)``
+        where ``all_live_indices`` mirrors ``all_indices`` but holds the live
+        VQ-VAE codes pulled from ``extras["live_code_idx"]`` (empty arrays
+        when e2e_mode is off).
     """
     all_rollout_indices: list[np.ndarray] = []
     all_rollout_states: list[list] = []
     all_rollout_rewards: list[list] = []
+    all_rollout_live_indices: list[np.ndarray] = []
 
     for rollout_i in range(n_rollouts):
         key, subkey = jax.random.split(key)
@@ -81,6 +100,7 @@ def _run_eval_rollouts(
         rollout_states = [state]
         rollout_indices = []
         rollout_rewards = []
+        rollout_live_indices = []
 
         if use_rnn and ppo_network is not None:
             hidden = ppo_network.policy_network.init_hidden(1)
@@ -108,6 +128,8 @@ def _run_eval_rollouts(
                 rollout_indices.append(int(extras["code_idx"]))
             elif "indices" in extras:
                 rollout_indices.append(int(extras["indices"]))
+            if "live_code_idx" in extras:
+                rollout_live_indices.append(int(extras["live_code_idx"]))
 
             state = jit_step(state, action)
             rollout_states.append(state)
@@ -121,8 +143,14 @@ def _run_eval_rollouts(
         all_rollout_indices.append(np.array(rollout_indices))
         all_rollout_states.append(rollout_states)
         all_rollout_rewards.append(rollout_rewards)
+        all_rollout_live_indices.append(
+            np.array(rollout_live_indices) if rollout_live_indices else np.array([], dtype=np.int32)
+        )
 
-    return all_rollout_indices, all_rollout_states, all_rollout_rewards, key
+    return (
+        all_rollout_indices, all_rollout_states, all_rollout_rewards,
+        all_rollout_live_indices, key,
+    )
 
 
 def _log_eval_metrics(
@@ -137,6 +165,7 @@ def _log_eval_metrics(
     render_video,
     metric_prefix="moseq",
     video_prefix="videos",
+    all_rollout_live_indices=None,
 ):
     """Log metrics, code plots, and videos from eval rollouts.
 
@@ -237,22 +266,55 @@ def _log_eval_metrics(
                     if vid_i < len(all_rollout_indices)
                     else None
                 )
+                vid_live = (
+                    all_rollout_live_indices[vid_i]
+                    if (all_rollout_live_indices is not None
+                        and vid_i < len(all_rollout_live_indices))
+                    else None
+                )
                 video_path = (
                     f"{model_path}/{current_step}_{metric_prefix}_vid{vid_i}.mp4"
                 )
 
-                render_rollout_to_video(
-                    env=env,
-                    rollout_states=vid_states,
-                    output_path=video_path,
-                    camera=f"{cfg.render_config.render_camera_name}{env._suffix}",
-                    width=640,
-                    height=480,
-                    fps=render_fps,
-                    indices=vid_indices,
-                    num_codes=num_codes,
-                    code_bar_height=30,
+                # e2e mode adds a second bar (live VQ-VAE codes) below the
+                # pretrained-code bar; shared colormap = same color means same
+                # discrete code index across rows.
+                use_two_bars = (
+                    vid_live is not None and len(vid_live) > 0
+                    and vid_indices is not None and len(vid_indices) > 0
                 )
+                if use_two_bars:
+                    n_min = min(len(vid_indices), len(vid_live))
+                    indices_per_depth = [
+                        vid_indices[:n_min],
+                        vid_live[:n_min],
+                    ]
+                    render_rollout_to_video(
+                        env=env,
+                        rollout_states=vid_states,
+                        output_path=video_path,
+                        camera=f"{cfg.render_config.render_camera_name}{env._suffix}",
+                        width=640,
+                        height=480,
+                        fps=render_fps,
+                        indices_per_depth=indices_per_depth,
+                        num_codes=num_codes,
+                        code_bar_height=30,
+                        bar_row_labels=("Pretrained", "Live"),
+                    )
+                else:
+                    render_rollout_to_video(
+                        env=env,
+                        rollout_states=vid_states,
+                        output_path=video_path,
+                        camera=f"{cfg.render_config.render_camera_name}{env._suffix}",
+                        width=640,
+                        height=480,
+                        fps=render_fps,
+                        indices=vid_indices,
+                        num_codes=num_codes,
+                        code_bar_height=30,
+                    )
 
                 wandb.log(
                     {
@@ -308,7 +370,9 @@ def moseq_rollout_logging_fn(
     key = policy_params_fn_key
 
     # --- Full eval (z_e=1.0) ---
-    all_indices, all_states, all_rewards, key = _run_eval_rollouts(
+    (
+        all_indices, all_states, all_rewards, all_live_indices, key,
+    ) = _run_eval_rollouts(
         env,
         jit_reset,
         jit_step,
@@ -332,11 +396,14 @@ def moseq_rollout_logging_fn(
         render_video,
         metric_prefix="moseq",
         video_prefix="videos",
+        all_rollout_live_indices=all_live_indices,
     )
 
     # --- Decoder-only eval (z_e=0.0) ---
     if jit_decoder_only_inference_fn is not None:
-        do_indices, do_states, do_rewards, key = _run_eval_rollouts(
+        (
+            do_indices, do_states, do_rewards, do_live_indices, key,
+        ) = _run_eval_rollouts(
             env,
             jit_reset,
             jit_step,
@@ -360,6 +427,7 @@ def moseq_rollout_logging_fn(
             render_video,
             metric_prefix="decoder_only",
             video_prefix="videos",
+            all_rollout_live_indices=do_live_indices,
         )
 
         # Reward gap: how much performance is lost without z_e
@@ -489,17 +557,98 @@ def main(cfg: DictConfig) -> None:
     # Code stack size: how many consecutive codes to give the decoder
     code_stack_size = int(cfg.network_config.get("code_stack_size", 1))
 
+    # ------------------------------------------------------------------
+    # End-to-end VQ-VAE: optional live tokenizer folded into the policy
+    # ------------------------------------------------------------------
+    e2e_cfg = cfg.get("e2e_config", None)
+    e2e_mode = bool(e2e_cfg.get("e2e_mode", False)) if e2e_cfg is not None else False
+    e2e_ctx: E2EVQVAEContext | None = None
+    train_motion_padded = None
+    test_motion_padded = None
+    e2e_w_recon = 0.0
+    e2e_w_commit = 0.0
+    e2e_w_codebook = 0.0
+    e2e_log_split_grads_at_eval = False
+
+    if e2e_mode:
+        if payload.code_source != _SOURCE_VQVAE:
+            raise ValueError(
+                f"e2e_config.e2e_mode=True requires kpms_config.code_source="
+                f"'vqvae' so the live tokenizer matches the precomputed codes. "
+                f"Got code_source={payload.code_source!r}. Either turn off "
+                f"e2e_mode or switch to a VQ-VAE codes_path."
+            )
+
+        ckpt_path = e2e_cfg.pretrained_vqvae_ckpt
+        ckpt_p = Path(ckpt_path)
+        if not ckpt_p.is_absolute():
+            ckpt_p = get_repo_root() / ckpt_p
+        arch_cfg = e2e_cfg.get("vqvae_arch", {})
+        e2e_ctx = load_pretrained_vqvae(
+            ckpt_dir=ckpt_p,
+            n_joints=int(arch_cfg.get("n_joints", 67)),
+            use_qvel=bool(arch_cfg.get("use_qvel", False)),
+            window_len=int(arch_cfg.get("window_len", 10)),
+            horizon=int(arch_cfg.get("horizon", 5)),
+            code_stack_size=code_stack_size,
+            conv_channels=tuple(arch_cfg.get("conv_channels", [64, 128, 256])),
+            conv_kernel_size=int(arch_cfg.get("conv_kernel_size", 3)),
+            conv_head_layers=tuple(arch_cfg.get("conv_head_layers", [256])),
+            decoder_layer_sizes=tuple(arch_cfg.get("decoder_layer_sizes", [256, 256, 256])),
+        )
+
+        if e2e_ctx.codebook_size != num_codes:
+            raise RuntimeError(
+                f"VQ-VAE ckpt codebook_size={e2e_ctx.codebook_size} but "
+                f"loaded codes report num_codes={num_codes}. The ckpt and "
+                f"the codes_path must come from the same training run."
+            )
+
+        # Build per-clip padded motion buffers aligned to the ReferenceClips
+        # row order — same order as ``train_codes``/``test_codes``.
+        train_qpos = np.asarray(train_clips.qpos, dtype=np.float32)
+        test_qpos = np.asarray(test_clips.qpos, dtype=np.float32)
+        train_qvel = (
+            np.asarray(train_clips.qvel, dtype=np.float32)
+            if e2e_ctx.use_qvel else None
+        )
+        test_qvel = (
+            np.asarray(test_clips.qvel, dtype=np.float32)
+            if e2e_ctx.use_qvel else None
+        )
+        train_motion_padded = build_motion_norm_padded(train_qpos, train_qvel, e2e_ctx)
+        test_motion_padded = build_motion_norm_padded(test_qpos, test_qvel, e2e_ctx)
+        logging.info(
+            "e2e_mode ON: VQ-VAE ckpt=%s, codebook=%d, feat_dim=%d, "
+            "train motion buffer=%s, test=%s",
+            e2e_ctx.ckpt_dir, e2e_ctx.codebook_size, e2e_ctx.feat_dim,
+            tuple(train_motion_padded.shape), tuple(test_motion_padded.shape),
+        )
+
+        lw = e2e_cfg.loss_weights
+        e2e_w_recon = float(lw.get("recon", 0.05))
+        e2e_w_commit = float(lw.get("commit", 0.25))
+        e2e_w_codebook = float(lw.get("codebook", 1.0))
+        e2e_log_split_grads_at_eval = bool(
+            e2e_cfg.get("log_split_grads_at_eval", True)
+        )
+
     # MoSeqImitation overrides _get_obs to inject kpms_code, flatten nested
     # obs, and strip the "state" hierarchy — all inline. No wrapper chain
     # needed, since BraxDomainRandomizationVmapWrapper bypasses wrappers
-    # via env.unwrapped.
+    # via env.unwrapped. Under e2e_mode the env additionally injects
+    # ``motion_window_stack`` (the live-VQ-VAE encoder input).
     env = MoSeqImitation(
         config=env_cfg_ml, clips=train_clips, kpms_codes=train_codes,
         code_stack_size=code_stack_size,
+        e2e_motion_norm_padded=train_motion_padded,
+        e2e_window_len=(e2e_ctx.window_len if e2e_ctx is not None else 10),
     )
     test_env = MoSeqImitation(
         config=env_cfg_ml, clips=test_clips, kpms_codes=test_codes,
         code_stack_size=code_stack_size,
+        e2e_motion_norm_padded=test_motion_padded,
+        e2e_window_len=(e2e_ctx.window_len if e2e_ctx is not None else 10),
     )
 
     logging.info(f"Environment config: {cfg.env_config}")
@@ -640,6 +789,23 @@ def main(cfg: DictConfig) -> None:
         else:
             logging.warning(f"Unknown kl_schedule '{kl_schedule}', using constant kl_weight")
 
+    # e2e network-factory kwargs (empty when e2e_mode is off — backward compat)
+    _e2e_factory_kwargs: dict[str, Any] = {"e2e_mode": e2e_mode}
+    if e2e_mode and e2e_ctx is not None:
+        _e2e_factory_kwargs.update({
+            "e2e_motion_window_shape": (
+                e2e_ctx.code_stack_size, e2e_ctx.window_len, e2e_ctx.feat_dim,
+            ),
+            "vqvae_branch_input_indices": e2e_ctx.branch_input_indices,
+            "vqvae_branch_latent_dims": e2e_ctx.branch_latent_dims,
+            "vqvae_codebook_size": e2e_ctx.codebook_size,
+            "vqvae_code_dim": e2e_ctx.code_dim,
+            "vqvae_conv_channels": e2e_ctx.conv_channels,
+            "vqvae_conv_kernel_size": e2e_ctx.conv_kernel_size,
+            "vqvae_conv_head_layers": e2e_ctx.conv_head_layers,
+            "vqvae_decoder_layer_sizes": e2e_ctx.decoder_layer_sizes,
+        })
+
     # Network factory
     if use_rnn_decoder:
         network_factory = functools.partial(
@@ -663,13 +829,15 @@ def main(cfg: DictConfig) -> None:
             use_pretrained_decoder=use_pretrained_decoder,
             decoder_layer_sizes_vae=decoder_layer_sizes_vae,
             encoder_uses_proprio=encoder_uses_proprio,
+            **_e2e_factory_kwargs,
         )
         logging.info(
             f"Using RNN decoder: cell={rnn_cell_type}, hidden={rnn_hidden_sizes}, "
             f"z_e_at_action_head={z_e_at_action_head}, reinit_hidden={reinit_hidden_on_code}, "
             f"learned_init={learned_hidden_init}, "
             f"distillation_head={use_distillation_head}, "
-            f"encoder_uses_proprio={encoder_uses_proprio}"
+            f"encoder_uses_proprio={encoder_uses_proprio}, "
+            f"e2e_mode={e2e_mode}"
         )
     else:
         network_factory = functools.partial(
@@ -683,12 +851,22 @@ def main(cfg: DictConfig) -> None:
             continuous_latent_dim=continuous_latent_dim,
             z_e_dropout_rate=z_e_dropout_rate,
             encoder_uses_proprio=encoder_uses_proprio,
+            **_e2e_factory_kwargs,
         )
 
     # Encoder loading: inject pre-trained encoder params from a VAE
     # checkpoint trained with train_mimic_encoder.py.  Both the VAE and
     # the distillation model use IntentionEncoder, so the encoder subtree
     # at params["encoder_module"] has identical structure — one-line drop-in.
+    #
+    # IMPORTANT — resume safety: when ``train_setup.checkpoint_to_restore``
+    # is set, track-mjx's ppo.train loads the FULL training state (including
+    # any trained VQ-VAE / encoder subtrees) BEFORE calling
+    # `_post_init_params_fn`. Overwriting them with fresh-from-disk
+    # pretrained values would silently nuke the live training progress.
+    # We therefore skip both subtree assignments on resume (the resumed
+    # checkpoint already carries the correct current values for both).
+    _resume_in_progress = cfg.train_setup.get("checkpoint_to_restore", None) is not None
     _post_init_params_fn = None
     if use_distillation_head and distillation_encoder_checkpoint is not None:
         # Orbax requires absolute paths. Resolve relatives against the repo
@@ -713,6 +891,15 @@ def main(cfg: DictConfig) -> None:
 
         def _post_init_params_fn(training_state):
             """Load encoder from VAE checkpoint (direct subtree assignment)."""
+            if _resume_in_progress:
+                # Resumed run: the restored training_state already has the
+                # correct (current) values for both subtrees. Don't clobber.
+                logging.info(
+                    "Resume detected (checkpoint_to_restore is set) — "
+                    "skipping pretrained subtree assignment in _post_init_params_fn."
+                )
+                return training_state
+
             mgr_options = ocp.CheckpointManagerOptions(
                 create=False, step_prefix=_encoder_step_prefix,
             )
@@ -741,6 +928,38 @@ def main(cfg: DictConfig) -> None:
                     f"Loaded decoder from {distillation_encoder_checkpoint}"
                 )
 
+            # e2e mode: overwrite the freshly-init'd VQ-VAE subtrees with the
+            # pretrained values. Composes with the distillation load above so
+            # both encoder paths (IntentionEncoder for z_e, VQ-VAE for z_q)
+            # start from their respective pretrained checkpoints. Skipped on
+            # resume (handled by the early return at the top of this function).
+            if e2e_mode and e2e_ctx is not None:
+                assign_vqvae_to_policy_params(
+                    training_state.params.policy, e2e_ctx,
+                )
+                logging.info(
+                    f"Loaded pretrained VQ-VAE subtrees from {e2e_ctx.ckpt_dir}"
+                )
+
+            return training_state
+
+    # When only e2e_mode is on (no distillation), the post_init still needs
+    # to drop the pretrained VQ-VAE subtrees into the freshly-init'd policy.
+    # Same resume guard as the distillation+e2e branch above.
+    if _post_init_params_fn is None and e2e_mode and e2e_ctx is not None:
+        def _post_init_params_fn(training_state):
+            if _resume_in_progress:
+                logging.info(
+                    "Resume detected — skipping pretrained VQ-VAE assignment; "
+                    "restored training_state already has the current values."
+                )
+                return training_state
+            assign_vqvae_to_policy_params(
+                training_state.params.policy, e2e_ctx,
+            )
+            logging.info(
+                f"Loaded pretrained VQ-VAE subtrees from {e2e_ctx.ckpt_dir}"
+            )
             return training_state
 
     # WandB
@@ -884,6 +1103,10 @@ def main(cfg: DictConfig) -> None:
         kl_weight_fn=kl_weight_fn,
         distill_kl_weight=distill_kl_weight if use_distillation_head else 0.0,
         post_init_params_fn=_post_init_params_fn,
+        e2e_mode=e2e_mode,
+        e2e_w_recon=e2e_w_recon,
+        e2e_w_commit=e2e_w_commit,
+        e2e_w_codebook=e2e_w_codebook,
     )
 
     # Rollout env for logging
@@ -892,6 +1115,8 @@ def main(cfg: DictConfig) -> None:
     rollout_env = MoSeqImitation(
         config=rollout_cfg, clips=test_clips, kpms_codes=test_codes,
         code_stack_size=code_stack_size,
+        e2e_motion_norm_padded=test_motion_padded,
+        e2e_window_len=(e2e_ctx.window_len if e2e_ctx is not None else 10),
     )
 
     jit_reset = jax.jit(rollout_env.reset)

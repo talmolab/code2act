@@ -438,6 +438,9 @@ def _build_stacked_bars(
     separator_height: int = 2,
     playhead_width: int = 3,
     hierarchical_colors: tuple[np.ndarray, np.ndarray] | None = None,
+    row_labels: tuple[str, ...] | None = None,
+    label_width: int = 80,
+    label_font_size: int = 14,
 ) -> np.ndarray:
     """Build a stacked bar image for multi-depth RVQ timelines.
 
@@ -455,13 +458,30 @@ def _build_stacked_bars(
         hierarchical_colors: Optional tuple of (l0_colors, l1_colors) from
             :func:`get_hierarchical_colormap`. When provided, depth-0 uses
             l0_colors and depth-1 uses l1_colors[parent, child].
+        row_labels: Optional per-row caption (e.g. ``("Pretrained", "Live")``
+            for e2e mode's stacked bar). When provided, a ``label_width``-wide
+            left margin is reserved and each row gets its label drawn there.
+            ``None`` (default) keeps the legacy bar-only layout.
+        label_width: Pixel width reserved on the left for row labels (used
+            only when ``row_labels`` is not None).
+        label_font_size: Pixel size of the row-label font.
 
     Returns:
-        Stacked bar image, shape [total_height, width, 3].
+        Stacked bar image, shape ``[total_height, width + label_width, 3]``
+        when row_labels is given; ``[total_height, width, 3]`` otherwise.
     """
     n_depths = len(indices_per_depth)
+    if row_labels is not None and len(row_labels) != n_depths:
+        raise ValueError(
+            f"row_labels has {len(row_labels)} entries but indices_per_depth "
+            f"has {n_depths} depths. They must align 1:1."
+        )
     total_height = n_depths * bar_height + (n_depths - 1) * separator_height
-    bar_img = np.ones((total_height, width, 3), dtype=np.uint8) * 255
+    canvas_width = width + (label_width if row_labels else 0)
+    bar_img = np.ones((total_height, canvas_width, 3), dtype=np.uint8) * 255
+    # When row_labels is set, draw into the right-hand `width` columns.
+    bar_x_offset = label_width if row_labels else 0
+    bar_slice = slice(bar_x_offset, bar_x_offset + width)
 
     num_frames = len(indices_per_depth[0])
     playhead_x = int(current_frame_idx * width / num_frames)
@@ -472,8 +492,8 @@ def _build_stacked_bars(
 
         # Draw code segments for this depth
         for j, code_idx in enumerate(depth_indices):
-            x_start = int(j * width / num_frames)
-            x_end = int((j + 1) * width / num_frames)
+            x_start = bar_x_offset + int(j * width / num_frames)
+            x_end = bar_x_offset + int((j + 1) * width / num_frames)
 
             if hierarchical_colors is not None and d == 0:
                 l0_colors, _ = hierarchical_colors
@@ -489,27 +509,38 @@ def _build_stacked_bars(
                 color = code_colors[int(code_idx) % len(code_colors)]
             bar_img[y_start : y_start + bar_height, x_start:x_end] = color
 
-        # Draw playhead
+        # Draw playhead (offset by bar_x_offset when row labels reserve a left margin)
+        ph_abs = bar_x_offset + playhead_x
         if playhead_x > 0:
-            bar_img[y_start : y_start + bar_height, playhead_x - 1 : playhead_x] = [
-                50,
-                50,
-                50,
+            bar_img[y_start : y_start + bar_height, ph_abs - 1 : ph_abs] = [
+                50, 50, 50,
             ]
         bar_img[
             y_start : y_start + bar_height,
-            playhead_x : playhead_x + playhead_width,
+            ph_abs : ph_abs + playhead_width,
         ] = [255, 255, 255]
         if playhead_x + playhead_width < width:
             bar_img[
                 y_start : y_start + bar_height,
-                playhead_x + playhead_width : playhead_x + playhead_width + 1,
+                ph_abs + playhead_width : ph_abs + playhead_width + 1,
             ] = [50, 50, 50]
 
         # Draw separator below (except for last bar)
         if d < n_depths - 1:
             sep_y = y_start + bar_height
-            bar_img[sep_y : sep_y + separator_height, :] = [50, 50, 50]
+            bar_img[sep_y : sep_y + separator_height, bar_slice] = [50, 50, 50]
+
+    if row_labels is not None:
+        # Draw labels in the left margin using PIL for proper text rendering.
+        label_img = Image.fromarray(bar_img)
+        draw = ImageDraw.Draw(label_img)
+        font = _get_font(label_font_size, bold=True)
+        for d, label in enumerate(row_labels):
+            y_start = d * (bar_height + separator_height)
+            # Vertically center the text inside the row.
+            text_y = y_start + max(0, (bar_height - label_font_size) // 2)
+            draw.text((4, text_y), str(label), font=font, fill=(50, 50, 50))
+        bar_img = np.array(label_img)
 
     return bar_img
 
@@ -597,6 +628,8 @@ def render_rollout_to_video(
     show_clip_idx: bool = True,
     indices_per_depth: list[np.ndarray] | None = None,
     d0_label: str | None = None,
+    bar_row_labels: tuple[str, ...] | None = None,
+    bar_label_width: int = 90,
 ) -> str:
     """Render rollout states to video with Nature-style overlays.
 
@@ -655,14 +688,30 @@ def render_rollout_to_video(
 
     for i, frame in enumerate(frames):
         if use_multi_depth:
-            # Build stacked bars and append below the frame
-            bar_img = _build_stacked_bars(
-                width=frame.shape[1],
-                current_frame_idx=i,
-                indices_per_depth=indices_per_depth,
-                code_colors=code_colors,
-                bar_height=code_bar_height,
-            )
+            # Build stacked bars and append below the frame. When row labels
+            # are requested we reserve `bar_label_width` pixels on the left
+            # of the bar canvas for the captions; the bar content area
+            # shrinks correspondingly so the overall canvas stays the same
+            # width as the video frame (vstack-friendly).
+            if bar_row_labels is not None:
+                bar_inner_width = max(1, frame.shape[1] - bar_label_width)
+                bar_img = _build_stacked_bars(
+                    width=bar_inner_width,
+                    current_frame_idx=i,
+                    indices_per_depth=indices_per_depth,
+                    code_colors=code_colors,
+                    bar_height=code_bar_height,
+                    row_labels=bar_row_labels,
+                    label_width=bar_label_width,
+                )
+            else:
+                bar_img = _build_stacked_bars(
+                    width=frame.shape[1],
+                    current_frame_idx=i,
+                    indices_per_depth=indices_per_depth,
+                    code_colors=code_colors,
+                    bar_height=code_bar_height,
+                )
             frame = np.vstack([frame, bar_img])
 
             # Add multi-depth code label

@@ -149,6 +149,11 @@ def train(
     kl_weight_fn: Callable[[int], float] | None = None,
     distill_kl_weight: float = 0.0,
     post_init_params_fn: Callable | None = None,
+    # e2e mode (live VQ-VAE folded into the policy)
+    e2e_mode: bool = False,
+    e2e_w_recon: float = 0.0,
+    e2e_w_commit: float = 0.0,
+    e2e_w_codebook: float = 0.0,
 ):
     """Train a MoSeq decoder PPO agent.
 
@@ -173,6 +178,10 @@ def train(
     _z_e_scale_fn = z_e_scale_fn
     _kl_weight_fn = kl_weight_fn
     _distill_kl_weight = distill_kl_weight
+    _e2e_mode = bool(e2e_mode)
+    _e2e_w_recon = float(e2e_w_recon)
+    _e2e_w_commit = float(e2e_w_commit)
+    _e2e_w_codebook = float(e2e_w_codebook)
 
     if use_rnn_decoder:
         # --- RNN mode: carry-aware loss + inference ---
@@ -220,6 +229,10 @@ def train(
                 kl_weight=effective_kl,
                 z_e_scale=z_e_scale,
                 distill_kl_weight=_distill_kl_weight,
+                e2e_mode=_e2e_mode,
+                e2e_w_recon=_e2e_w_recon,
+                e2e_w_commit=_e2e_w_commit,
+                e2e_w_codebook=_e2e_w_codebook,
             )
 
         original_losses.compute_ppo_loss = moseq_rnn_loss_wrapper
@@ -276,6 +289,10 @@ def train(
                 normalize_advantage=normalize_advantage,
                 vf_coefficient=vf_coefficient,
                 kl_weight=_kl_weight,
+                e2e_mode=_e2e_mode,
+                e2e_w_recon=_e2e_w_recon,
+                e2e_w_commit=_e2e_w_commit,
+                e2e_w_codebook=_e2e_w_codebook,
             )
 
         original_losses.compute_ppo_loss = moseq_loss_wrapper

@@ -188,6 +188,52 @@ remains `kpms_config` for backward compatibility.
   - If `use_distillation_head=true` also, no separate `_distill_head` is built — VAE head does both jobs.
   - `decoder_layer_sizes_vae` MUST match the pretrained checkpoint's decoder layout.
 - `use_rnn_decoder=false` disables the whole recurrent path and uses the FF MLP decoder with `decoder_layer_sizes`.
+- `e2e_config.e2e_mode=true` implies (see `e2e_config` section below):
+  - `kpms_config.code_source` MUST be `"vqvae"` and the loaded `codes_path` MUST come from the same VQ-VAE training run as `pretrained_vqvae_ckpt` (codebook size match is asserted at startup).
+  - The policy network's `nn.Embed(kpms_code)` is replaced by the straight-through `z_q` from the live VQ-VAE; the imitation loss flows back into the encoder via STE.
+  - `motion_window_stack` of shape `(code_stack_size, window_len, feat_dim)` is added to the obs dict by `MoSeqImitation`.
+  - `use_distillation_head` and `use_pretrained_decoder` continue to operate unchanged — they read `task_obs`, orthogonal to the e2e path.
+
+---
+
+## `e2e_config`
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `e2e_mode` | bool | `false` | Master switch. When false, every other key in this section is ignored. |
+| `pretrained_vqvae_ckpt` | str | `${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/step_0030000` | Directory written by `c2a.codegen.kinematics_vae.vqvae.train` (contains `encoder.msgpack`, `bottleneck.msgpack`, `decoder.msgpack`, `normalizer.npz`, `active_joints.npy`, `meta.json`). Resolved against `C2A_ROOT` when relative. |
+| `loss_weights.recon` | float | `0.05` | MSE(decoder(z_st), motion_window_stack). Start small per spec; raise if the recon term collapses to zero or the encoder stops moving. |
+| `loss_weights.commit` | float | `0.25` | van den Oord 2017 β — pulls encoder mean toward the chosen codebook entry. |
+| `loss_weights.codebook` | float | `1.0` | Pulls codebook entries toward encoder mean; this is the only signal that moves the codebook (gradient-codebook variant). |
+| `log_split_grads_at_eval` | bool | `true` | Reserved for the recon-pathway gradient-norm snapshot. Helper exists in `c2a.moseq_losses.compute_e2e_split_grads`; the eval callback hook-in is a follow-up (the live training-step gradient norm into the VQ-VAE is fully captured by the optimizer's update but not currently surfaced as a metric). The recon loss is already logged every step as `e2e/recon_loss`. |
+| `vqvae_arch.n_joints` | int | `67` | MUST match the VQ-VAE pretraining `arch.n_joints`. The loader validates via the ckpt's `meta.json` and raises on mismatch. |
+| `vqvae_arch.use_qvel` | bool | `false` | Whether the motion features include velocity blocks; same validation. |
+| `vqvae_arch.window_len` | int | `10` | Encoder window length `w`. Determines the left-padding of the env's motion buffer. |
+| `vqvae_arch.horizon` | int | `5` | Predictor horizon; we don't run the predictor in e2e but the value is stored for provenance. |
+| `vqvae_arch.conv_channels` | list[int] | `[64, 128, 256]` | Conv1D channel widths in the encoder backbone. |
+| `vqvae_arch.conv_kernel_size` | int | `3` | Conv1D kernel size. |
+| `vqvae_arch.conv_head_layers` | list[int] | `[256]` | Shared MLP head after the conv stack. |
+| `vqvae_arch.decoder_layer_sizes` | list[int] | `[256, 256, 256]` | Per-branch MLP for the VQ-VAE decoder; must match the ckpt's training. |
+
+### e2e WandB metrics
+
+| Metric | Description |
+|--------|-------------|
+| `e2e/recon_loss`, `e2e/scaled_recon_loss` | Mean squared error between live-VQ-VAE reconstruction and `motion_window_stack`; the scaled version reflects what the optimizer sees. |
+| `e2e/commit_loss`, `e2e/scaled_commit_loss` | Commit term (mean over all encoded steps). |
+| `e2e/codebook_loss`, `e2e/scaled_codebook_loss` | Codebook term (mean over all encoded steps). |
+| `e2e/live_perplexity` | Codebook perplexity from the live encoder (compare to `moseq/perplexity` which still reflects the pretrained tokenizer). |
+| `e2e/live_codebook_utilization` | Fraction of codebook entries used by the live encoder per step. |
+| `e2e/live_vs_pretrained_agreement` | Fraction of frames where the live code equals the pretrained code. Drops as the live VQ-VAE drifts; note this conflates **codebook reshuffling** with actual behavioral drift, since reindexing alone changes the integer identity even when the underlying behavior is unchanged. |
+
+### e2e eval video
+
+When `e2e_mode=true`, the eval rendering attaches **two stacked code bars** below the rollout frames using the shared Nature colormap (so identical code indices appear in identical colors across rows):
+
+- **Top row — `Pretrained`** — the precomputed pretrained-VQ-VAE codes from `codes_path` (frozen for the run).
+- **Bottom row — `Live`** — the codes emitted by the live VQ-VAE at this evaluation step (changes throughout training as the encoder + codebook are optimized).
+
+Caveat: the live codebook's discrete indices are not anchored to the pretrained codebook's indices. Apparent drift in the bottom row can reflect codebook reshuffling rather than behavioral change — see the agreement metric above and consider a Hungarian post-hoc match before drawing conclusions about "behavior changed."
 
 ## WandB metrics
 
