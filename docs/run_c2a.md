@@ -95,8 +95,7 @@ python -m c2a.train_moseq_decoder \
 
 Three offline tokenizers train an autoencoder over per-frame kinematic
 features (10-frame proprio windows: `(p, θ, q_active)`) and emit a
-per-frame discrete code in the same `CodesPayload` schema KPMS / shMoSeq
-use. All three share the **same Scott v15 conv1d encoder backbone**
+per-frame discrete code in the same `CodesPayload` schema KPMS uses. All three share the **same Scott v15 conv1d encoder backbone**
 (3-way root/axial/limb split, latent_dim=24). Only the bottleneck
 varies:
 

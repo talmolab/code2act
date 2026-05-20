@@ -30,7 +30,6 @@ from c2a.codegen.code_sources import (
     SOURCE_KPMS_MERGED,
     SOURCE_KPMS_RAW,
     SOURCE_RANDOM,
-    SOURCE_SHIMOSEQ,
     load_codes,
 )
 
@@ -215,46 +214,7 @@ def test_random_when_codes_path_null():
     assert int(payload.train_codes.max()) < 7
 
 
-# ── shimoseq (same npz schema; differentiated only by requested_source) ─────
-
-
-def test_shimoseq_loads_via_kpms_npz_schema(tmp_path):
-    """shimoseq codes share the npz schema with kpms; load_codes routes
-    by code_source but uses the same reader. payload.code_source must
-    echo the user's request, not the file's model_type."""
-    n_train, n_test, T = 3, 2, 10
-    train_codes = np.random.RandomState(0).randint(0, 5, (n_train, T))
-    test_codes = np.random.RandomState(1).randint(0, 5, (n_test, T))
-    train_idx = np.array([0, 5, 9])
-    test_idx = np.array([3, 8])
-    p = _save_kpms_npz(
-        tmp_path / "shimoseq_codes.npz",
-        train_codes, test_codes, train_idx, test_idx,
-        num_states=5,
-    )
-
-    cfg = _make_cfg(code_source=SOURCE_SHIMOSEQ, codes_path=str(p))
-    payload = load_codes(cfg, train_idx.tolist(), test_idx.tolist(), n_frames=T)
-    assert payload.code_source == SOURCE_SHIMOSEQ
-    assert payload.num_codes == 5
-    assert payload.train_codes.shape == (n_train, T)
-    np.testing.assert_array_equal(payload.train_codes, train_codes)
-
-
-def test_shimoseq_null_path_falls_back_to_random():
-    """``code_source=shimoseq`` with ``codes_path=null`` should follow the
-    same smoke-test fallback as kpms_raw."""
-    cfg = _make_cfg(code_source=SOURCE_SHIMOSEQ, codes_path=None)
-    cfg.network_config.num_codes = 7
-    payload = load_codes(cfg, [0, 1, 2], [3, 4], n_frames=8)
-    # Random fallback overrides the requested source — that's the existing
-    # contract (SOURCE_RANDOM is the truth, kpms_config.code_source is
-    # the "requested" intent).
-    assert payload.code_source == SOURCE_RANDOM
-    assert payload.num_codes == 7
-
-
-# ── kinematics_vae family (npz schema shared with kpms/shimoseq) ────────────
+# ── kinematics_vae family (npz schema shared with kpms) ─────────────────────
 
 
 def test_kinematics_vae_loads_via_npz_schema(tmp_path):
@@ -284,7 +244,7 @@ def test_kinematics_vae_null_path_raises_not_random():
     """For kinematics_vae family sources, codes_path=null must FAIL —
     random fallback would feed decoder codes unrelated to any real
     tokenizer's codebook size, silently corrupting training. The
-    pre-PR2 fallback for kpms_raw / kpms_merged / shimoseq is unchanged."""
+    pre-PR2 fallback for kpms_raw / kpms_merged is unchanged."""
     from c2a.codegen.code_sources import SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE
     for src in (SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE):
         cfg = _make_cfg(code_source=src, codes_path=None)

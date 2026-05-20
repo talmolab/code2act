@@ -15,9 +15,9 @@ c2a package on top contributes:
 
 - Unified behavioral-code generation under `c2a.codegen` — sweep
   dispatcher (`c2a.codegen.run_sweep`), per-tokenizer fitters
-  (`c2a.codegen.kpms`, `c2a.codegen.shimoseq`), shared label-alignment
-  and codes-npz schema (`c2a.codegen.shared`), and pluggable code-source
-  loader (`c2a.codegen.code_sources`).
+  (`c2a.codegen.kpms`, `c2a.codegen.kinematics_vae`), shared
+  label-alignment and codes-npz schema (`c2a.codegen.shared`), and
+  pluggable code-source loader (`c2a.codegen.code_sources`).
 - `MoSeqImitation` — env subclass that injects KPMS codes into the
   observation dict.
 - `MoSeqRecurrentDecoderNetwork` — encoder–GRU–decoder policy with optional

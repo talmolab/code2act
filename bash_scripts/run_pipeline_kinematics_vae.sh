@@ -285,7 +285,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Stage 3 — top-K band figures + MP4s (kpms / shimoseq parity)
+# Stage 3 — top-K band figures + MP4s (kpms parity)
 # ---------------------------------------------------------------------------
 if ! $SKIP_RENDER; then
     log "Stage 3 — render top-K bands for $VARIANT"

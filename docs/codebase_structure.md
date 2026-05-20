@@ -43,13 +43,13 @@ c2a/
 ├── rendering_utils.py         # EGL-backed video helpers (vendored from track-mjx vqvae_jax)
 ├── render/
 │   └── topk_bands_render.py   # variant-agnostic top-K band renderer
-│                              #   shared by kpms + shimoseq + (future) kinematics_vae
+│                              #   shared by kpms + kinematics_vae
 │
 ├── codegen/                   # UNIFIED behavioral-code generation
 │   ├── __init__.py
-│   ├── run_sweep.py           # sweep dispatcher (routes by model: kpms | shimoseq)
+│   ├── run_sweep.py           # sweep dispatcher (routes by model: kpms)
 │   ├── code_sources.py        # ★ chokepoint loader: CodesPayload + VALID_SOURCES
-│   │                          #   {kpms_raw, kpms_merged, shimoseq,
+│   │                          #   {kpms_raw, kpms_merged,
 │   │                          #    kinematics_vae, vqvae, ps_vqvae,
 │   │                          #    gt_directional_turn}
 │   ├── shared/
@@ -68,13 +68,6 @@ c2a/
 │   │   ├── render_topk_bands.py
 │   │   ├── generate_codes.py  # best fit → CodesPayload .npz
 │   │   └── generate_all_codes.py # per-(K,κ) .npz files + manifest
-│   ├── shimoseq/              # shMoSeq high-level state tokenizer
-│   │   ├── config.py
-│   │   ├── syllable_loader.py
-│   │   ├── fit_shimoseq.py
-│   │   ├── sweep_impl.py      # Weinreb-2026 lagged-MI + Rand-score sweep
-│   │   ├── render_topk_bands.py
-│   │   └── generate_codes.py  # best fit → CodesPayload .npz (new in PR1)
 │   └── kinematics_vae/        # kinematics-feature VAE family
 │       ├── backbone/          # Scott v15 — shared across all 3 variants
 │       │   ├── frame_features.py    # m_t = (p, θ, q_active); 3-way body split
@@ -111,12 +104,10 @@ c2a/
 │           └── plot_latent.py       # 3-cols × N-rows per-variant grid
 │                                    # + PS-VQVAE joint K_i×K_j heatmap
 │
-├── configs/                   # Hydra YAMLs (decoder + KPMS + shimoseq sweeps)
+├── configs/                   # Hydra YAMLs (decoder + KPMS sweeps)
 │   ├── moseq_decoder.yaml
 │   ├── kpms_sweep.yaml
 │   ├── kpms_sweep_smoke.yaml
-│   ├── shimoseq_sweep.yaml
-│   ├── shimoseq_sweep_smoke.yaml
 │   ├── mimic_encoder.yaml
 │   ├── inference.yaml
 │   ├── pipeline_sweep.yaml
@@ -186,8 +177,6 @@ c2a/
 |---|---|---|
 | KPMS sweep | `c2a/outputs/kpms_sweep/` | `c2a.codegen.run_sweep` (model: kpms) |
 | KPMS codes | `c2a/outputs/kpms_sweep/best_codes.npz` | `c2a.codegen.kpms.generate_codes` |
-| shMoSeq sweep | `outputs/shimoseq_sweep/` | `c2a.codegen.run_sweep` (model: shimoseq) |
-| shMoSeq codes | `outputs/shimoseq_sweep/best_codes.npz` | `c2a.codegen.shimoseq.generate_codes` |
 | VAE ckpts | `trained_kinematics_vae_ckpts/vae/step_*` | `c2a.codegen.kinematics_vae.vae.train` |
 | VAE codes | `trained_kinematics_vae_ckpts/vae/best_codes.npz` | `c2a.codegen.kinematics_vae.vae.tokenize` |
 | VQVAE ckpts | `trained_kinematics_vae_ckpts/vqvae/step_*` | `c2a.codegen.kinematics_vae.vqvae.train` |
@@ -196,7 +185,14 @@ c2a/
 | PS-VQVAE codes | `trained_kinematics_vae_ckpts/ps_vqvae/best_codes.npz` | `c2a.codegen.kinematics_vae.ps_vqvae.tokenize` |
 | MIMIC encoder | `trained_mimic_ckpts/` | `c2a.train_mimic_encoder` |
 | Decoder RL | `model_checkpoints/` | `c2a.train_moseq_decoder` |
+| Figures | `outputs/<figure_name>/` | every `c2a.figures.*` script (one subdir per script) |
+| Experiments | `outputs/<exp_name>/` | every `c2a.experiments.*` script |
 | WandB | `wandb/` (or `c2a/wandb/`) | every training script |
+
+Every `c2a.figures.*` script resolves its output dir via
+`c2a.paths.get_repo_root()` and writes to `outputs/<figure_name>/`
+directly — never under `c2a/figures/`. There is no `outputs/figures/`
+grouping level.
 
 ## See also
 

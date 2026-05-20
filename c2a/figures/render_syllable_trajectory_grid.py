@@ -38,7 +38,7 @@ from keypoint_moseq import viz as kpms_viz
 SCRIPT_DIR = Path(__file__).parent
 MOSEQ_DIR = get_repo_root()
 REPO_ROOT = get_repo_root()
-OUTPUT_DIR = REPO_ROOT / "outputs" / "figures" / "syllable_trajectory_grid"
+OUTPUT_DIR = REPO_ROOT / "outputs" / "syllable_trajectory_grid"
 
 from c2a.experiments.shared.keypoint_fk import setup_stac_model, qpos_to_keypoints_fk
 from c2a.experiments.shared.clip_selection import load_balanced_splits

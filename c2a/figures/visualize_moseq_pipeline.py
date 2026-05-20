@@ -27,6 +27,8 @@ from matplotlib.patches import (
 import matplotlib.image as mpimg
 import numpy as np
 
+from c2a.paths import get_repo_root
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -1358,7 +1360,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output-dir",
-        default=str(SCRIPT_DIR / "outputs" / "pipeline"),
+        default=str(get_repo_root() / "outputs" / "pipeline"),
         help="Output directory for figures (default: outputs/pipeline/)",
     )
     args = parser.parse_args()

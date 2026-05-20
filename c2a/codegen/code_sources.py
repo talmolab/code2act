@@ -12,9 +12,6 @@ network, or the PPO loop:
         - ``"kpms_merged"``         — merged KPMS codes; requires the npz
                                        to carry ``is_merged=True`` (written
                                        by ``c2a.codegen.kpms.merge_states.reencode_codes_npz``).
-        - ``"shimoseq"``            — shMoSeq high-level state codes from a
-                                       sweep (written by
-                                       ``c2a.codegen.shimoseq.generate_codes``).
         - ``"kinematics_vae"``      — discrete codes from K-Means on a
                                        trained vanilla kinematics-VAE's
                                        continuous latent (written by
@@ -61,7 +58,6 @@ log = logging.getLogger(__name__)
 # Code-source identifiers (kept in sync with the YAML doc).
 SOURCE_KPMS_RAW = "kpms_raw"
 SOURCE_KPMS_MERGED = "kpms_merged"
-SOURCE_SHIMOSEQ = "shimoseq"
 SOURCE_KINEMATICS_VAE = "kinematics_vae"
 SOURCE_VQVAE = "vqvae"
 SOURCE_PS_VQVAE = "ps_vqvae"
@@ -75,7 +71,6 @@ SOURCE_RANDOM = "random"  # implicit when codes_path=null
 _NPZ_SCHEMA_SOURCES = frozenset({
     SOURCE_KPMS_RAW,
     SOURCE_KPMS_MERGED,
-    SOURCE_SHIMOSEQ,
     SOURCE_KINEMATICS_VAE,
     SOURCE_VQVAE,
     SOURCE_PS_VQVAE,
@@ -84,7 +79,6 @@ _NPZ_SCHEMA_SOURCES = frozenset({
 VALID_SOURCES = {
     SOURCE_KPMS_RAW,
     SOURCE_KPMS_MERGED,
-    SOURCE_SHIMOSEQ,
     SOURCE_KINEMATICS_VAE,
     SOURCE_VQVAE,
     SOURCE_PS_VQVAE,
@@ -171,9 +165,9 @@ def load_codes(
 
     # Smoke-test fallback: ``codes_path=null`` → random codes sized by
     # ``cfg.network_config.num_codes``. We only honour this for the
-    # KPMS-family sources (``kpms_raw`` / ``kpms_merged`` / ``shimoseq``)
-    # where the random codebook size is consistent with how the user
-    # set ``num_codes`` in their decoder yaml. For the new
+    # KPMS-family sources (``kpms_raw`` / ``kpms_merged``) where the
+    # random codebook size is consistent with how the user set
+    # ``num_codes`` in their decoder yaml. For the new
     # kinematics_vae-family sources (``kinematics_vae`` / ``vqvae`` /
     # ``ps_vqvae``) the codebook size is determined by the *tokenizer's*
     # training config (latent-VAE K-means cluster count, VQ codebook K,
@@ -183,7 +177,7 @@ def load_codes(
     # Refuse the fallback there and force the user to either point at a
     # real tokenizer-output npz or switch to ``kpms_raw`` for smoke runs.
     _RANDOM_FALLBACK_SOURCES = frozenset({
-        SOURCE_KPMS_RAW, SOURCE_KPMS_MERGED, SOURCE_SHIMOSEQ,
+        SOURCE_KPMS_RAW, SOURCE_KPMS_MERGED,
     })
     if codes_path is None and code_source in _RANDOM_FALLBACK_SOURCES:
         return _generate_random(cfg, n_train, n_test, n_frames)
@@ -210,12 +204,6 @@ def load_codes(
         return _load_kpms_npz(
             codes_path, train_indices, test_indices, n_frames,
             require_merged=True, requested_source=SOURCE_KPMS_MERGED,
-        )
-
-    if code_source == SOURCE_SHIMOSEQ:
-        return _load_kpms_npz(
-            codes_path, train_indices, test_indices, n_frames,
-            require_merged=False, requested_source=SOURCE_SHIMOSEQ,
         )
 
     if code_source == SOURCE_KINEMATICS_VAE:

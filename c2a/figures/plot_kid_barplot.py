@@ -17,8 +17,10 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
+from c2a.paths import get_repo_root
+
 SCRIPT_DIR = Path(__file__).parent
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "kid_barplot"
+OUTPUT_DIR = get_repo_root() / "outputs" / "kid_barplot"
 RESULTS_PATH = SCRIPT_DIR.parent / "outputs" / "moseq_inception_distance" / "results.json"
 
 # Display names and colors (Nature colorblind-safe)

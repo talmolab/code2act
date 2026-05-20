@@ -16,10 +16,12 @@ import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 
+from c2a.paths import get_repo_root
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "training_and_decomposition"
+OUTPUT_DIR = get_repo_root() / "outputs" / "training_and_decomposition"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Panel (A) — Training curves

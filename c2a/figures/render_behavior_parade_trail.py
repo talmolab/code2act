@@ -37,7 +37,7 @@ import numpy as np
 SCRIPT_DIR = Path(__file__).parent
 MOSEQ_DIR = get_c2a_root()
 REPO_ROOT = get_repo_root()
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "behavior_parade_trail"
+OUTPUT_DIR = get_repo_root() / "outputs" / "behavior_parade_trail"
 
 from vnl_playground.tasks import utils as vnl_utils
 from c2a.rendering_utils import _disable_lights_recursive

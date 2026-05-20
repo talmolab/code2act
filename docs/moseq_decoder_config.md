@@ -53,8 +53,8 @@ remains `kpms_config` for backward compatibility.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `code_source` | str | `kpms_raw` | One of `kpms_raw`, `kpms_merged`, `shimoseq`, `kinematics_vae`, `vqvae`, `ps_vqvae`, `gt_directional_turn`. Controls which loader and which provenance label appears in WandB. |
-| `codes_path` | str / null | `${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/best_codes.npz` | `.npz` with `train_codes`/`test_codes` `[n_clips, n_frames]`. **If set but missing, training raises** — the March-2026 silent random-codes fallback was removed. Set to `null` to explicitly request random codes for smoke-testing **only for `kpms_raw` / `kpms_merged` / `shimoseq`** (the kinematics-VAE family rejects null with a clear error to avoid silent codebook-size mismatch). |
+| `code_source` | str | `kpms_raw` | One of `kpms_raw`, `kpms_merged`, `kinematics_vae`, `vqvae`, `ps_vqvae`, `gt_directional_turn`. Controls which loader and which provenance label appears in WandB. |
+| `codes_path` | str / null | `${oc.env:C2A_ROOT,.}/c2a/outputs/kpms_sweep/best_codes.npz` | `.npz` with `train_codes`/`test_codes` `[n_clips, n_frames]`. **If set but missing, training raises** — the March-2026 silent random-codes fallback was removed. Set to `null` to explicitly request random codes for smoke-testing **only for `kpms_raw` / `kpms_merged`** (the kinematics-VAE family rejects null with a clear error to avoid silent codebook-size mismatch). |
 | `labels_csv_path` | str / null | `${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv` | Required when `code_source=gt_directional_turn`. |
 | `csv_to_h5_subsample` | int | `2` | CSV is at 30fps; H5 at 15fps. |
 
@@ -64,7 +64,6 @@ remains `kpms_config` for backward compatibility.
 |---|---|---|
 | `kpms_raw` | `c2a.codegen.kpms.generate_codes` | AR-HMM syllables; `num_states` = sweep K |
 | `kpms_merged` | `c2a.codegen.kpms.merge_states.reencode_codes_npz` (requires `is_merged=True` in the npz) | Post-merge AR-HMM; `num_states` = merged K |
-| `shimoseq` | `c2a.codegen.shimoseq.generate_codes` | Hierarchical-HMM high-level states |
 | `kinematics_vae` | `c2a.codegen.kinematics_vae.vae.tokenize` | K-Means on a trained Gaussian-VAE latent (optional PCA pre-reduce) |
 | `vqvae` | `c2a.codegen.kinematics_vae.vqvae.tokenize` | Vanilla VQ codebook argmin |
 | `ps_vqvae` | `c2a.codegen.kinematics_vae.ps_vqvae.tokenize` | Per-group EMA-VQ codes folded into a single product index; `num_states = prod(K_g)` |
