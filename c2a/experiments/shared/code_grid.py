@@ -49,6 +49,70 @@ def make_code_colors(num_codes: int) -> np.ndarray:
     return rgba
 
 
+# Base hue per canonical TopoMimic behavior. ``None`` = achromatic (grey).
+# Behaviors absent from this table fall back to a string-hashed hue.
+_BEHAVIOR_HUE: dict[str, float | None] = {
+    "Rear": 0.77,      # purple
+    "Walk": 0.34,      # green
+    "Turn": 0.08,      # orange
+    "Immobile": None,  # grey
+}
+# Per-direction tweak: (hue rotation, value shift). Keeps Turn_L / Turn_R
+# distinguishable while clearly sharing the Turn family hue.
+_DIRECTION_TWEAK: dict[str, tuple[float, float]] = {
+    "L": (-0.045, -0.14),
+    "R": (+0.045, +0.10),
+    "S": (0.0, 0.0),
+}
+# Muted blue-grey: distinct from the achromatic Immobile family and from
+# the purple/green/orange behavior hues.
+_UNLABELED_RGBA = [0.46, 0.52, 0.60, 1.0]
+
+
+def _label_to_rgba(label: str) -> list[float]:
+    """Map a behavior label string (e.g. ``"Rear_S"``) to an RGBA color."""
+    import colorsys
+
+    if not label or label == "unlabeled":
+        return list(_UNLABELED_RGBA)
+    behavior, _, dinit = label.rpartition("_")
+    if not behavior:
+        behavior, dinit = label, "S"
+    hue = _BEHAVIOR_HUE.get(behavior, "missing")
+    hue_delta, val_delta = _DIRECTION_TWEAK.get(dinit, (0.0, 0.0))
+    if hue is None:  # achromatic behavior (Immobile)
+        v = float(np.clip(0.58 + val_delta, 0.25, 0.92))
+        return [v, v, min(1.0, v * 1.03), 1.0]
+    if hue == "missing":  # unknown behavior — stable hash-derived hue
+        hue = (abs(hash(behavior)) % 997) / 997.0
+    h = (float(hue) + hue_delta) % 1.0
+    v = float(np.clip(0.92 + val_delta, 0.45, 1.0))
+    r, g, b = colorsys.hsv_to_rgb(h, 0.82, v)
+    return [r, g, b, 1.0]
+
+
+def make_label_colors(
+    code_labels: dict[int, dict[str, Any]], num_codes: int,
+) -> np.ndarray:
+    """Return ``(num_codes, 4)`` RGBA palette keyed by behavior label.
+
+    Every code that shares a behavior label (e.g. all ``Rear_S`` codes) is
+    assigned the SAME color, so a behavior's color identity stays stable
+    across every grid video and every code chunk. Behavior sets the base
+    hue (Rear=purple, Walk=green, Turn=orange, Immobile=grey); direction
+    nudges hue + brightness so ``Turn_L`` / ``Turn_R`` remain separable.
+    Codes with no label entry get a neutral grey.
+    """
+    rgba = np.tile(
+        np.asarray(_UNLABELED_RGBA, dtype=np.float32), (num_codes, 1),
+    )
+    for cid, entry in code_labels.items():
+        cid = int(cid)
+        if 0 <= cid < num_codes:
+            rgba[cid] = _label_to_rgba(str(entry.get("label", "unlabeled")))
+    return rgba
+
+
 # ---------------------------------------------------------------------------
 # Code usage ranking
 # ---------------------------------------------------------------------------

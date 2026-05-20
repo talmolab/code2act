@@ -1,15 +1,18 @@
-"""Experiment: per-code rollouts from controlled poses, rendered as 5x5 grids.
+"""Experiment: per-code rollouts from controlled poses, rendered as 6x6 grids.
 
-For each tokenizer code (top-N by usage) and each starting pose (walk / rear),
-roll out K bodies that hold that single code for ``hold_frames`` steps in
-decoder-only mode. Output:
+For each tokenizer code (top-N by usage, zero-usage codes dropped) and each
+starting pose (walk / rear), roll out K bodies that hold that single code
+for ``hold_frames`` steps in decoder-only mode. Output:
 
 * Raw npz rollouts per (pose, code).
-* Four 5x5 grid videos (codes 0..24, 25..49, per pose) — each panel shows
-  the K walkers under one code.
+* Raw 6x6 grid videos per pose — each panel shows the K walkers under one
+  code. Panels are colored by the code's behavior label (all ``Rear_S``
+  codes share one color, etc.) so color identity is stable across videos.
+* Combined 6x6 grid videos overlaying the K walk-pose bodies (opaque) and
+  the K rear-pose bodies (translucent) in each panel.
 * Per-pose MMD merge of codes by behavioral similarity (UPGMA + elbow cut).
 * Per-pose "merged" grid videos: one panel per cluster, walkers colored
-  by their original code.
+  by their original code id.
 
 Companion script: ``run_code_grid_dynamics.py`` runs DSA + rSLDS on the
 merged-cluster hidden state trajectories. See its module docstring.
@@ -62,7 +65,7 @@ from c2a.experiments.shared.checkpoint_utils import (
 )
 from c2a.experiments.shared.clip_selection import load_balanced_splits
 from c2a.experiments.shared.code_grid import (
-    make_code_colors, rank_codes_by_usage,
+    make_code_colors, make_label_colors, rank_codes_by_usage,
     compute_mmd_distance_matrix, cluster_codes,
     render_panel_frames, add_banner, stack_panels_into_grid, write_mp4,
     save_clusters_json, build_uniform_walkers,
@@ -254,6 +257,109 @@ def _render_raw_grid_for_pose(
 
 
 # ---------------------------------------------------------------------------
+# Combined grid render: walk + rear bodies overlaid in each panel.
+# ---------------------------------------------------------------------------
+
+
+def _render_combined_grid(
+    env, top_codes: list[int],
+    rollouts_walk: dict[int, dict[str, np.ndarray]],
+    rollouts_rear: dict[int, dict[str, np.ndarray]],
+    code_colors: np.ndarray, usage: np.ndarray,
+    cfg: DictConfig, video_dir: Path,
+    code_labels: dict[int, dict[str, Any]] | None = None,
+) -> None:
+    """One grid video per code-chunk overlaying walk + rear bodies.
+
+    Each panel = one code. The K walk-pose bodies render fully opaque; the
+    K rear-pose bodies render translucent (``combined_rear_alpha``) so the
+    two start poses stay visually separable within a single panel. Both
+    sets share the code's behavior-label color.
+    """
+    rows = int(cfg.grid_rows)
+    cols = int(cfg.grid_cols)
+    panels_per_grid = rows * cols
+    K = int(cfg.K_per_panel)
+    panel_w, panel_h = int(cfg.panel_w), int(cfg.panel_h)
+    panel_banner_h = int(cfg.panel_banner_h)
+    grid_banner_h = int(cfg.grid_banner_h)
+    fps = int(cfg.render_fps)
+    rear_alpha = float(cfg.get("combined_rear_alpha", 0.4))
+
+    chunks = [
+        top_codes[i:i + panels_per_grid]
+        for i in range(0, len(top_codes), panels_per_grid)
+    ]
+    for gi, chunk in enumerate(chunks):
+        log.info(
+            f"  [combined] grid {gi}: codes {chunk[0]}..{chunk[-1]} "
+            f"({len(chunk)} panels)"
+        )
+        panel_frames_list: list[np.ndarray] = []
+        for rank_idx, code in enumerate(chunk):
+            qpos_w = rollouts_walk[int(code)]["qpos"]  # (K, T, nq)
+            qpos_r = rollouts_rear[int(code)]["qpos"]  # (K, T, nq)
+            n_walk = min(K, qpos_w.shape[0])
+            n_rear = min(K, qpos_r.shape[0])
+            # Walk bodies opaque, rear bodies translucent — same hue.
+            rgb = code_colors[int(code)][:3].tolist()
+            walk_rgba = [*rgb, 1.0]
+            rear_rgba = [*rgb, rear_alpha]
+            walker_colors = (
+                [walk_rgba] * n_walk + [rear_rgba] * n_rear
+            )
+            ghost_model, base_nq = build_uniform_walkers(
+                env, walker_colors=walker_colors,
+                camera_distance=float(cfg.camera_distance),
+                camera_elevation=float(cfg.camera_elevation),
+                camera_azimuth=float(cfg.camera_azimuth),
+            )
+            traj = (
+                [qpos_w[k] for k in range(n_walk)]
+                + [qpos_r[k] for k in range(n_rear)]
+            )
+            raw_frames = render_panel_frames(
+                ghost_model, base_nq, traj,
+                camera_name="divergent_cam",
+                width=panel_w, height=panel_h,
+            )
+            lab = (
+                str(code_labels[int(code)]["label"])
+                if code_labels is not None and int(code) in code_labels
+                else None
+            )
+            lab_str = f" [{lab}]" if lab and lab != "unlabeled" else ""
+            title = (
+                f"● code {int(code):>3d}{lab_str} "
+                f"rank={gi * panels_per_grid + rank_idx + 1} "
+                f"use={int(usage[int(code)])}"
+            )
+            framed = np.stack([
+                add_banner(
+                    f, title, banner_h=panel_banner_h,
+                    bg=(245, 245, 245),
+                    fg=tuple(int(255 * c * 0.65) for c in rgb),
+                    font_size=12,
+                )
+                for f in raw_frames
+            ], axis=0)
+            panel_frames_list.append(framed)
+
+        grid = stack_panels_into_grid(
+            panel_frames_list, rows=rows, cols=cols,
+            grid_title=f"WALK (opaque) + REAR (faint) - codes "
+                       f"{chunk[0]}..{chunk[-1]} (z_e=0)",
+            grid_banner_h=grid_banner_h,
+        )
+        out_path = (
+            video_dir
+            / f"combined_codes_{chunk[0]:03d}-{chunk[-1]:03d}.mp4"
+        )
+        write_mp4(grid, out_path, fps=fps)
+        log.info(f"    Wrote {out_path}")
+
+
+# ---------------------------------------------------------------------------
 # Merged grid render: one ghost_model per (pose, cluster), colored by code.
 # ---------------------------------------------------------------------------
 
@@ -413,12 +519,21 @@ def main(cfg: DictConfig) -> None:
         f"Codes: source={codes_payload.code_source}, num_codes={num_codes}"
     )
 
-    # --- Rank codes by usage ---
+    # --- Rank codes by usage (zero-usage codes dropped entirely) ---
     ranked_codes, usage = rank_codes_by_usage(
         codes_payload.train_codes, codes_payload.test_codes, num_codes,
     )
-    top_n = min(num_codes, int(cfg.top_n_codes))
-    top_codes = ranked_codes[:top_n].tolist()
+    used_ranked = [int(c) for c in ranked_codes.tolist() if usage[int(c)] > 0]
+    n_dropped = num_codes - len(used_ranked)
+    if n_dropped:
+        log.info(
+            f"Dropped {n_dropped} zero-usage code(s); "
+            f"{len(used_ranked)} code(s) have usage > 0"
+        )
+    if not used_ranked:
+        raise ValueError("No codes with nonzero usage — nothing to roll out.")
+    top_n = min(len(used_ranked), int(cfg.top_n_codes))
+    top_codes = used_ranked[:top_n]
     log.info(
         f"Top-{top_n} codes by usage (first 10 shown): {top_codes[:10]} "
         f"(usage range {int(usage[top_codes[0]])}..{int(usage[top_codes[-1]])})"
@@ -552,20 +667,31 @@ def main(cfg: DictConfig) -> None:
     ]
     log.info(f"  Top-10 code labels: {top_label_preview}")
 
-    # --- Code colors (shared across raw and merged for visual continuity) ---
+    # --- Colors ---
+    # Raw + combined grids: color by behavior label (all Rear_S codes share
+    # one color, etc.) so a behavior's color is stable across every video.
+    # Merged grids: color by code id (per-code distinct) so sub-codes within
+    # a cluster panel stay individually distinguishable.
+    label_colors = make_label_colors(code_labels, num_codes)
     code_colors = make_code_colors(num_codes)
 
-    # --- Raw grid rendering (4 mp4s) ---
+    # --- Raw grid rendering (per pose) ---
     if bool(cfg.get("render_video", True)):
         log.info("\n=== Rendering raw grids ===")
         _render_raw_grid_for_pose(
             env_walk, "walk", top_codes, rollouts_walk,
-            code_colors, usage, cfg, videos_raw_dir,
+            label_colors, usage, cfg, videos_raw_dir,
             code_labels=code_labels,
         )
         _render_raw_grid_for_pose(
             env_rear, "rear", top_codes, rollouts_rear,
-            code_colors, usage, cfg, videos_raw_dir,
+            label_colors, usage, cfg, videos_raw_dir,
+            code_labels=code_labels,
+        )
+        log.info("\n=== Rendering combined walk+rear grids ===")
+        _render_combined_grid(
+            env_walk, top_codes, rollouts_walk, rollouts_rear,
+            label_colors, usage, cfg, videos_raw_dir,
             code_labels=code_labels,
         )
 

@@ -1,14 +1,16 @@
 # =============================================================================
 # Code Grid Rollouts Experiment (tokenizer-agnostic)
 # =============================================================================
-# For each tokenizer code (top-N by usage), hold the code for hold_frames in
-# decoder-only mode (z_e_scale=0) from two controlled starting poses
-# (walking-pose / rearing-pose), with K bodies per (pose, code) cell. Each
-# (pose, code) cell becomes one panel in a 5x5 grid video.
+# For each tokenizer code (top-N by usage, zero-usage codes dropped), hold
+# the code for hold_frames in decoder-only mode (z_e_scale=0) from two
+# controlled starting poses (walking-pose / rearing-pose), with K bodies per
+# (pose, code) cell. Each (pose, code) cell becomes one panel in a 6x6 grid
+# video.
 #
 # Two phases share this config:
 #   1. python -m c2a.experiments.run_code_grid_rollouts
-#        -> rollouts + raw 5x5 grids + MMD merge + merged grids
+#        -> rollouts + raw 6x6 grids (walk, rear, walk+rear combined)
+#           + MMD merge + merged grids
 #   2. python -m c2a.experiments.run_code_grid_dynamics
 #        -> DSA + rSLDS on the merged-cluster hidden trajectories
 # =============================================================================
@@ -43,17 +45,19 @@ hold_frames: 500
 
 # K bodies per (pose, code) panel. Each body uses a different starting
 # clip (sampled from the K test-clips matching the pose).
-K_per_panel: 5
+K_per_panel: 10
 
 # Top-N codes by usage frequency across train+test code time series.
-# For tokenizers with fewer than N codes, all codes are used.
+# For tokenizers with fewer than N codes, all codes are used. Codes with
+# zero usage are always dropped before this cap is applied (so no empty
+# panels are rendered for never-emitted codes).
 top_n_codes: 50
 
-# Panels per grid (5x5 = 25). With top_n_codes=50, that's 2 grids per
-# pose; with 30 codes, just 2 grids per pose with the last partially
-# empty (padded). Set grid_rows*grid_cols >= panels_per_grid.
-grid_rows: 5
-grid_cols: 5
+# Panels per grid (6x6 = 36). With top_n_codes=50 that's 2 grids per
+# pose; with <=36 used codes, a single grid per pose (last row padded).
+# Set grid_rows*grid_cols >= the codes you want in one video.
+grid_rows: 6
+grid_cols: 6
 
 # Starting-pose configuration. Identical to the reference experiment.
 start_pose:
@@ -106,6 +110,10 @@ panel_w: 256
 panel_h: 192
 panel_banner_h: 28      # per-panel title bar height
 grid_banner_h: 44       # top-level grid title bar height
+# Opacity of the rear-pose bodies in the combined walk+rear grid video.
+# Walk-pose bodies render fully opaque; rear bodies translucent so the
+# two start poses stay visually separable within one panel.
+combined_rear_alpha: 0.4
 camera_distance: 0.8
 camera_elevation: -30.0
 camera_azimuth: 135.0
