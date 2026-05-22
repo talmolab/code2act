@@ -29,15 +29,16 @@ For each method we report split-half *within-syllable* vs
 *between-syllable* mean dynamics distance and a 6×6 distance heatmap
 across (walk_A, walk_B, immobility_A, immobility_B, rear_A, rear_B).
 
-A rank sweep over {5, 10, 20} validates that the result is not an
-artifact of a single hyperparameter choice; the synthetic positive
-control included in ``test_inputdsa_sanity.py`` confirms the package
-correctly detects known-different A matrices at rank=20.
+A rank sweep over {16, 32, 64} validates that the result is not an
+artifact of a single hyperparameter choice. The DSA sanity check in
+``scratch/2026-05-21-dsa-audit/`` showed that ``rank`` must be >= the PCA
+dimension (32): rank<32 truncates real dynamical modes and fails to
+resolve graded dynamical differences. Default rank is therefore 32.
 
 Outputs
 -------
 * ``outputs/hidden_dynamics/dsa_vanilla_heatmap.{pdf,png,svg}``
-  — PRIMARY: vanilla DSA on PCA-32 hidden, rank=20.
+  — PRIMARY: vanilla DSA on PCA-32 hidden, rank=32.
 * ``outputs/hidden_dynamics/dsa_centered_heatmap.{pdf,png,svg}``
   — vanilla DSA on per-trial-centered hidden state (recurrent-only).
 * ``outputs/hidden_dynamics/dsa_inputdsa_heatmap.{pdf,png,svg}``
@@ -183,14 +184,16 @@ def _key(label: str, level: str | None, base: str) -> str:
     return f"{base}_{level}__{label}"
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-DEFAULT_RANK = 20            # validated via synthetic positive control
+DEFAULT_RANK = 32            # = PCA dim; rank<32 truncates real dynamical
+#                              modes and fails graded sensitivity — see
+#                              scratch/2026-05-21-dsa-audit/
 DEFAULT_PCA_DIM = 32         # X (hidden) dim after joint PCA
 DEFAULT_U_PCA_DIM = 16       # U (qpos) dim after joint PCA
 DEFAULT_N_DELAYS = 1
 DEFAULT_LAMB = 1e-3
 DEFAULT_BACKEND = "n4sid"
 DEFAULT_SCORE_METHOD = "angular"
-RANK_SWEEP = (5, 10, 20)
+RANK_SWEEP = (16, 32, 64)
 
 METHOD_LABELS = {
     "vanilla": "Vanilla DSA",
@@ -404,7 +407,11 @@ def _input_dsa(
     if isinstance(out, tuple) and len(out) == 3:
         _joint, state, _ctrl = out
     else:
-        state = out
+        # return_distance_components=True yields an (N, N, 3) ndarray
+        # = joint / state / control along the last axis. The state
+        # distance is index 1 — NOT the mean over the 3 components.
+        out = np.asarray(out)
+        state = out[..., 1] if (out.ndim == 3 and out.shape[-1] == 3) else out
     return _to_np_2d(state)
 
 

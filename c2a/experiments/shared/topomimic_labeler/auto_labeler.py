@@ -18,16 +18,22 @@ Column assumptions (inferred empirically — see docs/auto_labeling.md):
 
 Decision rules (first match wins, per frame):
 
-    1. elevated          -> Rear     (root z is high or rising)
-    2. stationary_rot    -> Turn     (not translating, body rotating)
+    1. elevated            -> Rear   (root z is high or rising)
+    2. rotation_dominated  -> Turn   (pivot / turn-in-place)
     3. forelimbs + hind-limbs-planted + still planar -> Groom
-    4. v_xy > walk_xy    -> Walk     (purely planar motion)
-    5. otherwise         -> Immobile
+    4. v_xy > walk_xy      -> Walk   (planar locomotion)
+    5. otherwise           -> Immobile
 
 Where:
-    elevated       = z_abs > rear_z_abs OR z_rel > rear_z_delta
-    stationary_rot = v_xy < walk_xy AND |yaw_rate| > orient_yaw
+    elevated          = z_abs > rear_z_abs OR z_rel > rear_z_delta
+    rotation_dominated = yaw_rate > orient_yaw AND
+                         yaw_rate / v_xy > yaw_vxy_ratio
     (Groom fires only when not elevated — rule ordering handles it)
+
+Turn vs Walk: a pivot-turn and a slow walk overlap in raw v_xy, so v_xy
+cannot separate them. The yaw_rate/v_xy ratio does — a turn is
+rotation-dominated (high yaw per unit translation), a walk (incl. a
+curving Walk_L/Walk_R) is translation-dominated.
 
 After grouping into segments, a bridging pass merges triples of the form
 A -> B -> A where duration(B) < bridge_threshold (default 0.5 s).
@@ -54,10 +60,15 @@ DEFAULT_CONFIG: Dict[str, float] = {
     # because it merges even when neighbors disagree.
     "short_absorb_threshold": 0.5,
     "still_xy": 0.003,
-    # Walking requires noticeable planar velocity. Raised further (was
-    # 0.003) so that clear, sustained translation is needed — anything
-    # below becomes Turn (if rotating) or Immobile (if not).
-    "walk_xy": 0.005,
+    # walk_xy is the still/move boundary: v_xy above it = translating
+    # (-> Walk; direction L/R/S from auto_direction), v_xy below it +
+    # rotating = Turn (turn-in-place), below it + still = Immobile.
+    # Set to 0.0015 — the ceiling of the measured "still" population —
+    # so a walking-while-turning rodent is Walk_L/Walk_R, not Turn, and
+    # moderate-speed walking is not dropped to Immobile. Earlier values
+    # (0.003, then 0.005) sat far above the real boundary and mislabeled
+    # walking as Turn / Immobile. See scratch/measure_walk_threshold.py.
+    "walk_xy": 0.0015,
     # Immobile is the default fall-through — but a stricter standard means
     # a frame-by-frame lull is not enough; the still spell must last a
     # minimum duration to qualify. Shorter Immobile segments are absorbed
@@ -66,6 +77,11 @@ DEFAULT_CONFIG: Dict[str, float] = {
     "rear_z_abs": 0.07,
     "rear_z_delta": 0.03,
     "orient_yaw": 0.015,
+    # Turn = rotation-dominated: yaw_rate / v_xy above this ratio (and
+    # rotating at all). Separates a pivot-turn from a (curving) walk —
+    # they overlap in raw v_xy but not in yaw-per-translation. Calibrated
+    # from per-code rollout stats: walks <=9, pivot-turns >=15.
+    "yaw_vxy_ratio": 12.0,
     "groom_limb": 0.0004,
     "still_hindlimb": 0.0005,
     "forelimb_first": 7,
@@ -229,19 +245,30 @@ def compute_features(
 
 
 def _classify_frame(f: Dict[str, float], cfg: Dict[str, float]) -> str:
-    """Apply the 5-class decision rule to a single frame."""
+    """Apply the 5-class decision rule to a single frame.
+
+    Turn vs Walk is decided by whether the motion is *rotation-dominated*:
+    a pivot/turn-in-place has a high yaw-rate per unit planar translation,
+    a walk (even a curving Walk_L/Walk_R) is translation-dominated. Raw
+    v_xy alone cannot separate them — a slow walk and a pivot-turn overlap
+    in v_xy; the yaw_rate/v_xy ratio does separate them (see
+    scratch/measure_code_features.py: walks <=9, turns >=15).
+    """
     elevated = (
         f["z_abs"] > cfg["rear_z_abs"]
         or f["z_rel"] > cfg["rear_z_delta"]
     )
     low_planar = f["v_xy"] < cfg["walk_xy"]
-    stationary_rot = low_planar and f["yaw_rate"] > cfg["orient_yaw"]
+    rotating = f["yaw_rate"] > cfg["orient_yaw"]
+    rotation_dominated = rotating and (
+        f["yaw_rate"] / max(f["v_xy"], 1e-6) > cfg["yaw_vxy_ratio"]
+    )
     forelimb_busy = f["forelimb_var"] > cfg["groom_limb"]
     hindlimb_quiet = f["hindlimb_var"] < cfg["still_hindlimb"]
 
     if elevated:
         return "Rear"
-    if stationary_rot:
+    if rotation_dominated:
         return "Turn"
     if low_planar and forelimb_busy and hindlimb_quiet:
         return "Groom"

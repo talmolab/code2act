@@ -154,12 +154,20 @@ def _per_cluster_trials(
 
 def _run_dsa(
     per_cluster_trials: list[list[np.ndarray]],
-    rank: int = 20, n_delays: int = 5, score_method: str = "angular",
+    rank: int = 32, n_delays: int = 5, score_method: str = "angular",
 ) -> np.ndarray | None:
-    """One concatenated system per cluster, NxN angular distance matrix.
+    """One ``(n_trials, T, pca)`` system per cluster, NxN angular distance.
 
     Returns None (with a logged warning) if the DSA package (which pulls in
     torch) cannot import in this environment.
+
+    NB: each cluster's trials are passed as a 3-D ``(n_trials, T, pca)``
+    array — NOT concatenated into one 2-D array. Concatenation makes the
+    HAVOK regression fit (x_t, x_{t+1}) pairs that straddle trial seams;
+    the 3-D form lets the DSA package split trials correctly.
+    ``rank`` defaults to 32 (= the PCA dimension): a sanity check
+    (scratch/2026-05-21-dsa-audit) showed rank<32 truncates real dynamical
+    modes and fails to resolve graded dynamical differences.
     """
     try:
         from DSA import DSA as PlainDSA
@@ -172,7 +180,7 @@ def _run_dsa(
         return None
 
     systems = [
-        np.concatenate(trials, axis=0) for trials in per_cluster_trials
+        np.stack(trials, axis=0) for trials in per_cluster_trials
     ]
     log.info(
         f"  DSA: {len(systems)} systems, rank={rank}, n_delays={n_delays}"
@@ -232,22 +240,43 @@ def _fit_rslds(
     D: int,
     num_iters: int,
     seed: int,
-) -> tuple[Any, np.ndarray, list[np.ndarray]]:
-    """Fit one rSLDS over all trials of all clusters (K discrete states)."""
+    max_trials: int,
+) -> tuple[Any, np.ndarray, list[np.ndarray], np.ndarray]:
+    """Fit one rSLDS over all trials of all clusters (K discrete states).
+
+    ssm's Laplace-EM scales badly with the pooled trial count. If the total
+    exceeds ``max_trials`` the trials are subsampled per-cluster
+    (proportional, >=1 kept per cluster). Returns the (possibly subsampled)
+    per-trial cluster-index array actually used, so the caller's purity /
+    plots / cache stay aligned.
+    """
     from c2a.figures.plot_hidden_rslds import fit_rslds as _fit
 
-    datas: list[np.ndarray] = []
-    for trials in per_cluster_trials:
-        datas += trials
     K = len(per_cluster_trials)
+    total = sum(len(t) for t in per_cluster_trials)
+    pct = per_cluster_trials
+    if total > max_trials:
+        rng = np.random.RandomState(seed)
+        frac = max_trials / total
+        pct = []
+        for trials in per_cluster_trials:
+            n = min(len(trials), max(1, int(round(len(trials) * frac))))
+            idx = sorted(rng.choice(len(trials), size=n, replace=False))
+            pct.append([trials[i] for i in idx])
+
+    datas: list[np.ndarray] = []
+    used_labels: list[int] = []
+    for ci, trials in enumerate(pct):
+        datas += trials
+        used_labels += [ci] * len(trials)
     log.info(
-        f"  rSLDS: K={K} regimes, D={D}, {len(datas)} trials, "
-        f"T={datas[0].shape[0]}, N={datas[0].shape[1]}"
+        f"  rSLDS: K={K} regimes, D={D}, {len(datas)} trials (of {total}), "
+        f"T={datas[0].shape[0]}, N={datas[0].shape[1]}, num_iters={num_iters}"
     )
     model, elbos, z_per_trial = _fit(
         datas, K=K, D=D, num_iters=num_iters, seed=seed, verbose=False,
     )
-    return model, elbos, z_per_trial
+    return model, elbos, z_per_trial, np.asarray(used_labels, dtype=np.int32)
 
 
 def _load_rslds_cache(
@@ -437,6 +466,8 @@ def _run_one_pass(
     seed: int,
     reuse_rslds: bool,
     title_suffix: str,
+    run_rslds: bool,
+    rslds_max_trials: int,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     log.info(
@@ -483,7 +514,14 @@ def _run_one_pass(
             title_suffix=title_suffix,
         )
 
-    # --- rSLDS (with cache) ---
+    # --- rSLDS (deferred unless run_rslds) ---
+    if not run_rslds:
+        log.info(
+            f"  rSLDS deferred (run_rslds=false) — DSA only for "
+            f"{pose} / {title_suffix}."
+        )
+        return
+
     log.info(f"  --- rSLDS ({pose} / {title_suffix}) ---")
     cached = _load_rslds_cache(out_dir) if reuse_rslds else None
     if cached is not None:
@@ -497,9 +535,10 @@ def _run_one_pass(
             )
             cached = None
     if cached is None:
-        model, elbos, z_per_trial = _fit_rslds(
+        model, elbos, z_per_trial, cluster_labels = _fit_rslds(
             per_cluster_trials, cluster_labels,
             D=rslds_D, num_iters=rslds_iters, seed=seed,
+            max_trials=rslds_max_trials,
         )
         np.save(out_dir / "rslds_elbos.npy", elbos)
         np.savez(
@@ -599,8 +638,12 @@ def main(cfg: DictConfig) -> None:
 
     pca_components = int(cfg.get("dynamics", {}).get("pca_components", 32))
     rslds_D = int(cfg.get("dynamics", {}).get("rslds_continuous_dim", 8))
-    rslds_iters = int(cfg.get("dynamics", {}).get("rslds_iters", 50))
-    dsa_rank = int(cfg.get("dynamics", {}).get("dsa_rank", 20))
+    rslds_iters = int(cfg.get("dynamics", {}).get("rslds_iters", 20))
+    rslds_max_trials = int(cfg.get("dynamics", {}).get("rslds_max_trials", 80))
+    # rSLDS is deferred by default — ssm Laplace-EM is the pipeline's heavy
+    # bottleneck. The dynamics step does DSA only unless run_rslds=true.
+    run_rslds = bool(cfg.get("dynamics", {}).get("run_rslds", False))
+    dsa_rank = int(cfg.get("dynamics", {}).get("dsa_rank", 32))
     dsa_delays = int(cfg.get("dynamics", {}).get("dsa_n_delays", 5))
     seed = int(cfg.seed)
     reuse = bool(cfg.get("reuse_dynamics", True))
@@ -640,6 +683,8 @@ def main(cfg: DictConfig) -> None:
             seed=seed,
             reuse_rslds=reuse,
             title_suffix="MMD merge",
+            run_rslds=run_rslds,
+            rslds_max_trials=rslds_max_trials,
         )
 
         # --- Strategy 2: label-majority clusters ---
@@ -677,6 +722,8 @@ def main(cfg: DictConfig) -> None:
             seed=seed,
             reuse_rslds=reuse,
             title_suffix="label merge",
+            run_rslds=run_rslds,
+            rslds_max_trials=rslds_max_trials,
         )
 
     log.info(f"\n=== Done. Dynamics artifacts under {dyn_base}/ ===")
