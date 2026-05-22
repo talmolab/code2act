@@ -60,11 +60,7 @@ class VectorQuantizer(nn.Module):
         """
         # Codebook: (K, D) learned param. lecun_uniform init matches the
         # Mlp default and gives well-scaled initial codes.
-        codebook = self.param(
-            "codebook",
-            nn.initializers.lecun_uniform(),
-            (self.codebook_size, self.code_dim),
-        )
+        codebook = self._codebook_param()
 
         # Pairwise squared distances: ||z_e[i] - codebook[k]||²
         #   = ||z_e[i]||² + ||codebook[k]||² - 2 z_e[i] · codebook[k]
@@ -112,3 +108,23 @@ class VectorQuantizer(nn.Module):
             "codes": codes,
         }
         return z_st, aux_losses, aux_metrics
+
+    def _codebook_param(self):
+        # Shared param accessor — same name + shape as the one created in
+        # ``__call__`` so both methods share the saved param under
+        # ``quantizer/codebook``.
+        return self.param(
+            "codebook",
+            nn.initializers.lecun_uniform(),
+            (self.codebook_size, self.code_dim),
+        )
+
+    @nn.compact
+    def codebook_lookup(self, codes: jnp.ndarray) -> jnp.ndarray:
+        """Plain codebook lookup ``codebook[codes]`` (no encoder, no quantizer).
+
+        Used by callers that want to inject a specific code into the
+        downstream policy bypassing the encoder + nearest-neighbour search.
+        """
+        codebook = self._codebook_param()
+        return codebook[codes]

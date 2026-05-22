@@ -36,7 +36,7 @@ import numpy as np
 SCRIPT_DIR = Path(__file__).parent
 MOSEQ_DIR = get_c2a_root()
 REPO_ROOT = get_repo_root()
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "single_code_categories"
+OUTPUT_DIR = get_repo_root() / "outputs" / "single_code_categories"
 
 from c2a.experiments.shared.ghost_rendering import build_ghost_model
 from figures.gait_diagram import compute_foot_contacts, render_gait_bar

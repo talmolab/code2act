@@ -95,8 +95,7 @@ python -m c2a.train_moseq_decoder \
 
 Three offline tokenizers train an autoencoder over per-frame kinematic
 features (10-frame proprio windows: `(p, θ, q_active)`) and emit a
-per-frame discrete code in the same `CodesPayload` schema KPMS / shMoSeq
-use. All three share the **same Scott v15 conv1d encoder backbone**
+per-frame discrete code in the same `CodesPayload` schema KPMS uses. All three share the **same Scott v15 conv1d encoder backbone**
 (3-way root/axial/limb split, latent_dim=24). Only the bottleneck
 varies:
 
@@ -221,6 +220,45 @@ z_e is **entirely removed** from the action path. The RNN must learn to
 predict the frozen encoder's latent from just `(code_emb, proprio,
 hidden_state)`. `kl_weight` is auto-forced to 0 so the continuous KL does
 not double-count.
+
+### End-to-end VQ-VAE (live tokenizer inside the policy)
+
+```yaml
+# moseq_decoder.yaml — full e2e_mode run, smallest possible override
+kpms_config:
+  code_source: vqvae                                            # required
+  codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/best_codes.npz
+
+e2e_config:
+  e2e_mode: true
+  pretrained_vqvae_ckpt: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/step_0030000
+  loss_weights: {recon: 0.05, commit: 0.25, codebook: 1.0}      # start small per spec
+```
+
+```bash
+python -m c2a.train_moseq_decoder \
+    kpms_config.code_source=vqvae \
+    kpms_config.codes_path=outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/best_codes.npz \
+    e2e_config.e2e_mode=true \
+    e2e_config.pretrained_vqvae_ckpt=outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/step_0030000
+```
+
+Flow:
+```
+[reference window + proprio]
+   → env injects motion_window_stack of shape (stack, w, feat_dim) in obs
+   → policy: live VQ-VAE encoder → bottleneck → z_q (STE)
+   → z_q (stack-flat) replaces nn.Embed(kpms_code) into the GRU
+   → recon_pred = live VQ-VAE decoder(z_q); MSE vs motion_window_stack
+   → total = PPO + KL + distill + w_recon·recon + w_commit·commit + w_codebook·codebook
+```
+
+`kpms_config.codes_path` and `e2e_config.pretrained_vqvae_ckpt` MUST come from
+the same VQ-VAE training run; the loader asserts codebook-size match at
+startup. Coexists with `use_distillation_head` and `use_pretrained_decoder`
+(those operate on `task_obs`, orthogonal to the e2e path). See
+[`docs/moseq_decoder_config.md`](moseq_decoder_config.md#e2e_config) for the
+full key reference and e2e-specific WandB metrics.
 
 ### Pretrained-decoder readout (unified VAE head)
 

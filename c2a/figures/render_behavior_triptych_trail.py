@@ -37,7 +37,7 @@ SCRIPT_DIR = Path(__file__).parent
 MOSEQ_DIR = get_c2a_root()
 REPO_ROOT = get_repo_root()
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "behavior_triptych_trail"
+OUTPUT_DIR = get_repo_root() / "outputs" / "behavior_triptych_trail"
 
 from vnl_playground.tasks import utils as vnl_utils
 from c2a.rendering_utils import _disable_lights_recursive

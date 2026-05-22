@@ -1,0 +1,60 @@
+# =============================================================================
+# E2E live-vs-fixed codes 2-panel videos
+# =============================================================================
+# For each of the top-5 Rear→Walk→Rear clips, render a side-by-side
+# walker video:
+#   LEFT  = reconstruction from the e2e ckpt's LIVE codes
+#   RIGHT = reconstruction from the FIXED (pretrained tokenizer) codes
+# Bottom strip per panel: the code progression with a vertical time
+# cursor.
+#
+# Usage:
+#   python -m c2a.experiments.run_e2e_live_vs_fixed_codes
+# =============================================================================
+
+checkpoint:
+  # E2E-trained moseq decoder checkpoint.
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260514_204542_881933
+  # Pretrained standalone VQ-VAE used to seed the e2e training; gives us
+  # the encoder + decoder Flax module wiring + normalizer + active joints.
+  pretrained_vqvae_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/step_0030000
+  # Cached per-frame codes from the FIXED (pre-e2e) tokenizer.
+  fixed_codes_npz: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/best_codes.npz
+
+data:
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  labeled_clip_range: [0, 841]
+  csv_to_h5_subsample: 2
+  n_h5_frames_per_clip: 250
+
+# Clip selection — defaults to Rear→Walk→Rear (the only A→B→A pattern
+# with non-empty population in the rodent_labels corpus).
+selection:
+  outer: Rear
+  inner: Walk
+  strict: false                # loose mode: short bridges allowed
+  bridge_max_frames: 80        # ~3 s — needed because the balanced split
+                               # has few near-strict R-W-R clips
+  min_outer_frames: 15
+  min_inner_frames: 5
+  k: 5
+
+render:
+  panel_width: 384
+  panel_height: 288   # 4:3, large enough that the walker reads clearly
+  strip_height: 30    # shorter — emphasizes the walker over the timeline
+  panel_gap: 24       # white gap between adjacent walker columns
+  fps: 25
+  # Colors for the three walkers: GT reference / live e2e / fixed pretrained.
+  reference_color: [0.95, 0.75, 0.20, 1.0]   # warm amber for GT
+  live_color: [0.40, 0.65, 0.95, 1.0]        # light blue for live
+  fixed_color: [0.55, 0.55, 0.55, 1.0]       # muted gray for fixed
+  camera_distance: 0.8
+  camera_elevation: -30.0
+  camera_azimuth: 135.0
+
+output:
+  base_dir: ./outputs/e2e_live_vs_fixed_codes
+  run_name: ckpt_260514_204542_881933

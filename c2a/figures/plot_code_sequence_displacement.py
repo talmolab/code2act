@@ -18,10 +18,12 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
+from c2a.paths import get_repo_root
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "code_sequence_displacement"
+OUTPUT_DIR = get_repo_root() / "outputs" / "code_sequence_displacement"
 
 # ── Behaviors and conditions ─────────────────────────────────────────────────
 BEHAVIORS = ["groom", "walk", "rear"]

@@ -2,9 +2,9 @@
 
 Renders the GT behavior band + the kinematics-VAE k-means code band for
 3 auto-selected clips, both as filmstrip PNGs and as animated MP4s
-(skeleton + bands + cursor). Mirrors :mod:`c2a.codegen.shimoseq.
-render_topk_bands` exactly, except there's one model row per figure
-(this variant has a single fit, not a top-K sweep).
+(skeleton + bands + cursor). Mirrors :mod:`c2a.codegen.kpms.render_topk_bands`,
+except there's one model row per figure (this variant has a single fit,
+not a top-K sweep).
 
 Usage::
 

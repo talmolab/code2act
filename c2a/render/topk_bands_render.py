@@ -1,7 +1,7 @@
 """Shared figure/video plumbing for top-K band visualizations.
 
-Both :mod:`c2a.codegen.kpms.render_topk_bands` and
-:mod:`c2a.codegen.shimoseq.render_topk_bands` produce the same kind of artifact:
+:mod:`c2a.codegen.kpms.render_topk_bands` and the kinematics-VAE family's
+renderers produce the same kind of artifact:
 
   * Per-clip figure: a 3D-skeleton filmstrip (8 snapshots) on top, with a
     ground-truth behavior band + K model band rows underneath.
@@ -9,20 +9,19 @@ Both :mod:`c2a.codegen.kpms.render_topk_bands` and
     moving red cursor.
   * Combined 3-column variant of each (one column per selected clip).
 
-The only thing that differs between the two callers is **where the
-per-clip integer label arrays come from** (KPMS reads ``results.h5``
-inside each fit's project dir; shMoSeq reads ``topk_states.npz`` written
-by the sweep).  This module owns everything else.
+The only thing that differs between callers is **where the per-clip
+integer label arrays come from** (KPMS reads ``results.h5`` inside each
+fit's project dir; the kinematics-VAE family reads ``best_codes.npz``).
+This module owns everything else.
 
 All helpers operate on the same ``model_rows`` shape:
 
     list[tuple[label: str, row: np.ndarray (T,), n_classes: int]]
 
-so a "model" can be a KPMS syllable sequence or a shMoSeq state sequence
-interchangeably.
+so a "model" can be any per-frame integer code sequence.
 
 Behaviour-band coloring uses ``c2a.codegen.shared.label_alignment.{BEHAVIORS, UNLABELED}``
-because both pipelines compare against the same manual rodent labels.
+because all pipelines compare against the same manual rodent labels.
 """
 
 from __future__ import annotations
@@ -44,7 +43,7 @@ log = logging.getLogger(__name__)
 
 # 4 perceptually distinct colors for the rodent label vocabulary
 # (Immobile, Rear, Turn, Walk — see c2a.codegen.shared.label_alignment.BEHAVIORS).
-# Held stable across figures so KPMS and shMoSeq plots are directly comparable.
+# Held stable across figures so plots are directly comparable across tokenizers.
 BEHAVIOR_COLORS = {
     "Immobile": "#377eb8",
     "Rear":     "#984ea3",
@@ -121,7 +120,7 @@ def _draw_model_row(
 ) -> None:
     """Draw discrete-class bands colored by class id.
 
-    Works for KPMS syllable IDs and shMoSeq state IDs alike.
+    Works for any per-frame integer code sequence (e.g. KPMS syllable IDs).
 
     ``show_xticks=False`` hides the x-tick labels — useful for stacked
     band rows where only the bottom row should show frame numbers.
@@ -554,7 +553,7 @@ def auto_select_clips(
 ) -> list[int]:
     """Pick ``n_clips`` clips with the most varied behavior content.
 
-    Generic clip-picker shared by KPMS and shMoSeq renderers.  Primary
+    Generic clip-picker shared by all top-K band renderers.  Primary
     key: number of distinct (non-``UNLABELED``) behaviors in the clip.
     Tie-breakers: transition count, then labeled-frame count.
     """

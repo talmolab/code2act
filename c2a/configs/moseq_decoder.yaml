@@ -237,6 +237,65 @@ train_setup:
     deterministic_eval: true
 
 # =============================================================================
+# End-to-End VQ-VAE Configuration
+# =============================================================================
+# When ``e2e_mode: true``, the pretrained VQ-VAE encoder + bottleneck +
+# decoder are folded into the policy network as live (trainable) Flax
+# submodules. The straight-through z_q replaces nn.Embed(kpms_code) into
+# the GRU, so the imitation loss flows back into the encoder. The
+# reconstruction loss (decoder output vs ``motion_window_stack``) plus
+# the van den Oord 2017 commit + codebook terms are added to the total
+# loss with the small weights below (start with recon=0.05 per spec).
+#
+# Requirements:
+#   - ``kpms_config.code_source == "vqvae"`` (the codes_path and the
+#     pretrained_vqvae_ckpt MUST come from the same training run).
+#   - ``code_stack_size`` should match the policy's; the env builds the
+#     motion buffer with this stack width.
+#
+# Eval-only diagnostic: at every eval boundary the trainer snapshots
+# ``||grad VQ-VAE||`` from the imitation pathway and the reconstruction
+# pathway separately (see ``c2a.moseq_losses.compute_e2e_split_grads``).
+# Set ``log_split_grads_at_eval: false`` to disable.
+e2e_config:
+  e2e_mode: false
+  pretrained_vqvae_ckpt: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/step_0030000
+  # Base e2e loss weights. v8 ran with recon=0.05, commit=0.25 and tracking
+  # plateaued because the codebook drifted faster than the GRU could refit
+  # (codebook_loss climbed 1.30 -> 2.64, agreement collapsed 0.45 -> 0.16).
+  # v9 bumps recon + commit so the codebook stays kinematically anchored
+  # and z_e -> z_q gap is tighter.
+  loss_weights:
+    recon: 1.0                   # was 0.05 (v8) — keep kinematic anchor strong
+    commit: 1.0                  # was 0.25 (v8) — tighten z_e -> z_q gap
+    codebook: 1.0                # gradient codebook coefficient
+  # Anneal multiplier applied to ALL three e2e weights as a function of
+  # eval-step. start_multiplier > end_multiplier means "lock the codebook
+  # tightly early (so the GRU sees a stable z_st_flat distribution) then
+  # relax later to let the codebook adapt." When schedule='none' the
+  # multiplier is always 1.0 (no anneal).
+  anneal:
+    schedule: ramp               # 'ramp' (linear start->end) or 'none'
+    start_multiplier: 2.0        # extra-tight lock during warmup
+    end_multiplier: 1.0          # relax to base weights at end_frac
+    end_frac: 0.3                # fraction of total evals at which anneal completes
+  log_split_grads_at_eval: true
+
+  # Pretrain-arch knobs the loader passes to load_pretrained_vqvae. These
+  # MUST match the values used when the ckpt was produced; the loader
+  # validates ``feat_dim`` and ``sum(branch_latent_dims)`` against the
+  # ckpt's ``meta.json`` and raises on mismatch.
+  vqvae_arch:
+    n_joints: 67
+    use_qvel: false
+    window_len: 10
+    horizon: 5
+    conv_channels: [64, 128, 256]
+    conv_kernel_size: 3
+    conv_head_layers: [256]
+    decoder_layer_sizes: [256, 256, 256]
+
+# =============================================================================
 # Logging Configuration
 # =============================================================================
 logging_config:

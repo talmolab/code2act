@@ -30,11 +30,11 @@ If the GRU implements distinct per-syllable dynamics, NMI should be high
 Outputs
 -------
 * ``figures/data/rslds_results.npz`` — fit results for re-plotting.
-* ``outputs/figures/hidden_dynamics/rslds_confusion.{pdf,png,svg}``
+* ``outputs/hidden_dynamics/rslds_confusion.{pdf,png,svg}``
   — Behavior × discovered-regime confusion matrix (frame-fraction).
-* ``outputs/figures/hidden_dynamics/rslds_regime_traces.{pdf,png,svg}``
+* ``outputs/hidden_dynamics/rslds_regime_traces.{pdf,png,svg}``
   — Per-trial regime trace, K timelines per behavior.
-* ``outputs/figures/hidden_dynamics/rslds_summary.{pdf,png,svg}``
+* ``outputs/hidden_dynamics/rslds_summary.{pdf,png,svg}``
   — NMI + per-trial purity bar chart.
 
 Requires::
@@ -66,7 +66,7 @@ from c2a.paths import get_repo_root
 
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = get_repo_root() / "outputs" / "figures" / "hidden_dynamics"
+OUTPUT_DIR = get_repo_root() / "outputs" / "hidden_dynamics"
 
 # ── Default label aliases (legacy npz) ──────────────────────────────────────
 LEGACY_BEHAVIORS = [

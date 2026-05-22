@@ -60,3 +60,17 @@ class VQVAEBottleneck(nn.Module):
         )
         z_st, aux_losses, aux_metrics = quantizer(mean)
         return z_st, aux_losses, aux_metrics
+
+    @nn.compact
+    def codebook_lookup(self, codes: jnp.ndarray) -> jnp.ndarray:
+        """``codebook[codes]`` via the inner :class:`VectorQuantizer`.
+
+        Used to inject a specific code into the downstream policy when
+        bypassing the live encoder.
+        """
+        quantizer = VectorQuantizer(
+            codebook_size=self.codebook_size,
+            code_dim=self.code_dim,
+            name="quantizer",
+        )
+        return quantizer.codebook_lookup(codes)

@@ -35,7 +35,7 @@ SCRIPT_DIR = Path(__file__).parent
 MOSEQ_DIR = get_c2a_root()
 REPO_ROOT = get_repo_root()
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = SCRIPT_DIR / "outputs" / "behavior_triptych"
+OUTPUT_DIR = get_repo_root() / "outputs" / "behavior_triptych"
 
 from c2a.experiments.shared.ghost_rendering import build_ghost_model, render_ghost_video
 from c2a.rendering_utils import add_multi_line_overlay

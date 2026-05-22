@@ -5,8 +5,8 @@ defines the rigid reader contract — every tokenizer's codegen writer must
 produce a file the reader will accept. Historically that schema lived
 inline in :mod:`c2a.codegen.kpms.generate_codes` and was duplicated
 informally by ``merge_states.reencode_codes_npz``. Now the rules live in
-one place so the new shMoSeq codegen and the upcoming kinematics_vae
-variants can write a compliant file without copy-pasting npz logic.
+one place so the kinematics_vae variants can write a compliant file
+without copy-pasting npz logic.
 
 Required fields (every tokenizer):
     train_codes   : (N_train, T) int32 — codes for the balanced train split
@@ -18,8 +18,7 @@ Required fields (every tokenizer):
                                   ``nn.Embed(num_states, ...)``
     model_type    : scalar bytes string — short tokenizer tag, surfaces in
                                   WandB provenance (e.g. "arhmm_kpms",
-                                  "shimoseq", "kin_vae_kmeans",
-                                  "vqvae", "ps_vqvae")
+                                  "kin_vae_kmeans", "vqvae", "ps_vqvae")
 
 Optional fields (write when meaningful; reader gracefully ignores unknown):
     all_codes      : (N_total, T) int32 — codes for every clip in the
@@ -36,7 +35,7 @@ Optional fields (write when meaningful; reader gracefully ignores unknown):
                                           MUST match this ordering. Pass
                                           ``all_indices`` to have the writer
                                           enforce the contract row-by-row.
-    kappa          : float — smoothing hyperparam for kpms/shimoseq fits.
+    kappa          : float — smoothing hyperparam for kpms fits.
     mean_duration  : float — paper-faithful "best fit" mean state duration.
     is_merged      : bool  — produced by ``merge_states.reencode_codes_npz``;
                               forces ``code_source: kpms_merged``.

@@ -21,6 +21,9 @@ venv active.
 | 13 | `run_generalization_kid` | `generalization_kid_exp.yaml` | Generalization KID — MIMIC vs C2A distribution quality on unseen data |
 | 14 | `run_labeled_hidden_dynamics` | `labeled_hidden_dynamics_exp.yaml` | RNN hidden state dynamics anchored on **manual** behavior + direction labels from `data/rodent/rodent_labels.csv` (TopoMimic-annotation). Replays actual KPMS code sequences from labeled segments — no kinematic heuristic, no sustained-constant-code regime. Three label granularities saved: behavior (4) / direction (3) / combined (up to 12). |
 | 15 | `run_labeled_hidden_dynamics_controlled` | `labeled_hidden_dynamics_controlled_exp.yaml` | Controlled 2-pose × 3-sequence diagnostic. Holds each of the 5 directional-turn codes for a fixed duration in a fixed order, from two controlled starting poses (walking / rearing), in **decoder-only mode** (`z_e_scale=0` bypasses the continuous encoder). Produces 6 side-by-side videos with rotating-PCA panel + phase banner. |
+| 16 | `run_code_grid_rollouts` | `code_grid_rollouts_exp.yaml` | Per-code 5x5 grid videos from controlled poses + MMD merge + label merge + per-code majority-label tagging. See "Code-grid pipeline" below. |
+| 17 | `run_code_grid_dynamics` | `code_grid_rollouts_exp.yaml` | DSA + rSLDS over the merged-cluster hidden trajectories from experiment 16. Runs both MMD-merge and label-merge strategies in one pass; cluster tick labels and regime-trace bands carry the majority-label string. |
+| 18 | `run_code_grid_behavior_mmd` | `code_grid_behavior_mmd.yaml` | Per-cluster MMD² (RBF) + KID (poly) between each merged cluster's pooled rollout qpos and each canonical labeled GT behavior class (the 12-cell behavior×direction grid). Runs for **both** MMD-merged and label-merged clusters — the labels now come from the TopoMimic auto-labeler over the rollouts (a separate signal from qpos-MMD), so MMD-merge clusters carry a meaningful label hypothesis and the comparison is no longer tautological. Mirrors the TopoVNL `feature_analysis/mmd_kid` flow. |
 
 ## Prerequisites
 
@@ -252,6 +255,135 @@ python -m c2a.experiments.run_labeled_hidden_dynamics_controlled \
 python -m c2a.experiments.run_labeled_hidden_dynamics_controlled \
     z_e_scale=1.0 \
     output.base_dir=./outputs/labeled_hidden_dynamics_controlled_z1
+```
+
+### 16, 17, 18. Code-grid pipeline (`run_code_grid_*`)
+
+Tokenizer-agnostic battery for any RNN-decoder checkpoint with a
+discrete code source (VAE + k-means, VQ-VAE, PS-VQ-VAE, etc).
+
+**Three stages, run in order:**
+
+1. **`run_code_grid_rollouts`** — for each of the top-N codes (by usage),
+   roll out K bodies in decoder-only mode (`z_e_scale=0`) holding that
+   code for `hold_frames` steps, from two controlled starting poses
+   (walking / rearing). Per pose:
+   - Save raw 5x5 grid videos (codes 0..24 and 25..49) under
+     `videos_raw/`.
+   - MMD-cluster the codes by behavioral similarity of the resulting
+     qpos trajectories (UPGMA + elbow cutoff) → `clusters_{pose}.json`.
+   - Label each code by running the vendored TopoMimic auto-labeler
+     (`c2a/experiments/shared/topomimic_labeler/`, mirror of
+     [`KevinBian107/TopoMimic-annotation`](https://github.com/KevinBian107/TopoMimic-annotation))
+     on the rolled-out qpos. Per body: resample 100 → 30 fps, run the
+     5-class behavior heuristic + the 3-class direction heuristic with
+     Turn-reconciliation, pick the **longest behavior segment** (Groom →
+     Immobile to match c2a's 4-class corpus), assign **majority
+     direction within that span**. Per code: one-body-one-vote across all
+     K bodies of both walking and rearing rollouts. Output:
+     `labels/code_labels.json`. This labels what the decoder *produces*
+     for each code, not where the tokenizer places each code in the
+     corpus — the two diverge in interesting ways (a code whose
+     corpus-frame label is Immobile may actually rollout as Turn_L).
+   - Build label-based clusters: codes sharing the same majority label
+     are grouped → `clusters_by_label_{pose}.json`. The partition is
+     pose-agnostic but is written under both poses for downstream
+     symmetry with the MMD clusters.
+   - Render merged-grid videos for both strategies — file prefixes
+     `merged_clusters` (MMD) and `merged_by_label` (label). Per-panel
+     banners carry the cluster's majority-label string.
+
+2. **`run_code_grid_dynamics`** — reads the cached rollouts and clusters,
+   PCA-reduces hidden trajectories, and runs DSA + rSLDS per pose, for
+   **both** strategies:
+   - `dyn_base/{walk,rear}/`         — MMD merge clusters.
+   - `dyn_base/{walk_label,rear_label}/` — label merge clusters.
+
+   Each subdir has `dsa_distance.npz`, `dsa_heatmap.{png,pdf}` (tick
+   labels include the cluster's majority label, e.g.
+   `c3 [Walk_L] (n=7)`), `rslds_fit.pkl`, `rslds_z_per_trial.npz`,
+   `rslds_elbos.npy`, `regime_traces.png` (each cluster band annotated
+   with its label on the right margin), and `composition.json` (cluster
+   id → sub-codes + usage + majority label).
+
+   rSLDS is reloaded from pkl when `reuse_dynamics=true` (default) and
+   the cached cluster labeling still matches the current clusters JSON;
+   otherwise it refits. The pkl reload requires the `ssm` package to be
+   importable in the venv.
+
+3. **`run_code_grid_behavior_mmd`** — per-cluster behavior fidelity vs
+   real labeled data. Tests both strategies × both poses: MMD-merged
+   clusters now also carry a meaningful label hypothesis (the rollout-
+   derived TopoMimic label of the constituent codes), so MMD-vs-GT-
+   class is non-tautological. For each (strategy, pose) cell:
+   - Build a "cluster window stack" by pooling all (code, body) rollout
+     qpos in the cluster, root-stripped (drop first 3 dims) and uniformly
+     resampled to K=100 frames.
+   - For each canonical GT class (Immobile, Rear, Walk_S/L/R,
+     Turn_S/L/R), build the real-data "GT window stack" from the
+     `(behavior, direction)` segments in `rodent_labels.csv` ×
+     `rodent_reference_clips.h5`, same K=100 frames after root strip.
+   - Compute KID (polynomial kernel) + RBF-MMD² (σ = median heuristic on
+     the pooled X ∪ Y), unbiased estimator. Mirrors the TopoVNL
+     `topo_mimic.analysis.feature_analysis.mmd_kid` flow.
+   - Save per (strategy, pose):
+     - `results.csv` — long form: row per (cluster, GT class) with KID,
+       RBF-MMD², σ, n_cluster, n_gt, cluster_label, cluster_codes.
+     - `best_match.csv` — argmin RBF-MMD² GT class per cluster, plus a
+       boolean `majority_label_matches_best` for quick scoring.
+     - `heatmap_mmd_rbf.{png,pdf}`, `heatmap_kid.{png,pdf}` — clusters
+       (rows) × GT classes (cols).
+     - `matrices.npz` — raw matrices for downstream tooling.
+     - `gt_class_sizes.json` — N actually used per GT class.
+
+**Outputs:**
+
+```
+outputs/code_grid_rollouts/<run_name>/
+├── data/rollout_{walk,rear}_code{000..049}.npz
+├── data/usage_rank.npz
+├── videos_raw/{walk,rear}_raw_codes_*.mp4
+├── merged/clusters_{walk,rear}.json
+├── merged/clusters_by_label_{walk,rear}.json
+├── merged/distance_{walk,rear}.npz
+├── merged/{walk,rear}_merged_clusters_g00.mp4
+├── merged/{walk,rear}_merged_by_label_g00.mp4
+└── labels/code_labels.json
+outputs/code_grid_dynamics/<run_name>/
+├── {walk,rear}/                       # MMD-merge strategy
+└── {walk_label,rear_label}/           # label-merge strategy
+outputs/code_grid_behavior_mmd/<run_name>/
+├── mmd_merge/{walk,rear}/   # MMD-merged clusters vs GT classes
+└── label_merge/{walk,rear}/ # label-merged clusters vs GT classes
+```
+
+**Default `run_name`** is `default`. For multi-checkpoint sweeps,
+override per checkpoint, e.g.
+`output.run_name=ckpt_260513_062522_599062`.
+
+**Reuse flags** (rollouts script): `reuse_rollouts=true` skips per-code
+NPZ generation if cached, `reuse_merge=true` skips MMD distance compute,
+`reuse_labels=true` skips the label cross-tab. The behavior MMD script
+has no reuse flag — it always recomputes from the cached rollouts +
+clusters (fast since no environment build is needed).
+
+**Tokenizer compatibility.** The code source (KPMS, VAE+kmeans, VQ-VAE,
+PS-VQVAE) is read from the checkpoint's saved config. The number of
+codes is detected automatically. PS-VQVAE flattens its product code
+indices through `c2a.codegen.code_sources.load_codes` so the experiment
+sees a single integer code per frame regardless of the source.
+
+```bash
+# VAE checkpoint
+python -m c2a.experiments.run_code_grid_rollouts \
+    output.run_name=ckpt_260513_062522_599062 \
+    checkpoint.path=model_checkpoints/260513_062522_599062/
+python -m c2a.experiments.run_code_grid_dynamics \
+    output.run_name=ckpt_260513_062522_599062 \
+    checkpoint.path=model_checkpoints/260513_062522_599062/
+python -m c2a.experiments.run_code_grid_behavior_mmd \
+    rollouts.run_name=ckpt_260513_062522_599062 \
+    output.run_name=ckpt_260513_062522_599062
 ```
 
 ## Figures

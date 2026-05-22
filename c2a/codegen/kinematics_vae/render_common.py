@@ -7,10 +7,9 @@ that supplies its own ``model_rows`` factory.
 
 The actual figure / video drawing is delegated to
 :mod:`c2a.render.topk_bands_render`, which is the same module
-:mod:`c2a.codegen.kpms.render_topk_bands` and
-:mod:`c2a.codegen.shimoseq.render_topk_bands` use. That keeps the
-output PNG/MP4 visually identical to kpms/shimoseq so figures are
-comparable across tokenizer families.
+:mod:`c2a.codegen.kpms.render_topk_bands` uses. That keeps the output
+PNG/MP4 visually identical to kpms so figures are comparable across
+tokenizer families.
 """
 
 from __future__ import annotations

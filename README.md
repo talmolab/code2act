@@ -15,9 +15,9 @@ c2a package on top contributes:
 
 - Unified behavioral-code generation under `c2a.codegen` — sweep
   dispatcher (`c2a.codegen.run_sweep`), per-tokenizer fitters
-  (`c2a.codegen.kpms`, `c2a.codegen.shimoseq`), shared label-alignment
-  and codes-npz schema (`c2a.codegen.shared`), and pluggable code-source
-  loader (`c2a.codegen.code_sources`).
+  (`c2a.codegen.kpms`, `c2a.codegen.kinematics_vae`), shared
+  label-alignment and codes-npz schema (`c2a.codegen.shared`), and
+  pluggable code-source loader (`c2a.codegen.code_sources`).
 - `MoSeqImitation` — env subclass that injects KPMS codes into the
   observation dict.
 - `MoSeqRecurrentDecoderNetwork` — encoder–GRU–decoder policy with optional
@@ -79,14 +79,15 @@ sequencing — a plain `uv pip install -e ".[analysis]"` will fail on
 without declaring them as build deps. Install in this order:
 
 ```bash
-# DSA pulls `torch` as a transitive dep with no upper pin. PyTorch
-# 2.10+ shifted its Linux wheels to depend on the CUDA-13 NVIDIA
-# wheels (`nvidia-cudnn-cu13`, `nvidia-cublas` (unsuffixed),
-# `cuda-toolkit==13.0.2`, …). Those clobber the CUDA-12 cuDNN that
-# `jax-cuda12-plugin` requires, breaking `import jax` with
-# `CUDNN_STATUS_NOT_INITIALIZED`. Pin torch to the last CUDA-12 line
-# (≤2.9.x) BEFORE DSA so uv's resolver doesn't pick 2.11.
-uv pip install "torch<2.10"
+# DSA pulls `torch` as a transitive dep, but we only ever call DSA with
+# device="cpu" (see c2a/figures/plot_hidden_dsa.py and
+# c2a/experiments/run_code_grid_dynamics.py). Install CPU-only torch:
+# it fully sidesteps the cu12/cu13 NVIDIA-lib version drift that
+# breaks GPU-torch in this venv (symptom: ImportError chain through
+# libcusparseLt.so.0 → libnccl.so.2 → libnvshmem_host.so.3 at every
+# torch import). JAX/Flax/brax/mujoco_playground don't use torch, so
+# the CPU swap doesn't touch the training pipeline.
+uv pip install --index-url https://download.pytorch.org/whl/cpu torch
 
 # DSA — uppercase package on GitHub. (PyPI's `dsa` is a different,
 # unrelated package; don't `uv pip install DSA` from PyPI.)
@@ -98,22 +99,31 @@ uv pip install autograd cython
 uv pip install --no-build-isolation git+https://github.com/lindermanlab/ssm.git
 ```
 
-If you already hit the cu13 collision (symptom: `RuntimeError: cuDNN
-not found` from `jax_plugins.xla_cuda12`, or `CUDNN_STATUS_NOT_INITIALIZED`
-with both `nvidia-cudnn-cu12-*` and `nvidia-cudnn-cu13-*` present in
-`uv pip list`), recover with:
+If you previously installed a GPU torch and it's now broken (symptom:
+``ImportError: libcusparseLt.so.0`` / ``libnccl.so.2`` /
+``libnvshmem_host.so.3 …`` at ``import torch``), swap to CPU torch:
 
 ```bash
-uv pip install --reinstall "torch<2.10"
-uv pip uninstall \
-    nvidia-cudnn-cu13 nvidia-nccl-cu13 nvidia-cusparselt-cu13 \
-    nvidia-nvshmem-cu13 nvidia-cublas nvidia-cuda-runtime \
-    nvidia-cuda-nvrtc nvidia-cuda-cupti nvidia-cufft nvidia-nvjitlink \
-    cuda-toolkit cuda-bindings triton
-# Then re-extract cuDNN in case NFS silly-renamed its .so files during
-# the torch swap (you'll see `.nfsXXXX` ghosts under nvidia/cudnn/lib/):
-uv pip install --reinstall nvidia-cudnn-cu12==9.10.2.21
+.venv/bin/python3 -m pip install --force-reinstall \
+    --index-url https://download.pytorch.org/whl/cpu torch
 ```
+
+This is non-destructive to the training pipeline (verified: v8 e2e
+real training survived a live swap mid-run, 2026-05-14). The only
+caller of torch is DSA, which runs on CPU.
+
+If you specifically need GPU torch alongside CUDA-12 JAX (rare — only
+relevant if you want CUDA-accelerated DSA), the legacy recipe was:
+
+```bash
+# Pin torch to the last CUDA-12 line so uv's resolver doesn't pick
+# 2.10+, which depends on CUDA-13 NVIDIA wheels that clobber JAX's
+# CUDA-12 cuDNN.
+uv pip install "torch<2.10"
+```
+
+…but the post-2.10 deprecations have made this brittle; CPU-only is
+the recommended path.
 
 **One-line patch for DSA on Python 3.12.** DSA uses
 `ClassVar[Final]` (un-parameterised `Final`), which Python 3.12's

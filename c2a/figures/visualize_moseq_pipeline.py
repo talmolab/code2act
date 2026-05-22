@@ -27,6 +27,8 @@ from matplotlib.patches import (
 import matplotlib.image as mpimg
 import numpy as np
 
+from c2a.paths import get_repo_root
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -560,8 +562,13 @@ def make_mimic_figure(output_dir: Path):
 # =============================================================================
 
 
-def draw_code2act_pipeline(ax):
-    """Draw the Code2Act inference pipeline with KPMS decoder."""
+def draw_code2act_pipeline(ax, end2end: bool = False):
+    """Draw the Code2Act inference pipeline with KPMS decoder.
+
+    If end2end=True, swap the KPMS block for a Kinematics VAE block and
+    relabel the down-arrow input as joint angles instead of keypoints.
+    All geometry is identical so the figure footprint does not change.
+    """
     main_y = 1.10
     enc_cy = 2.50
 
@@ -589,13 +596,15 @@ def draw_code2act_pipeline(ax):
         ax.text(rod_cx, rod_cy, "[Rodent]", ha="center", va="center",
                 fontsize=9, color=C_TEXT)
 
-    # --- Straight-down arrow: Rodent -> x^g_t -> KPMS ---
+    # --- Straight-down arrow: Rodent -> (x^g_t | s^g_t) -> block ---
     xg_label_y = (rod_cy - 0.42 + main_y + 0.30) / 2
     _arrow(ax, rod_cx, rod_cy - 0.48, rod_cx, main_y + 0.30,
            color=C_STAC, lw=1.3)
-    ax.text(rod_cx + 0.18, xg_label_y, r"$x_t^g$", ha="left", va="center",
+    down_sym = r"$s_t^g$" if end2end else r"$x_t^g$"
+    down_lbl = "joint angles" if end2end else "keypoints"
+    ax.text(rod_cx + 0.18, xg_label_y, down_sym, ha="left", va="center",
             fontsize=11, color=C_TEXT, zorder=5)
-    ax.text(rod_cx + 0.18, xg_label_y - 0.16, "keypoints", ha="left", va="top",
+    ax.text(rod_cx + 0.18, xg_label_y - 0.16, down_lbl, ha="left", va="top",
             fontsize=7.5, color=C_STAC, fontstyle="italic")
 
     # --- Straight-right arrow: Rodent -> s^g_t -> Encoder ---
@@ -614,12 +623,17 @@ def draw_code2act_pipeline(ax):
     ax.text(sg_label_x, enc_cy + 0.30, "joint angles", ha="center", va="bottom",
             fontsize=7.5, color=C_STAC, fontstyle="italic")
 
-    # --- KPMS block (kpms_x, kpms_w defined above for rodent positioning) ---
+    # --- KPMS / Kinematics-VAE block (kpms_x, kpms_w defined above for rodent positioning) ---
     kpms_h = 0.46
     kpms_by = main_y - kpms_h / 2
-    _block(ax, kpms_x, kpms_by, kpms_w, kpms_h, C_BLUE,
-           "Keypoint-\nMoSeq", fontsize=8.5, border_color=C_BLUE_DARK,
-           sublabel=r"$c_t = \mathrm{MoSeq}(x_t^g)$", sublabel_size=7.5)
+    if end2end:
+        _block(ax, kpms_x, kpms_by, kpms_w, kpms_h, C_BLUE,
+               "Kinematics\nVAE", fontsize=8.5, border_color=C_BLUE_DARK,
+               sublabel=r"$c_t = \mathrm{VAE}(s_t^g)$", sublabel_size=7.5)
+    else:
+        _block(ax, kpms_x, kpms_by, kpms_w, kpms_h, C_BLUE,
+               "Keypoint-\nMoSeq", fontsize=8.5, border_color=C_BLUE_DARK,
+               sublabel=r"$c_t = \mathrm{MoSeq}(x_t^g)$", sublabel_size=7.5)
 
     # --- Single arrow KPMS -> RNN with c_t label on top ---
     rnn_cx = kpms_x + kpms_w + 1.10
@@ -629,7 +643,9 @@ def draw_code2act_pipeline(ax):
     ct_label_x = (kpms_x + kpms_w + 0.05 + rnn_cx - rnn_r - 0.06) / 2
     ax.text(ct_label_x, main_y + 0.10, r"$c_t$", ha="center", va="bottom",
             fontsize=12, color=C_CODE_DARK, fontweight="bold", zorder=5)
-    ax.text(ct_label_x, main_y + 0.25, "syllable", ha="center", va="bottom",
+    ax.text(ct_label_x, main_y + 0.25,
+            "kinematic latent" if end2end else "syllable",
+            ha="center", va="bottom",
             fontsize=7, color=C_CODE_DARK, fontstyle="italic", zorder=5)
 
     # --- RNN (correct aspect ratio) ---
@@ -873,6 +889,29 @@ def make_code2act_figure(output_dir: Path):
     output_dir.mkdir(parents=True, exist_ok=True)
     for ext in [".pdf", ".png", ".svg"]:
         p = output_dir / f"code2act_pipeline{ext}"
+        fc = "none" if ext == ".svg" else "white"
+        fig.savefig(
+            p, dpi=400, bbox_inches="tight", facecolor=fc, edgecolor="none",
+            transparent=(ext == ".svg"),
+        )
+        print(f"Saved: {p}")
+    plt.close(fig)
+
+
+def make_end2end_figure(output_dir: Path):
+    """Generate the end-to-end pipeline figure (Kinematics VAE instead of KPMS)."""
+    fig, ax = plt.subplots(1, 1, figsize=(15, 7))
+
+    ax.set_xlim(-0.25, 9.40)
+    ax.set_ylim(0.05, 4.80)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    draw_code2act_pipeline(ax, end2end=True)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for ext in [".pdf", ".png", ".svg"]:
+        p = output_dir / f"end2end_pipeline{ext}"
         fc = "none" if ext == ".svg" else "white"
         fig.savefig(
             p, dpi=400, bbox_inches="tight", facecolor=fc, edgecolor="none",
@@ -1136,6 +1175,184 @@ def make_highlevel_figure(output_dir: Path):
 
 
 # =============================================================================
+# Figure 4: Kinematics VAE — reconstruction + soft motion matching losses
+# =============================================================================
+
+
+def draw_vae_reconstruction(ax):
+    """Kinematics VAE with two loss sources: reconstruction + soft motion matching.
+
+    Layout:
+      [input filmstrip] -> [Kinematics VAE box] -> [reconstructed filmstrip]   [Env]
+        - solid black arrows for the forward path
+        - dashed black loop from VAE -> Env (top) and Env -> VAE (bottom)
+        - curved double-headed black arrow under the rodents = reconstruction loss
+    """
+    main_y = 3.20
+
+    # ---------------------------------------------------------------
+    # Input filmstrip (grey rodents) — aspect ratio preserved
+    # ---------------------------------------------------------------
+    in_path = SCRIPT_DIR / "data" / "rodent_input.png"
+    in_h = 1.30
+    in_aspect = 650.0 / 336.0
+    if in_path.exists():
+        in_img = mpimg.imread(str(in_path))
+        ih, iw = in_img.shape[:2]
+        in_aspect = iw / ih
+    in_w = in_h * in_aspect
+    in_cx = 1.55
+    in_left, in_right = in_cx - in_w / 2, in_cx + in_w / 2
+    in_bot, in_top = main_y - in_h / 2, main_y + in_h / 2
+    if in_path.exists():
+        ax.imshow(in_img, extent=[in_left, in_right, in_bot, in_top],
+                  aspect="auto", zorder=3, clip_on=True)
+    else:
+        ax.text(in_cx, main_y, "[input]", ha="center", va="center",
+                fontsize=10, color="black", zorder=3)
+
+    # ---------------------------------------------------------------
+    # Kinematics VAE — plain rounded box
+    # ---------------------------------------------------------------
+    vae_w, vae_h = 1.55, 1.00
+    vae_x = in_right + 0.30
+    vae_by = main_y - vae_h / 2
+    vae_cx = vae_x + vae_w / 2
+    vae_top = vae_by + vae_h
+    ax.add_patch(FancyBboxPatch(
+        (vae_x, vae_by), vae_w, vae_h, boxstyle="round,pad=0.04",
+        facecolor="white", edgecolor="black", linewidth=1.6, zorder=3,
+    ))
+    ax.text(vae_cx, main_y, "Kinematics\nVAE",
+            ha="center", va="center", fontsize=12, fontweight="bold",
+            color="black", linespacing=1.05, zorder=4)
+    _arrow(ax, in_right + 0.03, main_y, vae_x - 0.03, main_y,
+           color="black", lw=1.6)
+
+    # ---------------------------------------------------------------
+    # Reconstructed filmstrip (cyan rodents) — aspect ratio preserved
+    # ---------------------------------------------------------------
+    rec_path = SCRIPT_DIR / "data" / "rodent_reconstructed.png"
+    rec_h = 1.30
+    rec_aspect = 646.0 / 322.0
+    if rec_path.exists():
+        rec_img = mpimg.imread(str(rec_path))
+        rh, rw = rec_img.shape[:2]
+        rec_aspect = rw / rh
+    rec_w = rec_h * rec_aspect
+    rec_left = vae_x + vae_w + 0.30
+    rec_cx = rec_left + rec_w / 2
+    rec_right = rec_left + rec_w
+    rec_bot, rec_top = main_y - rec_h / 2, main_y + rec_h / 2
+    if rec_path.exists():
+        ax.imshow(rec_img, extent=[rec_left, rec_right, rec_bot, rec_top],
+                  aspect="auto", zorder=3, clip_on=True)
+    else:
+        ax.text(rec_cx, main_y, "[recon]", ha="center", va="center",
+                fontsize=10, color="black", zorder=3)
+    _arrow(ax, vae_x + vae_w + 0.03, main_y, rec_left - 0.03, main_y,
+           color="black", lw=1.6)
+
+    # ---------------------------------------------------------------
+    # Env block — plain rounded box, no arrow from the reconstructed filmstrip
+    # ---------------------------------------------------------------
+    env_w, env_h = 1.40, 1.00
+    env_x = rec_right + 1.30
+    env_by = main_y - env_h / 2
+    env_cx = env_x + env_w / 2
+    env_top = env_by + env_h
+    ax.add_patch(FancyBboxPatch(
+        (env_x, env_by), env_w, env_h, boxstyle="round,pad=0.04",
+        facecolor="white", edgecolor="black", linewidth=1.6, zorder=3,
+    ))
+    ax.text(env_cx, main_y, "Env",
+            ha="center", va="center", fontsize=12, fontweight="bold",
+            color="black", zorder=4)
+
+    # ---------------------------------------------------------------
+    # Soft motion matching dashed loop (black): VAE <-> Env
+    # ---------------------------------------------------------------
+    smm_top_y = vae_top + 1.45
+    smm_bot_y = vae_by - 1.40
+    dash_lw = 1.4
+    dash_style = (0, (5, 4))
+
+    # Top arm:  VAE_top -> up -> right -> down -> Env_top
+    ax.plot([vae_cx, vae_cx], [vae_top + 0.03, smm_top_y],
+            color="black", lw=dash_lw, ls=dash_style, zorder=2)
+    ax.plot([vae_cx, env_cx], [smm_top_y, smm_top_y],
+            color="black", lw=dash_lw, ls=dash_style, zorder=2)
+    ax.plot([env_cx, env_cx], [smm_top_y, env_top + 0.35],
+            color="black", lw=dash_lw, ls=dash_style, zorder=2)
+    _arrow(ax, env_cx, env_top + 0.35, env_cx, env_top + 0.03,
+           color="black", lw=dash_lw)
+
+    # Bottom arm:  Env_bot -> down -> left -> up -> VAE_bot
+    ax.plot([env_cx, env_cx], [env_by - 0.03, smm_bot_y],
+            color="black", lw=dash_lw, ls=dash_style, zorder=2)
+    ax.plot([env_cx, vae_cx], [smm_bot_y, smm_bot_y],
+            color="black", lw=dash_lw, ls=dash_style, zorder=2)
+    ax.plot([vae_cx, vae_cx], [smm_bot_y, vae_by - 0.35],
+            color="black", lw=dash_lw, ls=dash_style, zorder=2)
+    _arrow(ax, vae_cx, vae_by - 0.35, vae_cx, vae_by - 0.03,
+           color="black", lw=dash_lw)
+
+    smm_label_cx = (vae_cx + env_cx) / 2
+    ax.text(smm_label_cx, smm_top_y + 0.18,
+            "Soft motion matching loss",
+            ha="center", va="bottom", fontsize=12, fontweight="bold",
+            color="black", zorder=6,
+            bbox=dict(facecolor="white", edgecolor="none", pad=2.0))
+
+    # ---------------------------------------------------------------
+    # Reconstruction loss — curved double-headed arrow under the rodents
+    # ---------------------------------------------------------------
+    recon_label_y = (in_bot + vae_by - 1.40) / 2  # well above bottom dashed line
+    # Use a curved double-headed arrow that bends downward, passing under the VAE
+    recon_arrow = FancyArrowPatch(
+        (in_cx, in_bot - 0.02),
+        (rec_cx, rec_bot - 0.02),
+        connectionstyle="arc3,rad=0.28",
+        arrowstyle="<|-|>",
+        color="black",
+        lw=1.5,
+        mutation_scale=15,
+        zorder=4,
+    )
+    ax.add_patch(recon_arrow)
+
+    recon_label_cx = (in_cx + rec_cx) / 2
+    # Estimate curve depth and place label inside the curve
+    recon_dip_y = in_bot - 0.02 - (rec_cx - in_cx) * 0.28 / 2.0
+    ax.text(recon_label_cx, recon_dip_y + 0.05,
+            "Reconstruction loss",
+            ha="center", va="bottom", fontsize=12, fontweight="bold",
+            color="black", zorder=6,
+            bbox=dict(facecolor="white", edgecolor="none", pad=2.0))
+
+
+def make_vae_reconstruction_figure(output_dir: Path):
+    """Generate the kinematics-VAE two-loss figure."""
+    fig, ax = plt.subplots(1, 1, figsize=(14, 6.0))
+    ax.set_xlim(-0.20, 12.20)
+    ax.set_ylim(-0.40, 6.20)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    draw_vae_reconstruction(ax)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for ext in [".pdf", ".png", ".svg"]:
+        p = output_dir / f"kinematic_vae_losses{ext}"
+        fc = "none" if ext == ".svg" else "white"
+        fig.savefig(p, dpi=400, bbox_inches="tight",
+                    facecolor=fc, edgecolor="none",
+                    transparent=(ext == ".svg"))
+        print(f"Saved: {p}")
+    plt.close(fig)
+
+
+# =============================================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -1143,7 +1360,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output-dir",
-        default=str(SCRIPT_DIR / "outputs" / "pipeline"),
+        default=str(get_repo_root() / "outputs" / "pipeline"),
         help="Output directory for figures (default: outputs/pipeline/)",
     )
     args = parser.parse_args()
@@ -1152,3 +1369,5 @@ if __name__ == "__main__":
     make_mimic_figure(output_dir)
     make_code2act_figure(output_dir)
     make_highlevel_figure(output_dir)
+    make_end2end_figure(output_dir)
+    make_vae_reconstruction_figure(output_dir)
