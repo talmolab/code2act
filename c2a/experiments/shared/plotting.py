@@ -78,12 +78,20 @@ def get_trajectory_colors(k: int) -> list[list[float]]:
 
 
 def get_code_colormap(num_codes: int) -> np.ndarray:
-    """Return ``[num_codes, 3]`` uint8 RGB array for code timeline bars."""
+    """Return ``[num_codes, 3]`` uint8 RGB array for code timeline bars.
+
+    Uses Nature-friendly Tableau palettes (``tab10`` / ``tab20`` /
+    ``tab20`` + ``tab20b`` for up to 40 codes) instead of garish HSV. For
+    >40 codes the palette cycles modulo 40 (acceptable visual collisions).
+    """
     if num_codes <= 10:
-        cmap = plt.cm.get_cmap("tab10")
+        colors = plt.cm.get_cmap("tab10")(np.linspace(0, 1, 10))[:num_codes, :3]
     elif num_codes <= 20:
-        cmap = plt.cm.get_cmap("tab20")
+        colors = plt.cm.get_cmap("tab20")(np.linspace(0, 1, 20))[:num_codes, :3]
     else:
-        cmap = plt.cm.get_cmap("hsv")
-    colors = (cmap(np.linspace(0, 1, num_codes))[:, :3] * 255).astype(np.uint8)
-    return colors
+        a = plt.cm.get_cmap("tab20")(np.linspace(0, 1, 20))[:, :3]
+        b = plt.cm.get_cmap("tab20b")(np.linspace(0, 1, 20))[:, :3]
+        pool = np.concatenate([a, b], axis=0)  # 40 colors
+        idx = np.arange(num_codes) % pool.shape[0]
+        colors = pool[idx]
+    return (colors * 255).astype(np.uint8)

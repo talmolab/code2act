@@ -1,6 +1,6 @@
 # Experiments — analysis scripts
 
-Thirteen experiment scripts in `c2a/experiments/` evaluate trained Code2Act
+Eighteen experiment scripts in `c2a/experiments/` evaluate trained Code2Act
 decoders. All commands below run from the `code2act/` repo root with the
 venv active.
 
@@ -10,7 +10,7 @@ venv active.
 | 2 | `run_code_sequence` | `code_sequence_exp.yaml` | Temporal order of codes, killer demo (instructional/discriminative codes) |
 | 3 | `run_code_generation` | `code_generation_exp.yaml` | Generative models (empirical TM, dynamax HMM, ARHMM L2) + free-loop rollouts |
 | 4 | `run_generalization` | `generalization.yaml` | Generalization to unseen continuous data via KPMS re-inference |
-| 5 | `run_roundtrip` | `roundtrip.yaml` | Round-trip code consistency (qpos → FK → KPMS → codes) |
+| 5 | `run_roundtrip` | `roundtrip.yaml` | Code round-trip reconstruction across all 4 segmenters (kpms, vae, vqvae, ps_vqvae). **Stage 1** — segmenter self-consistency: segment reference clips repeatedly, measure code agreement (accuracy / precision / recall / F1). The 3 autoencoders are deterministic (~100%); KPMS is Gibbs-sampled, run under `same_seed` / `diff_seed` conditions. **Stage 2** — generate-from-real-code round trip: roll out each decoder decoder-only (`z_e_scale=0`), re-segment the generated motion, compare `ĉ` vs `c` (all-frame + transition-masked, since the GRU needs a few frames to settle after a code change). KPMS FK + apply runs in a separate x64 subprocess. |
 | 6 | `run_single_code` | `single_code_exp.yaml` | Single-code sustain grid — each code held for K frames |
 | 7 | `run_behavior_parade` | `behavior_parade_exp.yaml` | Behavior transition parade — walk→groom→rear |
 | 8 | `run_syllable_viz` | `syllable_viz_exp.yaml` | KPMS syllable 3D viz, frequency/duration stats |

@@ -306,6 +306,45 @@ def encode_balanced_clips(
             f"clips required by the split."
         )
 
+    return _encode_clips_core(
+        clips,
+        all_indices,
+        modules,
+        enc_params,
+        bn_params,
+        bn_buffers=bn_buffers,
+        n_joints=n_joints,
+        use_qvel=use_qvel,
+        window_len=window_len,
+        horizon=horizon,
+        batch_size_clips=batch_size_clips,
+        deterministic=deterministic,
+        bottleneck_kwargs=bottleneck_kwargs,
+        rng_seed=rng_seed,
+    )
+
+
+def _encode_clips_core(
+    clips: _Clips,
+    clip_indices: np.ndarray,
+    modules: BackboneModules,
+    enc_params,
+    bn_params,
+    *,
+    bn_buffers: dict | None = None,
+    n_joints: int = 67,
+    use_qvel: bool = False,
+    window_len: int = 10,
+    horizon: int = 5,
+    batch_size_clips: int = 8,
+    deterministic: bool = True,
+    bottleneck_kwargs: dict[str, Any] | None = None,
+    rng_seed: int = 0,
+) -> EncodedClips:
+    """Encode an already-loaded ``_Clips`` batch with the backbone +
+    bottleneck. Shared core of :func:`encode_balanced_clips` and
+    :func:`encode_motion_array` — see those for the per-frame semantics.
+    """
     motion = extract_motion_frames(
         clips,
         n_joints=n_joints,
@@ -319,6 +358,11 @@ def encode_balanced_clips(
 
     n_clips, n_frames, feat_dim = motion_norm.shape
     n_windows_per_clip = n_frames - window_len - horizon + 1
+    if n_windows_per_clip <= 0:
+        raise ValueError(
+            f"n_frames={n_frames} too short to form a window: needs "
+            f">= window_len + horizon = {window_len + horizon}."
+        )
 
     # Build windows per clip: shape (n_clips, n_windows_per_clip, w, feat_dim)
     starts = np.arange(n_windows_per_clip)
@@ -404,7 +448,75 @@ def encode_balanced_clips(
         z=z_perframe,
         mean=mean_perframe,
         logvar=lv_perframe,
-        clip_indices=all_indices,
+        clip_indices=np.asarray(clip_indices, dtype=np.int64),
         modules=modules,
         aux=aux,
+    )
+
+
+def encode_motion_array(
+    qpos: np.ndarray,
+    modules: BackboneModules,
+    enc_params,
+    bn_params,
+    *,
+    qvel: np.ndarray | None = None,
+    bn_buffers: dict | None = None,
+    n_joints: int = 67,
+    use_qvel: bool = False,
+    window_len: int = 10,
+    horizon: int = 5,
+    batch_size_clips: int = 8,
+    deterministic: bool = True,
+    bottleneck_kwargs: dict[str, Any] | None = None,
+    rng_seed: int = 0,
+) -> EncodedClips:
+    """Encode an arbitrary ``qpos`` array (not tied to the balanced split
+    or the reference H5) with a trained backbone + bottleneck.
+
+    This is the standalone-trajectory entry point used by the round-trip
+    experiment. It shares the windowing / per-frame-padding core with
+    :func:`encode_balanced_clips` via :func:`_encode_clips_core`, so codes
+    produced here match what the tokenize scripts produce for the same
+    motion.
+
+    Args:
+        qpos: ``(n_clips, n_frames, 7 + n_joints)`` joint positions.
+        modules, enc_params, bn_params: from :func:`load_checkpoint`.
+        qvel: ``(n_clips, n_frames, 6 + n_joints)``; required only when
+            ``use_qvel=True``. Ignored otherwise (zeros are substituted).
+
+    Returns:
+        :class:`EncodedClips` with ``clip_indices = arange(n_clips)``.
+    """
+    qpos = np.asarray(qpos, dtype=np.float32)
+    if qpos.ndim != 3:
+        raise ValueError(
+            f"qpos must be (n_clips, n_frames, 7+n_joints); got {qpos.shape}."
+        )
+    n_clips, n_frames = qpos.shape[:2]
+    if use_qvel:
+        if qvel is None:
+            raise ValueError("qvel is required when use_qvel=True.")
+        qvel_arr = np.asarray(qvel, dtype=np.float32)
+    else:
+        # extract_motion_frames does not read qvel when use_qvel=False;
+        # supply a correctly-shaped zeros array to satisfy _Clips.
+        qvel_arr = np.zeros((n_clips, n_frames, 6 + n_joints), dtype=np.float32)
+    clips = _Clips(qpos=qpos, qvel=qvel_arr, joint_names=[])
+    return _encode_clips_core(
+        clips,
+        np.arange(n_clips, dtype=np.int64),
+        modules,
+        enc_params,
+        bn_params,
+        bn_buffers=bn_buffers,
+        n_joints=n_joints,
+        use_qvel=use_qvel,
+        window_len=window_len,
+        horizon=horizon,
+        batch_size_clips=batch_size_clips,
+        deterministic=deterministic,
+        bottleneck_kwargs=bottleneck_kwargs,
+        rng_seed=rng_seed,
     )

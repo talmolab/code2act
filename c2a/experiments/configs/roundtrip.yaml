@@ -1,50 +1,115 @@
 # =============================================================================
-# Round-Trip Code Consistency Experiment
+# Code Round-Trip Reconstruction Experiment
 # =============================================================================
-# Tests whether Code2Act behavior, re-encoded by KPMS, recovers original codes.
-# Runs on two datasets (inference test set + generalization) with three
-# conditions each (reference ceiling, mimic-mjx, code2act).
+# Does a discrete code sequence survive the round trip
+#   code -> generated motion -> re-segmentation -> code ?
+#
+# Stage 1 — segmenter self-consistency: segment a few reference clips several
+#           times per segmenter; do we recover the same codes?
+# Stage 2 — generate-from-real-code round trip: roll out each c2a decoder
+#           (decoder-only) on real code sequences, re-segment the generated
+#           motion, compare to the input codes.
+# (Stage 3 — unconditional generation — is a future extension.)
+#
+# Usage:
+#   python -m c2a.experiments.run_roundtrip
+#   python -m c2a.experiments.run_roundtrip stages=[1]
 # =============================================================================
 
-# =============================================================================
-# KPMS Model
-# =============================================================================
-kpms:
-  model_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/s50_k1e+04_l10_arhmm/seed1
-  model_name: keypoint_arhmm_states50_seed1
-  num_iters: 200
+seed: 42
+stages: [1, 2]
+clip_length: 250
 
-# =============================================================================
-# FK Setup
-# =============================================================================
-stac_xml: ${oc.env:C2A_ROOT,.}/c2a/assets/rodent.xml
-# H5 for FK site config (config/offsets/kp_names) — use reference for inference,
-# new data for generalization (each has its own optimized offsets)
+# -----------------------------------------------------------------------------
+# Shared paths
+# -----------------------------------------------------------------------------
+paths:
+  reference_h5: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  balanced_split: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  # Correct stac-mjx rodent model — the vnl_playground XML gives garbage
+  # keypoints (see CLAUDE.md). FK site config is read from reference_h5.
+  stac_xml: ${oc.env:C2A_ROOT,.}/c2a/assets/rodent.xml
 
-# =============================================================================
-# 250-Frame Dataset (generalization_short — 20 segments × 250 frames, ignore_done)
-# =============================================================================
-inference:
-  code2act_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization_short/generalization_code2act.npz
-  mimic_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization_short/generalization_mimic_mjx.npz
-  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization_short/generalization_codes.npz
-  reference_h5: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization_short/segmented_new_data.h5
-  clip_length: 250
-  fk_h5: ${oc.env:C2A_GENERALIZATION_H5,./data/external/transform_art_2020_12_22_1.h5}
+# -----------------------------------------------------------------------------
+# Round-trip clip set — k_per_behavior clips per behaviour from the test split
+# -----------------------------------------------------------------------------
+clips:
+  k_per_behavior: 2
+  behaviors: [groom, walk, rear]
 
-# =============================================================================
-# Generalization Dataset (20 segments × 1000 frames)
-# =============================================================================
-generalization:
-  code2act_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization/generalization_code2act.npz
-  mimic_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization/generalization_mimic_mjx.npz
-  codes_path: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization/generalization_codes.npz
-  reference_h5: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization/segmented_new_data.h5
-  clip_length: 1000
-  fk_h5: ${oc.env:C2A_GENERALIZATION_H5,./data/external/transform_art_2020_12_22_1.h5}
+# -----------------------------------------------------------------------------
+# The four segmenters (motion tokenizers)
+# -----------------------------------------------------------------------------
+segmenters:
+  vae:
+    type: ae
+    kind: vae
+    ckpt_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vae/step_0030000
+    tokenizer_pkl: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vae/tokenizer.pkl
+    codes_npz: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vae/best_codes.npz
+    num_codes: 30
 
-# =============================================================================
+  vqvae:
+    type: ae
+    kind: vqvae
+    ckpt_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/step_0030000
+    codes_npz: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/best_codes.npz
+    num_codes: 30
+    code_dim: 24
+
+  ps_vqvae:
+    type: ae
+    kind: ps_vqvae
+    ckpt_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae/step_0030000
+    codes_npz: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae/best_codes.npz
+    num_codes: 64
+    group_dims: [4, 8, 12]
+    group_codebook_sizes: [4, 4, 4]
+
+  kpms:
+    type: kpms
+    # project_dir / model_name for keypoint_moseq.load_checkpoint. KPMS
+    # applies via Gibbs sampling — re-segmentation runs in a separate x64
+    # subprocess (c2a.experiments._roundtrip_kpms_worker).
+    model_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/s30_k8e+01_l10_arhmm/seed4
+    model_name: keypoint_arhmm_states30_seed4
+    codes_npz: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/best_codes.npz
+    num_codes: 30
+    num_iters: 200
+
+# -----------------------------------------------------------------------------
+# c2a decoder checkpoints (one per segmenter)
+# -----------------------------------------------------------------------------
+decoders:
+  vae: ${oc.env:C2A_ROOT,.}/model_checkpoints/260513_062522_599062
+  vqvae: ${oc.env:C2A_ROOT,.}/model_checkpoints/260520_000018_732638
+  ps_vqvae: ${oc.env:C2A_ROOT,.}/model_checkpoints/260513_062217_282797
+  kpms: ${oc.env:C2A_ROOT,.}/model_checkpoints/260417_161257_992409
+
+# -----------------------------------------------------------------------------
+# Stage 1 — segmenter self-consistency
+# -----------------------------------------------------------------------------
+stage1:
+  n_repeats: 5
+
+# -----------------------------------------------------------------------------
+# Stage 2 — generate-from-real-code round trip
+# -----------------------------------------------------------------------------
+stage2:
+  # Diagonal (decoder, segmenter) pairs — each decoder re-segmented by its
+  # own tokenizer. Off-diagonal pairs may be added here too.
+  pairs:
+    - {decoder: vae, segmenter: vae}
+    - {decoder: vqvae, segmenter: vqvae}
+    - {decoder: ps_vqvae, segmenter: ps_vqvae}
+    - {decoder: kpms, segmenter: kpms}
+  n_rollout_repeats: 3      # decoder rollouts have sim-chaos run-to-run variance
+  transient_window: 3       # frames dropped after each code change (GRU settling)
+  z_e_scale: 0.0            # decoder-only: motion = f(code, proprioception)
+  save_qpos: false          # set true to keep generated qpos in roundtrip.npz
+
+# -----------------------------------------------------------------------------
 # Output
-# =============================================================================
+# -----------------------------------------------------------------------------
 output:
   base_dir: ./outputs/moseq_roundtrip
