@@ -459,7 +459,7 @@ def _build_stacked_bars(
             :func:`get_hierarchical_colormap`. When provided, depth-0 uses
             l0_colors and depth-1 uses l1_colors[parent, child].
         row_labels: Optional per-row caption (e.g. ``("Pretrained", "Live")``
-            for e2e mode's stacked bar). When provided, a ``label_width``-wide
+            for a stacked bar). When provided, a ``label_width``-wide
             left margin is reserved and each row gets its label drawn there.
             ``None`` (default) keeps the legacy bar-only layout.
         label_width: Pixel width reserved on the left for row labels (used

@@ -108,9 +108,9 @@ If you previously installed a GPU torch and it's now broken (symptom:
     --index-url https://download.pytorch.org/whl/cpu torch
 ```
 
-This is non-destructive to the training pipeline (verified: v8 e2e
-real training survived a live swap mid-run, 2026-05-14). The only
-caller of torch is DSA, which runs on CPU.
+This is non-destructive to the training pipeline (verified: real
+training survived a live swap mid-run, 2026-05-14). The only caller
+of torch is DSA, which runs on CPU.
 
 If you specifically need GPU torch alongside CUDA-12 JAX (rare — only
 relevant if you want CUDA-accelerated DSA), the legacy recipe was:
