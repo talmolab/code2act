@@ -16,6 +16,7 @@
   "short_absorb_threshold": 0.5,
   "still_hindlimb": 0.0004023083709150494,
   "still_xy": 0.0009738856669548827,
-  "walk_xy": 0.005,
+  "walk_xy": 0.0015,
+  "yaw_vxy_ratio": 12.0,
   "window": 15
 }

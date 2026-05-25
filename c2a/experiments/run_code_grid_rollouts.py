@@ -29,6 +29,7 @@ os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import logging
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -91,25 +92,100 @@ def _abs(p) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _batched_rollout_for_code(
+    env, inf_fn, params, ppo_networks,
+    code, clip_indices, base_keys,
+    hold_frames: int, code_stack_size: int,
+) -> dict[str, jax.Array]:
+    """Roll out K bodies holding ``code``, vmapped over bodies + scanned over t.
+
+    Replaces the ``for k: for t:`` Python loops with one ``vmap`` over the K
+    bodies and one ``lax.scan`` over the ``hold_frames`` timesteps, so the
+    whole batch compiles into a single XLA program instead of K*T dispatches.
+
+    Reproduces ``run_rollout_with_hidden`` exactly for the held-code case:
+    same PRNG threading (``key, reset_key = split(base_key)`` then per-step
+    ``key, subkey = split(key)``), same per-step ops (override ``kpms_code``,
+    inference, env step), same recorded quantities. Valid because for these
+    checkpoints ``reinit_hidden_on_code=False`` and ``run_rollout_with_hidden``
+    never resets hidden on ``done`` — so the GRU carry is just threaded.
+
+    Args:
+        code: scalar (traced) code id held fixed for every body/timestep.
+        clip_indices: ``(K,)`` env-internal reset clip index per body.
+        base_keys: ``(K, 2)`` PRNG key per body.
+
+    Returns:
+        ``{hidden, qpos, proprio, code, reward}`` each ``(K, hold_frames, ...)``.
+    """
+    held_code = jnp.full(
+        (code_stack_size,), jnp.asarray(code, dtype=jnp.float32),
+    )
+
+    def single_body(base_key, clip_idx):
+        key, reset_key = jax.random.split(base_key)
+        state0 = env.reset(reset_key, clip_idx=clip_idx)
+        hidden0 = ppo_networks.policy_network.init_hidden(1)
+
+        def step(carry, _):
+            state, hidden, key = carry
+            # Hold the code fixed by overwriting the obs's kpms_code window.
+            new_obs = OrderedDict(state.obs)
+            new_obs["kpms_code"] = held_code
+            state = state.replace(obs=new_obs)
+            key, subkey = jax.random.split(key)
+            batched_obs = jax.tree.map(lambda x: x[None], state.obs)
+            action, extras, hidden = inf_fn(params, batched_obs, hidden, subkey)
+            action = jax.tree.map(lambda x: x[0], action)
+            out = {
+                "hidden": hidden[-1][0],
+                "qpos": state.data.qpos,
+                "proprio": state.obs["proprioception"],
+                "code": jnp.asarray(extras["code_idx"]).reshape(-1)[0].astype(
+                    jnp.int32
+                ),
+            }
+            new_state = env.step(state, action)
+            out["reward"] = new_state.reward
+            return (new_state, hidden, key), out
+
+        _, outs = jax.lax.scan(
+            step, (state0, hidden0, key), None, length=hold_frames,
+        )
+        return outs
+
+    return jax.vmap(single_body)(base_keys, clip_indices)
+
+
 def _rollouts_for_pose(
     env, inf_fn, params, ppo_networks,
     pose_clips: np.ndarray, code_ids: list[int],
     hold_frames: int, seed: int,
     jit_reset, jit_step,
     pose_name: str, data_dir: Path,
-    reuse: bool,
+    reuse: bool, code_stack_size: int,
 ) -> dict[int, dict[str, np.ndarray]]:
     """For each code id, K rollouts holding that code for ``hold_frames``.
 
-    Returns ``{code_id: agg_dict}`` where each agg has keys
-    ``hidden, qpos, proprio, codes_actual, rewards, start_clips``.
+    Uses the vmap+scan batched rollout (``_batched_rollout_for_code``): the
+    K bodies and the timestep loop are inside one compiled XLA program, so
+    only the (short) loop over code ids stays in Python.
 
-    NB: ``code_override`` is broadcast to ``hold_frames + code_stack_size``
-    steps internally by run_rollout_with_hidden — we only need an array of
-    length ``hold_frames`` (the helper indexes off the end safely).
+    Returns ``{code_id: agg_dict}`` with keys
+    ``hidden, qpos, proprio, codes_actual, rewards, start_clips, code, pose``.
     """
     K = int(pose_clips.shape[0])
+    clip_indices = jnp.arange(K, dtype=jnp.int32)
     results: dict[int, dict[str, np.ndarray]] = {}
+
+    # Compiled once on the first code, reused for every subsequent code.
+    @jax.jit
+    def _run(code, base_keys):
+        return _batched_rollout_for_code(
+            env, inf_fn, params, ppo_networks, code, clip_indices, base_keys,
+            hold_frames, code_stack_size,
+        )
+
     for ci, code in enumerate(code_ids):
         npz_path = data_dir / f"rollout_{pose_name}_code{int(code):03d}.npz"
         if reuse and npz_path.exists():
@@ -117,41 +193,20 @@ def _rollouts_for_pose(
             results[int(code)] = {k: d[k] for k in d.files}
             continue
 
-        codes_arr = np.full(hold_frames, int(code), dtype=np.int32)
-
-        hidden_all, qpos_all, proprio_all = [], [], []
-        codes_actual_all, rewards_all = [], []
-
-        for k in range(K):
-            key = jax.random.PRNGKey(seed + 1_000_003 * (ci + 1) + k)
-            result = run_rollout_with_hidden(
-                env, inf_fn, params, ppo_networks, key,
-                max_steps=hold_frames,
-                code_override=codes_arr,
-                reset_clip_idx=int(k),
-                jit_reset=jit_reset, jit_step=jit_step,
-            )
-
-            def _rect(a: np.ndarray) -> np.ndarray:
-                if a.shape[0] >= hold_frames:
-                    return a[:hold_frames]
-                pad = np.zeros(
-                    (hold_frames - a.shape[0],) + a.shape[1:], dtype=a.dtype,
-                )
-                return np.concatenate([a, pad], axis=0)
-
-            hidden_all.append(_rect(result["hidden_states"]))
-            qpos_all.append(_rect(result["qpos"]))
-            proprio_all.append(_rect(result["proprio"]))
-            codes_actual_all.append(_rect(result["code_indices"]))
-            rewards_all.append(_rect(result["rewards"]))
+        # Per-body PRNG keys — identical derivation to the prior Python loop
+        # (PRNGKey(seed + 1_000_003*(ci+1) + k)), so results match.
+        base_keys = jnp.stack([
+            jax.random.PRNGKey(seed + 1_000_003 * (ci + 1) + k)
+            for k in range(K)
+        ])
+        outs = _run(jnp.int32(int(code)), base_keys)
 
         agg = {
-            "hidden": np.stack(hidden_all, axis=0),
-            "qpos": np.stack(qpos_all, axis=0),
-            "proprio": np.stack(proprio_all, axis=0),
-            "codes_actual": np.stack(codes_actual_all, axis=0),
-            "rewards": np.stack(rewards_all, axis=0),
+            "hidden": np.asarray(outs["hidden"]),
+            "qpos": np.asarray(outs["qpos"]),
+            "proprio": np.asarray(outs["proprio"]),
+            "codes_actual": np.asarray(outs["code"]),
+            "rewards": np.asarray(outs["reward"]),
             "start_clips": np.asarray(pose_clips, dtype=np.int64),
             "code": np.int32(int(code)),
             "pose": pose_name,
@@ -625,13 +680,13 @@ def main(cfg: DictConfig) -> None:
     rollouts_walk = _rollouts_for_pose(
         env_walk, inf_fn, params, ppo_networks,
         walk_clips, top_codes, hold_frames, seed,
-        jit_reset_w, jit_step_w, "walk", data_dir, reuse,
+        jit_reset_w, jit_step_w, "walk", data_dir, reuse, code_stack_size,
     )
     log.info("  Rearing pose rollouts ...")
     rollouts_rear = _rollouts_for_pose(
         env_rear, inf_fn, params, ppo_networks,
         rear_clips, top_codes, hold_frames, seed + 2000,
-        jit_reset_r, jit_step_r, "rear", data_dir, reuse,
+        jit_reset_r, jit_step_r, "rear", data_dir, reuse, code_stack_size,
     )
 
     # --- Per-code labels from ROLLED-OUT qpos (TopoMimic auto-labeler) ---

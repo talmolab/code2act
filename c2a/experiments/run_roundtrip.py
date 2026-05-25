@@ -1,35 +1,54 @@
-"""Experiment 5: Round-trip code consistency.
+"""Code round-trip reconstruction experiment.
 
-Tests whether Code2Act behavior, re-encoded by the same KPMS model,
-recovers the original input codes.  Compares three conditions:
-  - Reference (ceiling): original mocap qpos
-  - Mimic-MJX (oracle): oracle rollout qpos
-  - Code2Act: decoder rollout qpos
+Does a discrete code sequence survive the round trip
+``code -> generated motion -> re-segmentation -> code``?
 
-Runs on two datasets: inference test set (250 frames) and
-generalization set (1000 frames).
+Two stages (stage 3 — unconditional generation — is a future extension):
 
-Usage:
-    cd moseq_jax
-    python -m experiments.run_roundtrip
+Stage 1 — segmenter self-consistency
+    Segment a few reference clips several times with each of the four
+    segmenters (kpms, vae, vqvae, ps_vqvae). The three autoencoders are
+    deterministic functions and should score ~100%. KPMS applies via Gibbs
+    sampling, so it is run under two conditions: ``same_seed`` (pinned PRNG
+    key — pure determinism) and ``diff_seed`` (the honest Gibbs-variance
+    number).
+
+Stage 2 — generate-from-real-code round trip
+    For each (decoder checkpoint, segmenter) pair: take real reference
+    clips, their precomputed code sequence ``c``; roll out the c2a decoder
+    decoder-only (``z_e_scale=0``) to generate motion; re-segment the
+    generated motion to ``ĉ``; compare ``ĉ`` vs ``c``.
+
+Metrics (per-frame multiclass): accuracy, precision, recall, F1
+(macro / micro / weighted). Stage 2 additionally reports a
+**transition-masked** variant — frames within ``transient_window`` of a
+code change are dropped, since the GRU needs a few frames to express a new
+code — which is the headline steady-state fidelity.
+
+Usage::
+
+    python -m c2a.experiments.run_roundtrip                 # stages 1 + 2
+    python -m c2a.experiments.run_roundtrip stages=[1]      # stage 1 only
 """
 
 import os
 
-os.environ["MUJOCO_GL"] = "egl"
-os.environ["PYOPENGL_PLATFORM"] = "egl"
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import json
 import logging
-import sys
 from pathlib import Path
 
-
-from c2a.paths import get_c2a_root, get_repo_root
 import h5py
 import hydra
 import jax
+
+# orbax (used by load_moseq_checkpoint) calls jax.monitoring.record_scalar,
+# which was removed in newer JAX. Same stub as run_code_grid_rollouts.py.
+if not hasattr(jax.monitoring, "record_scalar"):
+    jax.monitoring.record_scalar = lambda *a, **k: None
 import matplotlib
 
 matplotlib.use("Agg")
@@ -37,203 +56,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 from omegaconf import DictConfig
 
-MOSEQ_DIR = get_c2a_root()
-REPO_ROOT = get_repo_root()
-from c2a.experiments.shared.keypoint_fk import setup_stac_model, qpos_to_keypoints_fk
-from c2a.experiments.shared.plotting import set_nature_style, NATURE_COLORS
+from c2a.experiments.shared.clip_selection import (
+    load_balanced_splits,
+    select_clips_by_behavior,
+)
+from c2a.experiments.shared.plotting import NATURE_COLORS, set_nature_style
+from c2a.experiments.shared.segmenters import load_segmenter
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
+log = logging.getLogger("run_roundtrip")
 
-CONDITIONS = ["reference", "mimic_mjx", "code2act"]
-CONDITION_LABELS = {
-    "reference": "Reference (ceiling)",
-    "mimic_mjx": "Mimic-MJX (oracle)",
-    "code2act": "Code2Act",
-}
-CONDITION_COLORS = {
-    "reference": NATURE_COLORS["green"],
-    "mimic_mjx": NATURE_COLORS["orange"],
-    "code2act": NATURE_COLORS["blue"],
-}
-
-
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
-
-
-def load_inference_qpos(
-    cfg_ds: DictConfig,
-) -> dict[str, tuple[list[np.ndarray], np.ndarray]]:
-    """Load qpos arrays and original codes for the inference test set.
-
-    Returns:
-        ``{condition: (qpos_per_clip, original_codes)}``
-        where qpos_per_clip is a list of [T_i, 74] arrays and
-        original_codes is [n_clips, clip_length].
-    """
-    codes_data = np.load(cfg_ds.codes_path)
-    original_codes = codes_data["test_codes"]  # [148, 250]
-    test_indices = codes_data["test_indices"]
-    clip_length = int(cfg_ds.clip_length)
-
-    result = {}
-
-    # Reference: original mocap qpos from H5
-    with h5py.File(cfg_ds.reference_h5, "r") as f:
-        all_qpos = f["qpos"][:]  # [210500, 74]
-    n_clips_total = all_qpos.shape[0] // clip_length
-    all_qpos_clipped = all_qpos[: n_clips_total * clip_length].reshape(
-        n_clips_total, clip_length, -1
-    )
-    ref_qpos = [all_qpos_clipped[idx] for idx in test_indices]
-    result["reference"] = (ref_qpos, original_codes)
-
-    # Code2Act rollout
-    c2a = np.load(cfg_ds.code2act_path, allow_pickle=True)
-    c2a_qpos = [np.asarray(c2a["qpos"][i], dtype=np.float32) for i in range(len(c2a["qpos"]))]
-    result["code2act"] = (c2a_qpos, original_codes)
-
-    # Mimic-MJX rollout
-    mimic = np.load(cfg_ds.mimic_path, allow_pickle=True)
-    mimic_qpos = [np.asarray(mimic["qpos"][i], dtype=np.float32) for i in range(len(mimic["qpos"]))]
-    result["mimic_mjx"] = (mimic_qpos, original_codes)
-
-    return result
-
-
-def load_generalization_qpos(
-    cfg_ds: DictConfig,
-) -> dict[str, tuple[list[np.ndarray], np.ndarray]]:
-    """Load qpos arrays and original codes for the generalization set."""
-    codes_data = np.load(cfg_ds.codes_path)
-    original_codes = codes_data["codes"]  # [20, 1000]
-    clip_length = int(cfg_ds.clip_length)
-    n_clips = original_codes.shape[0]
-
-    result = {}
-
-    # Reference: segmented new data
-    with h5py.File(cfg_ds.reference_h5, "r") as f:
-        all_qpos = f["qpos"][:]  # [20000, 74]
-    ref_clipped = all_qpos[: n_clips * clip_length].reshape(n_clips, clip_length, -1)
-    ref_qpos = [ref_clipped[i] for i in range(n_clips)]
-    result["reference"] = (ref_qpos, original_codes)
-
-    # Code2Act
-    c2a = np.load(cfg_ds.code2act_path, allow_pickle=True)
-    c2a_qpos_raw = c2a["qpos"]
-    c2a_qpos = [np.asarray(c2a_qpos_raw[i], dtype=np.float32) for i in range(len(c2a_qpos_raw))]
-    result["code2act"] = (c2a_qpos, original_codes)
-
-    # Mimic-MJX
-    mimic = np.load(cfg_ds.mimic_path, allow_pickle=True)
-    mimic_qpos_raw = mimic["qpos"]
-    mimic_qpos = [np.asarray(mimic_qpos_raw[i], dtype=np.float32) for i in range(len(mimic_qpos_raw))]
-    result["mimic_mjx"] = (mimic_qpos, original_codes)
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# KPMS re-extraction
-# ---------------------------------------------------------------------------
-
-
-def run_kpms_on_qpos(
-    qpos_per_clip: list[np.ndarray],
-    original_codes: np.ndarray,
-    clip_length: int,
-    fk_h5: str,
-    stac_xml: str,
-    kpms_model_dir: str,
-    kpms_model_name: str,
-    kpms_num_iters: int,
-) -> tuple[np.ndarray, np.ndarray, float]:
-    """Run FK + KPMS on qpos arrays and compare with original codes.
-
-    Returns:
-        ``(re_codes, valid_mask, coverage)``
-        - re_codes: [n_clips, clip_length] re-extracted codes (-1 for invalid)
-        - valid_mask: [n_clips, clip_length] bool
-        - coverage: fraction of frames with valid comparison
-    """
-    n_clips = len(qpos_per_clip)
-
-    # Truncate each clip to clip_length, track valid frames
-    qpos_padded = np.zeros((n_clips, clip_length, 74), dtype=np.float32)
-    valid_mask = np.zeros((n_clips, clip_length), dtype=bool)
-
-    for i, q in enumerate(qpos_per_clip):
-        # q may be (T+1, 74) from rollout (includes initial qpos)
-        # or (T, 74) from reference — use first clip_length frames
-        usable = min(q.shape[0], clip_length)
-        qpos_padded[i, :usable] = q[:usable].astype(np.float32)
-        valid_mask[i, :usable] = True
-
-    coverage = valid_mask.sum() / valid_mask.size
-
-    # Flatten for FK
-    qpos_flat = qpos_padded.reshape(-1, 74)
-
-    # FK
-    jax.config.update("jax_enable_x64", True)
-    log.info(f"    FK on {qpos_flat.shape[0]} frames...")
-    mj_model, mj_data, site_ids, kp_names = setup_stac_model(fk_h5, stac_xml)
-    keypoints = qpos_to_keypoints_fk(qpos_flat, mj_model, mj_data, site_ids)
-    keypoints = keypoints.reshape(n_clips, clip_length, -1, 3)
-
-    # KPMS inference
-    if not hasattr(np, "bool8"):
-        np.bool8 = np.bool_
-
-    import keypoint_moseq as kpms
-
-    model, _, _, _ = kpms.load_checkpoint(
-        project_dir=kpms_model_dir, model_name=kpms_model_name,
-    )
-    config = kpms.load_config(kpms_model_dir)
-
-    coordinates = {f"clip_{i}": keypoints[i] for i in range(n_clips)}
-
-    fmt_config = dict(config)
-    fmt_config["added_noise_level"] = 0.0
-    data, metadata = kpms.format_data(coordinates, confidences=None, **fmt_config)
-
-    init_kwargs = {
-        k: v for k, v in config.items()
-        if k in (
-            "anterior_idxs", "posterior_idxs", "fix_heading", "whiten",
-            "error_estimator", "conf_threshold", "PCA_fitting_num_frames",
-            "trans_hypparams", "ar_hypparams", "obs_hypparams", "cen_hypparams",
-        )
-    }
-
-    # Use a different seed than the original KPMS run to avoid
-    # deterministic replay (same seed + same data = identical output).
-    import jax as _jax
-    model = dict(model)  # shallow copy to avoid mutating cached checkpoint
-    model["seed"] = _jax.random.PRNGKey(42)
-
-    log.info(f"    KPMS inference ({kpms_num_iters} iters, {n_clips} clips)...")
-    results = kpms.apply_model(
-        model=model, data=data, metadata=metadata,
-        num_iters=kpms_num_iters, ar_only=False,
-        return_model=False, save_results=False, verbose=True,
-        **init_kwargs,
-    )
-
-    # Extract re-extracted codes
-    re_codes = np.full((n_clips, clip_length), -1, dtype=np.int32)
-    for i in range(n_clips):
-        syllables = results[f"clip_{i}"]["syllable"]
-        usable = min(len(syllables), clip_length)
-        re_codes[i, :usable] = syllables[:usable]
-
-    jax.config.update("jax_enable_x64", False)
-
-    return re_codes, valid_mask, coverage
+_AVGS = ("macro", "micro", "weighted")
 
 
 # ---------------------------------------------------------------------------
@@ -241,33 +74,184 @@ def run_kpms_on_qpos(
 # ---------------------------------------------------------------------------
 
 
-def compute_accuracy(
-    original: np.ndarray,
-    reextracted: np.ndarray,
-    valid_mask: np.ndarray,
-) -> float:
-    """Frame-level accuracy (% match) over valid frames."""
-    valid = valid_mask & (reextracted >= 0)
+def _clf_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    """Per-frame multiclass metrics over a flattened (clips x frames) pair.
+
+    Frames where either side is ``-1`` (KPMS did not assign a syllable) are
+    dropped. Precision / recall / F1 average over the labels actually
+    present (sklearn default) so an unused codebook slot does not drag the
+    macro score down.
+    """
+    from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+
+    yt = np.asarray(y_true).ravel()
+    yp = np.asarray(y_pred).ravel()
+    valid = (yt >= 0) & (yp >= 0)
+    yt, yp = yt[valid], yp[valid]
+    if yt.size == 0:
+        out = {"accuracy": 0.0, "n_frames": 0}
+        for avg in _AVGS:
+            out[f"precision_{avg}"] = 0.0
+            out[f"recall_{avg}"] = 0.0
+            out[f"f1_{avg}"] = 0.0
+        return out
+    out = {"accuracy": float(accuracy_score(yt, yp)), "n_frames": int(yt.size)}
+    for avg in _AVGS:
+        p, r, f, _ = precision_recall_fscore_support(
+            yt, yp, average=avg, zero_division=0,
+        )
+        out[f"precision_{avg}"] = float(p)
+        out[f"recall_{avg}"] = float(r)
+        out[f"f1_{avg}"] = float(f)
+    return out
+
+
+def _info_metrics(c: np.ndarray, c_hat: np.ndarray) -> dict:
+    """Permutation-invariant clustering-comparison metrics.
+
+    Treats ``c`` and ``ĉ`` as two labelings of the same frames and asks:
+    *given c, can you predict ĉ — regardless of label identity?* Insensitive
+    to a consistent relabeling of codes (which presence/per-frame call a
+    total failure but is really perfect information preservation).
+
+    - ``nmi``: normalized mutual information (0 = independent, 1 = same up
+      to permutation). Not chance-corrected.
+    - ``ami``: adjusted mutual information — NMI minus the chance baseline.
+      Comparable across pairs with different code counts.
+    - ``ari``: adjusted Rand index — pair-counting variant of AMI.
+    - ``hungarian_accuracy``: after the optimal permutation of ĉ's labels
+      onto c's labels, what fraction of frames match? An interpretable
+      "what if relabeling were allowed" version of per-frame accuracy.
+    """
+    from scipy.optimize import linear_sum_assignment
+    from sklearn.metrics import (
+        adjusted_mutual_info_score,
+        adjusted_rand_score,
+        normalized_mutual_info_score,
+    )
+
+    yt = np.asarray(c).ravel()
+    yp = np.asarray(c_hat).ravel()
+    valid = (yt >= 0) & (yp >= 0)
+    yt, yp = yt[valid], yp[valid]
+    if yt.size == 0:
+        return {"nmi": 0.0, "ami": 0.0, "ari": 0.0,
+                "hungarian_accuracy": 0.0, "n_frames": 0}
+
+    nmi = float(normalized_mutual_info_score(yt, yp))
+    ami = float(adjusted_mutual_info_score(yt, yp))
+    ari = float(adjusted_rand_score(yt, yp))
+
+    # Hungarian: permute ĉ's labels onto c's labels to maximize agreement.
+    c_lbls = np.unique(yt)
+    h_lbls = np.unique(yp)
+    c_idx = {int(v): i for i, v in enumerate(c_lbls)}
+    h_idx = {int(v): i for i, v in enumerate(h_lbls)}
+    n = max(len(c_lbls), len(h_lbls))
+    cm = np.zeros((n, n), dtype=np.int64)
+    for a, b in zip(yt.tolist(), yp.tolist()):
+        cm[c_idx[int(a)], h_idx[int(b)]] += 1
+    row_ind, col_ind = linear_sum_assignment(-cm)
+    hungarian = float(cm[row_ind, col_ind].sum() / yt.size)
+
+    return {"nmi": nmi, "ami": ami, "ari": ari,
+            "hungarian_accuracy": hungarian,
+            "n_frames": int(yt.size)}
+
+
+def _presence_metrics(c: np.ndarray, c_hat: np.ndarray) -> dict:
+    """Code-presence metric: did the segmenter detect the codes used to
+    construct the generation? Ignores timing, duration, and ordering — the
+    fair question is "is each code that drove the rollout present anywhere
+    in ĉ?" Per-frame accuracy is a much stricter sibling that conflates
+    code-information loss with GRU-settling transient, argmin jitter, and
+    one-frame shifts.
+
+    Args:
+        c: input/instructing codes (per-frame). -1 entries dropped.
+        c_hat: re-segmented codes (per-frame). -1 entries dropped.
+
+    Returns:
+        - presence_recall    = |set(c) ∩ set(ĉ)| / |set(c)|  (asked-for codes seen)
+        - presence_precision = |set(c) ∩ set(ĉ)| / |set(ĉ)|  (ĉ stays on script)
+        - presence_f1        = harmonic mean of the two
+        - weighted_recall    = fraction of c's *frames* whose code is in set(ĉ),
+                               so missing a frequently-used code costs more.
+        - n_codes_c, n_codes_chat, n_overlap: set sizes for context.
+    """
+    c = np.asarray(c).ravel()
+    ch = np.asarray(c_hat).ravel()
+    c_vals = c[c >= 0]
+    ch_vals = ch[ch >= 0]
+    cs = set(int(x) for x in c_vals)
+    chs = set(int(x) for x in ch_vals)
+    overlap = cs & chs
+    tp = len(overlap)
+    precision = (tp / len(chs)) if chs else 0.0
+    recall = (tp / len(cs)) if cs else 0.0
+    f1 = ((2 * precision * recall) / (precision + recall)
+          if (precision + recall) else 0.0)
+    if c_vals.size:
+        present_mask = np.isin(c_vals, np.asarray(sorted(chs), dtype=c_vals.dtype))
+        weighted_recall = float(present_mask.mean())
+    else:
+        weighted_recall = 0.0
+    return {
+        "presence_precision": float(precision),
+        "presence_recall": float(recall),
+        "presence_f1": float(f1),
+        "weighted_recall": weighted_recall,
+        "n_codes_c": len(cs),
+        "n_codes_chat": len(chs),
+        "n_overlap": tp,
+    }
+
+
+def _confusion(y_true: np.ndarray, y_pred: np.ndarray, num_codes: int) -> np.ndarray:
+    """Fixed-size ``(num_codes, num_codes)`` confusion matrix (valid frames)."""
+    from sklearn.metrics import confusion_matrix
+
+    yt = np.asarray(y_true).ravel()
+    yp = np.asarray(y_pred).ravel()
+    valid = (yt >= 0) & (yp >= 0) & (yt < num_codes) & (yp < num_codes)
     if valid.sum() == 0:
-        return 0.0
-    return float((original[valid] == reextracted[valid]).mean())
+        return np.zeros((num_codes, num_codes), dtype=np.int64)
+    return confusion_matrix(
+        yt[valid], yp[valid], labels=list(range(num_codes)),
+    ).astype(np.int64)
 
 
-def compute_confusion_matrix(
-    original: np.ndarray,
-    reextracted: np.ndarray,
-    valid_mask: np.ndarray,
-    num_codes: int,
-) -> np.ndarray:
-    """Confusion matrix [num_codes, num_codes]: original × re-extracted."""
-    valid = valid_mask & (reextracted >= 0)
-    cm = np.zeros((num_codes, num_codes), dtype=np.int64)
-    orig_flat = original[valid]
-    re_flat = reextracted[valid]
-    for o, r in zip(orig_flat, re_flat):
-        if 0 <= o < num_codes and 0 <= r < num_codes:
-            cm[o, r] += 1
-    return cm
+def _mean_std_dicts(dicts: list[dict]) -> dict:
+    """Mean (and std for scalars) of a list of flat metric dicts."""
+    if not dicts:
+        return {}
+    keys = [k for k in dicts[0] if k != "n_frames"]
+    out: dict = {"n_samples": len(dicts)}
+    for k in keys:
+        vals = np.asarray([d[k] for d in dicts], dtype=np.float64)
+        out[k] = float(vals.mean())
+        out[f"{k}_std"] = float(vals.std())
+    out["n_frames_total"] = int(sum(d.get("n_frames", 0) for d in dicts))
+    return out
+
+
+def _transition_keep_mask(codes: np.ndarray, transient_window: int) -> np.ndarray:
+    """Boolean per-frame mask; ``False`` for frames within ``transient_window``
+    frames *after* a code change (the GRU settling transient)."""
+    codes = np.asarray(codes)
+    keep = np.ones(codes.shape[0], dtype=bool)
+    for t in np.where(np.diff(codes) != 0)[0] + 1:
+        keep[t : t + transient_window] = False
+    return keep
+
+
+def _dist_since_transition(codes: np.ndarray) -> np.ndarray:
+    """Frames elapsed since the last code change (0 at a change frame)."""
+    codes = np.asarray(codes)
+    d = np.zeros(codes.shape[0], dtype=np.int64)
+    for i in range(1, codes.shape[0]):
+        d[i] = 0 if codes[i] != codes[i - 1] else d[i - 1] + 1
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -275,72 +259,476 @@ def compute_confusion_matrix(
 # ---------------------------------------------------------------------------
 
 
-def plot_confusion_matrix(
-    cm: np.ndarray,
-    title: str,
-    output_path: Path,
-) -> None:
-    """Nature-style confusion matrix heatmap."""
+def _plot_confusion(cm: np.ndarray, title: str, path: Path) -> None:
     set_nature_style()
     fig, ax = plt.subplots(figsize=(4.0, 3.5))
-
-    # Normalize rows to probabilities
-    row_sums = cm.sum(axis=1, keepdims=True)
-    row_sums[row_sums == 0] = 1
-    cm_norm = cm.astype(float) / row_sums
-
-    im = ax.imshow(cm_norm, aspect="auto", cmap="viridis", vmin=0, vmax=1)
-    ax.set_xlabel("Re-extracted code")
-    ax.set_ylabel("Original code")
+    row = cm.sum(axis=1, keepdims=True)
+    row[row == 0] = 1
+    im = ax.imshow(cm / row, aspect="auto", cmap="viridis", vmin=0, vmax=1)
+    ax.set_xlabel("reconstructed code ĉ")
+    ax.set_ylabel("input code c")
     ax.set_title(title)
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("P(re-extracted | original)")
-    plt.tight_layout()
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    fig.savefig(output_path.with_suffix(".svg"), dpi=300, bbox_inches="tight", transparent=True)
+    cbar.set_label("P(ĉ | c)")
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    fig.savefig(path.with_suffix(".svg"), bbox_inches="tight", transparent=True)
     plt.close(fig)
 
 
-def plot_accuracy_comparison(
-    results: dict[str, dict[str, float]],
-    output_path: Path,
-) -> None:
-    """Bar chart: accuracy per condition, grouped by dataset."""
+def _plot_bars(labels: list[str], values: list[float], title: str,
+               ylabel: str, path: Path) -> None:
     set_nature_style()
-    fig, ax = plt.subplots(figsize=(4.5, 2.8))
+    fig, ax = plt.subplots(figsize=(0.9 * len(labels) + 1.5, 2.8))
+    x = np.arange(len(labels))
+    bars = ax.bar(x, values, 0.6, color=NATURE_COLORS["blue"], edgecolor="none")
+    for bar, v in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                f"{v:.2f}", ha="center", va="bottom", fontsize=6)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=20, ha="right")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.set_ylim(0, 1.1)
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    fig.savefig(path.with_suffix(".svg"), bbox_inches="tight", transparent=True)
+    plt.close(fig)
 
-    datasets = list(results.keys())
-    n_ds = len(datasets)
-    n_cond = len(CONDITIONS)
-    bar_width = 0.22
-    x = np.arange(n_ds)
 
-    for ci, cond in enumerate(CONDITIONS):
-        vals = [results[ds].get(cond, 0) for ds in datasets]
-        offset = (ci - (n_cond - 1) / 2) * bar_width
+def _plot_grouped_bars(labels: list[str], groups: dict[str, list[float]],
+                       title: str, ylabel: str, path: Path) -> None:
+    """Grouped bar chart: N pairs across the x-axis, M bars per pair."""
+    set_nature_style()
+    keys = list(groups.keys())
+    n = len(labels)
+    m = len(keys)
+    bar_width = 0.8 / max(m, 1)
+    palette = [NATURE_COLORS["blue"], NATURE_COLORS["orange"],
+               NATURE_COLORS["green"], NATURE_COLORS["purple"]]
+    fig, ax = plt.subplots(figsize=(1.1 * n + 1.6, 3.0))
+    x = np.arange(n)
+    for i, (key, vals) in enumerate(groups.items()):
+        offset = (i - (m - 1) / 2) * bar_width
         bars = ax.bar(
-            x + offset, vals, bar_width,
-            label=CONDITION_LABELS[cond],
-            color=CONDITION_COLORS[cond],
-            edgecolor="none",
+            x + offset, vals, bar_width, color=palette[i % len(palette)],
+            edgecolor="none", label=key,
         )
         for bar, v in zip(bars, vals):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                f"{v:.1%}", ha="center", va="bottom", fontsize=5.5,
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                    f"{v:.2f}", ha="center", va="bottom", fontsize=5.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=20, ha="right")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.set_ylim(0, 1.15)
+    ax.legend(frameon=False, fontsize=7)
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    fig.savefig(path.with_suffix(".svg"), bbox_inches="tight", transparent=True)
+    plt.close(fig)
+
+
+def _plot_code_examples(c: np.ndarray, c_hat: np.ndarray, num_codes: int,
+                        n_examples: int, title: str, path: Path) -> None:
+    """Per-clip side-by-side code-sequence strips: ``c`` on the left, every
+    rollout repeat of ``ĉ`` on the right. Colors are shared across panels
+    (same code id → same color)."""
+    from matplotlib.colors import ListedColormap
+
+    from c2a.experiments.shared.plotting import get_code_colormap
+
+    set_nature_style()
+    n_repeats = c_hat.shape[1]
+    n_examples = int(min(n_examples, c.shape[0]))
+    rgb = get_code_colormap(num_codes) / 255.0
+    cmap = ListedColormap(rgb)
+
+    fig, axes = plt.subplots(
+        n_examples, 1 + n_repeats,
+        figsize=(2.4 * (1 + n_repeats), 0.55 * n_examples + 0.9),
+        squeeze=False,
+    )
+    headers = ["input c"] + [f"ĉ rep {r}" for r in range(n_repeats)]
+    for ci in range(n_examples):
+        strips = [c[ci]] + [c_hat[ci, r] for r in range(n_repeats)]
+        for col, arr in enumerate(strips):
+            ax = axes[ci, col]
+            a = np.asarray(arr).reshape(1, -1).astype(float)
+            a[a < 0] = np.nan
+            ax.imshow(
+                a, aspect="auto", cmap=cmap,
+                vmin=-0.5, vmax=num_codes - 0.5, interpolation="nearest",
+            )
+            ax.set_yticks([])
+            ax.set_xticks([])
+            if ci == 0:
+                ax.set_title(headers[col], fontsize=7)
+            if col == 0:
+                ax.set_ylabel(
+                    f"clip {ci}", fontsize=6, rotation=0,
+                    labelpad=14, va="center",
+                )
+    fig.suptitle(title, fontsize=9, fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    fig.savefig(path.with_suffix(".svg"), bbox_inches="tight", transparent=True)
+    plt.close(fig)
+
+
+def _plot_accuracy_vs_transition(dist: np.ndarray, correct: np.ndarray,
+                                 title: str, path: Path,
+                                 max_dist: int = 30) -> None:
+    set_nature_style()
+    fig, ax = plt.subplots(figsize=(4.0, 2.8))
+    xs, ys = [], []
+    for d in range(max_dist + 1):
+        m = dist == d
+        if m.sum() > 0:
+            xs.append(d)
+            ys.append(float(correct[m].mean()))
+    ax.plot(xs, ys, "o-", color=NATURE_COLORS["blue"])
+    ax.set_xlabel("frames since last code change")
+    ax.set_ylabel("per-frame round-trip accuracy")
+    ax.set_title(title)
+    ax.set_ylim(0, 1.05)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    fig.savefig(path.with_suffix(".svg"), bbox_inches="tight", transparent=True)
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Clip selection / reference qpos
+# ---------------------------------------------------------------------------
+
+
+def _select_clips(cfg: DictConfig) -> tuple[list[int], list[int]]:
+    """Pick the round-trip clip set from the test split.
+
+    Returns:
+        ``(local_positions, global_ids)`` — ``local_positions`` index the
+        test split (and the decoders' ``test_codes`` / ``test_clips``);
+        ``global_ids`` index the full reference H5.
+    """
+    splits = load_balanced_splits(cfg.paths.balanced_split)
+    test_global = list(splits["balanced"]["test_indices"])
+    sel = select_clips_by_behavior(
+        splits,
+        split="test",
+        k_per_behavior=int(cfg.clips.k_per_behavior),
+        seed=int(cfg.seed),
+        behaviors=tuple(cfg.clips.behaviors),
+    )
+    local = sorted({p for ps in sel.values() for p in ps})
+    global_ids = [int(test_global[p]) for p in local]
+    return local, global_ids
+
+
+def _load_ref_qpos(reference_h5: str, global_ids: list[int],
+                   clip_length: int) -> np.ndarray:
+    """Load ``(n_clips, clip_length, nq)`` reference qpos for ``global_ids``."""
+    with h5py.File(reference_h5, "r") as f:
+        qpos_flat = f["qpos"][:]
+    n_total = qpos_flat.shape[0] // clip_length
+    clipped = qpos_flat[: n_total * clip_length].reshape(
+        n_total, clip_length, -1,
+    )
+    return np.stack([clipped[i] for i in global_ids], axis=0).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Stage 1 — segmenter self-consistency
+# ---------------------------------------------------------------------------
+
+
+def _run_stage1(cfg: DictConfig, output_dir: Path, segmenters: dict,
+                ref_qpos: np.ndarray, global_ids: list[int]) -> dict:
+    log.info("\n%s\n  STAGE 1 — segmenter self-consistency\n%s",
+             "=" * 60, "=" * 60)
+    n_repeats = int(cfg.stage1.n_repeats)
+    summary: dict = {}
+
+    for name, seg in segmenters.items():
+        seg_dir = output_dir / "stage1" / name
+        seg_dir.mkdir(parents=True, exist_ok=True)
+        is_kpms = str(cfg.segmenters[name].type) == "kpms"
+        log.info("\n  --- %s (%s) ---", name, "kpms" if is_kpms else "ae")
+
+        if is_kpms:
+            conditions = {
+                "same_seed": seg.encode_repeats(ref_qpos, [0] * n_repeats),
+                "diff_seed": seg.encode_repeats(
+                    ref_qpos, list(range(n_repeats))),
+            }
+        else:
+            conditions = {
+                "deterministic": seg.encode_repeats(
+                    ref_qpos, list(range(n_repeats))),
+            }
+
+        seg_summary: dict = {}
+        save: dict = {"clip_ids": np.asarray(global_ids, dtype=np.int64)}
+        for cond, repeat_codes in conditions.items():
+            save[f"codes_{cond}"] = repeat_codes
+            ref = repeat_codes[0]
+            vs0 = [_clf_metrics(ref, repeat_codes[r])
+                   for r in range(1, repeat_codes.shape[0])]
+            pairwise = []
+            cm = np.zeros((seg.num_codes, seg.num_codes), dtype=np.int64)
+            for a in range(repeat_codes.shape[0]):
+                for b in range(a + 1, repeat_codes.shape[0]):
+                    pairwise.append(_clf_metrics(repeat_codes[a], repeat_codes[b]))
+                    cm += _confusion(repeat_codes[a], repeat_codes[b],
+                                     seg.num_codes)
+            seg_summary[cond] = {
+                "vs_repeat0": _mean_std_dicts(vs0),
+                "pairwise": _mean_std_dicts(pairwise),
+                "n_repeats": int(repeat_codes.shape[0]),
+            }
+            _plot_confusion(
+                cm, f"{name} stage-1 {cond}",
+                seg_dir / f"confusion_{cond}.png",
+            )
+            acc = seg_summary[cond]["pairwise"].get("accuracy", 0.0)
+            log.info("    %-14s pairwise accuracy=%.4f  f1_macro=%.4f",
+                     cond, acc,
+                     seg_summary[cond]["pairwise"].get("f1_macro", 0.0))
+
+        np.savez_compressed(seg_dir / "codes.npz", **save)
+        (seg_dir / "metrics.json").write_text(json.dumps(seg_summary, indent=2))
+        summary[name] = seg_summary
+
+    # Headline bar chart: pairwise accuracy per (segmenter, condition).
+    # AE segmenters contribute one bar (deterministic); KPMS contributes two
+    # (same_seed and diff_seed) so the Gibbs-variance gap is visible.
+    labels, values = [], []
+    for name, seg_summary in summary.items():
+        for cond, metrics in seg_summary.items():
+            labels.append(f"{name}\n({cond})")
+            values.append(metrics["pairwise"].get("accuracy", 0.0))
+    _plot_bars(labels, values, "Stage 1 — segmenter self-consistency",
+               "pairwise per-frame accuracy", output_dir / "stage1_accuracy.png")
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — generate-from-real-code round trip
+# ---------------------------------------------------------------------------
+
+
+def _build_decoder_env(ckpt_cfg, reference_h5: str, test_indices: np.ndarray,
+                       test_codes: np.ndarray):
+    """Build the ``MoSeqImitation`` env for a decoder checkpoint."""
+    from track_mjx.config import utils
+    from vnl_playground.tasks.rodent.imitation import ReferenceClips
+
+    from c2a.moseq_env_wrapper import MoSeqImitation
+
+    clip_len = int(ckpt_cfg.env_config.clip_length)
+    clips = ReferenceClips(
+        data_path=reference_h5,
+        n_frames_per_clip=clip_len,
+        keep_clips_idx=np.asarray(test_indices, dtype=np.int64),
+    )
+    _, _, env_cfg = utils.prepare_config(ckpt_cfg)
+    env_cfg.start_frame_range = [0, 0]
+    env_cfg.domain_randomization.use_domain_randomization = False
+    code_stack_size = int(ckpt_cfg.network_config.get("code_stack_size", 1))
+    env = MoSeqImitation(
+        config=env_cfg,
+        clips=clips,
+        kpms_codes=test_codes,
+        code_stack_size=code_stack_size,
+    )
+    return env, clip_len
+
+
+def _run_stage2(cfg: DictConfig, output_dir: Path, segmenters: dict,
+                local_positions: list[int], global_ids: list[int]) -> dict:
+    log.info("\n%s\n  STAGE 2 — generate-from-real-code round trip\n%s",
+             "=" * 60, "=" * 60)
+    from c2a.experiments.shared.checkpoint_utils import (
+        load_moseq_checkpoint,
+        make_inference_fn,
+        run_rollout,
+    )
+
+    splits = load_balanced_splits(cfg.paths.balanced_split)
+    split_test_idx = np.asarray(splits["balanced"]["test_indices"], dtype=np.int64)
+    transient_window = int(cfg.stage2.transient_window)
+    n_rollout_repeats = int(cfg.stage2.n_rollout_repeats)
+    z_e_scale = float(cfg.stage2.z_e_scale)
+    summary: dict = {}
+
+    for pair in cfg.stage2.pairs:
+        dec_name = str(pair["decoder"])
+        seg_name = str(pair["segmenter"])
+        tag = f"{dec_name}__{seg_name}"
+        pair_dir = output_dir / "stage2" / tag
+        pair_dir.mkdir(parents=True, exist_ok=True)
+        log.info("\n  --- pair %s ---", tag)
+
+        seg = segmenters[seg_name]
+        # `c` = the codes the decoder was conditioned on (segmenter best_codes).
+        codes_npz = np.load(str(cfg.segmenters[seg_name].codes_npz),
+                            allow_pickle=True)
+        test_codes = np.asarray(codes_npz["test_codes"], dtype=np.int32)
+        codes_test_idx = np.asarray(codes_npz["test_indices"], dtype=np.int64)
+        if not np.array_equal(codes_test_idx, split_test_idx):
+            raise RuntimeError(
+                f"{seg_name} codes_npz test_indices differ from the "
+                f"balanced split — the env would inject codes for the "
+                f"wrong clips. Refusing to produce meaningless metrics."
             )
 
-    ax.set_xticks(x)
-    ds_labels = {"inference": "250-Frame\nTest Set", "generalization": "1000-Frame\nTest Set"}
-    ax.set_xticklabels([ds_labels.get(ds, ds) for ds in datasets])
-    ax.set_ylabel("Frame-Level Accuracy")
-    ax.set_title("Round-Trip Code Consistency")
-    ax.set_ylim(0, 1.15)
-    ax.legend(frameon=False, fontsize=6, loc="upper right")
-    plt.tight_layout()
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    fig.savefig(output_path.with_suffix(".svg"), dpi=300, bbox_inches="tight", transparent=True)
-    plt.close(fig)
+        ckpt_cfg, norm_state, policy_params, ppo_networks = load_moseq_checkpoint(
+            str(cfg.decoders[dec_name]),
+        )
+        if not bool(ckpt_cfg.network_config.get("use_rnn_decoder", False)):
+            log.warning("    decoder %s is not RNN — skipping pair.", dec_name)
+            continue
+        params = (norm_state, policy_params)
+        inf_fn = make_inference_fn(
+            ppo_networks, use_rnn=True, deterministic=True, z_e_scale=z_e_scale,
+        )
+        env, clip_len = _build_decoder_env(
+            ckpt_cfg, cfg.paths.reference_h5, split_test_idx, test_codes,
+        )
+        jit_reset = jax.jit(env.reset)
+        jit_step = jax.jit(env.step)
+
+        # `c` for the selected clips.
+        c = np.stack([test_codes[p][:clip_len] for p in local_positions], axis=0)
+        n_clips = c.shape[0]
+
+        # Roll out: n_clips x n_rollout_repeats decoder-only rollouts.
+        gen_list: list[np.ndarray] = []
+        key = jax.random.PRNGKey(int(cfg.seed))
+        for ci, pos in enumerate(local_positions):
+            for rep in range(n_rollout_repeats):
+                key, sub = jax.random.split(key)
+                result = run_rollout(
+                    env, inf_fn, params, ppo_networks, use_rnn=True, key=sub,
+                    max_steps=clip_len, reset_clip_idx=int(pos),
+                    jit_reset=jit_reset, jit_step=jit_step, ignore_done=True,
+                )
+                q = np.asarray(result["qpos"], dtype=np.float32)[:clip_len]
+                gen_list.append(q)
+            log.info("    clip %d/%d (test pos %d) rolled out x%d",
+                     ci + 1, n_clips, pos, n_rollout_repeats)
+        gen_qpos = np.stack(gen_list, axis=0).reshape(
+            n_clips, n_rollout_repeats, clip_len, -1,
+        )
+        log.info("    generated qpos: shape %s", gen_qpos.shape)
+
+        # Re-segment all (clip, repeat) generated trajectories at once.
+        flat = gen_qpos.reshape(n_clips * n_rollout_repeats, clip_len, -1)
+        c_hat_flat = seg.encode(flat, seed=int(cfg.seed))
+        ch_len = min(c_hat_flat.shape[1], clip_len)
+        c_hat = c_hat_flat[:, :ch_len].reshape(
+            n_clips, n_rollout_repeats, ch_len,
+        )
+        c = c[:, :ch_len]
+
+        # Metrics: per (clip, repeat).
+        #   - presence: did each code in c appear anywhere in ĉ? Ignores
+        #     timing/duration/ordering — this is the "fair" round-trip metric.
+        #   - all_frames: strict per-frame ĉ_t == c_t (the harshest metric).
+        #   - transition_masked: per-frame with the GRU-settling transient and
+        #     the segmenter's window-padding boundary frames dropped.
+        all_m, masked_m, presence_m, info_m = [], [], [], []
+        cm = np.zeros((seg.num_codes, seg.num_codes), dtype=np.int64)
+        dist_pool, correct_pool = [], []
+        bnd_lo, bnd_hi = seg.boundary_pad
+        core = np.zeros(c.shape[1], dtype=bool)
+        core[bnd_lo : c.shape[1] - bnd_hi] = True
+        for ci in range(n_clips):
+            keep = _transition_keep_mask(c[ci], transient_window) & core
+            dist = _dist_since_transition(c[ci])
+            for rep in range(n_rollout_repeats):
+                ch = c_hat[ci, rep]
+                presence_m.append(_presence_metrics(c[ci], ch))
+                info_m.append(_info_metrics(c[ci], ch))
+                all_m.append(_clf_metrics(c[ci], ch))
+                masked_m.append(_clf_metrics(c[ci][keep], ch[keep]))
+                cm += _confusion(c[ci], ch, seg.num_codes)
+                valid = (c[ci] >= 0) & (ch >= 0)
+                dist_pool.append(dist[valid])
+                correct_pool.append((c[ci] == ch)[valid])
+
+        pair_summary = {
+            "presence": _mean_std_dicts(presence_m),
+            "information": _mean_std_dicts(info_m),
+            "all_frames": _mean_std_dicts(all_m),
+            "transition_masked": _mean_std_dicts(masked_m),
+            "n_clips": n_clips,
+            "n_rollout_repeats": n_rollout_repeats,
+            "transient_window": transient_window,
+        }
+        (pair_dir / "metrics.json").write_text(json.dumps(pair_summary, indent=2))
+        np.savez_compressed(
+            pair_dir / "roundtrip.npz",
+            c=c, c_hat=c_hat,
+            clip_ids=np.asarray(global_ids, dtype=np.int64),
+            local_positions=np.asarray(local_positions, dtype=np.int64),
+            confusion=cm,
+            **({"gen_qpos": gen_qpos} if bool(cfg.stage2.get("save_qpos", False))
+               else {}),
+        )
+        _plot_confusion(cm, f"{tag} round-trip", pair_dir / "confusion.png")
+        _plot_code_examples(
+            c, c_hat, seg.num_codes,
+            n_examples=min(6, n_clips),
+            title=f"{tag} — input code c vs reconstructed ĉ",
+            path=pair_dir / "code_examples.png",
+        )
+        _plot_accuracy_vs_transition(
+            np.concatenate(dist_pool), np.concatenate(correct_pool),
+            f"{tag} round-trip", pair_dir / "accuracy_vs_transition.png",
+        )
+        summary[tag] = pair_summary
+        log.info(
+            "    round-trip accuracy: all=%.4f  transition-masked=%.4f",
+            pair_summary["all_frames"].get("accuracy", 0.0),
+            pair_summary["transition_masked"].get("accuracy", 0.0),
+        )
+
+    if summary:
+        labels = list(summary.keys())
+        prec = [summary[t]["presence"].get("presence_precision", 0.0)
+                for t in labels]
+        rec = [summary[t]["presence"].get("presence_recall", 0.0)
+               for t in labels]
+        f1 = [summary[t]["presence"].get("presence_f1", 0.0)
+              for t in labels]
+        _plot_grouped_bars(
+            labels, {"precision": prec, "recall": rec, "F1": f1},
+            "Stage 2 — round-trip code presence",
+            "set-level metric (over codes used in each clip)",
+            output_dir / "stage2_presence.png",
+        )
+        # Permutation-invariant clustering measures (label-id independent).
+        nmi = [summary[t]["information"].get("nmi", 0.0) for t in labels]
+        ami = [summary[t]["information"].get("ami", 0.0) for t in labels]
+        ari = [summary[t]["information"].get("ari", 0.0) for t in labels]
+        hung = [summary[t]["information"].get("hungarian_accuracy", 0.0)
+                for t in labels]
+        _plot_grouped_bars(
+            labels,
+            {"NMI": nmi, "AMI": ami, "ARI": ari, "Hungarian-acc": hung},
+            "Stage 2 — round-trip information (permutation-invariant)",
+            "score (1.0 = same up to relabeling)",
+            output_dir / "stage2_information.png",
+        )
+        # Keep the strict per-frame view as a secondary plot for reference.
+        values = [summary[t]["transition_masked"].get("accuracy", 0.0)
+                  for t in labels]
+        _plot_bars(labels, values,
+                   "Stage 2 — per-frame accuracy (strict, transition-masked)",
+                   "per-frame accuracy", output_dir / "stage2_accuracy.png")
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -350,104 +738,54 @@ def plot_accuracy_comparison(
 
 @hydra.main(version_base=None, config_path="configs", config_name="roundtrip")
 def main(cfg: DictConfig) -> None:
-    log.info("=== Round-Trip Code Consistency Experiment ===")
+    if jax.config.read("jax_enable_x64"):
+        raise RuntimeError(
+            "jax_enable_x64 is True in the driver process — KPMS x64 leaked. "
+            "KPMS must run only inside the subprocess worker."
+        )
 
     output_dir = Path(cfg.output.base_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = output_dir / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    stages = [int(s) for s in cfg.stages]
+    log.info("=== Round-trip experiment — stages %s ===", stages)
 
-    kpms_model_dir = cfg.kpms.model_dir
-    kpms_model_name = cfg.kpms.model_name
-    kpms_num_iters = int(cfg.kpms.num_iters)
-    stac_xml = cfg.stac_xml
+    # Clip set (shared by both stages).
+    local_positions, global_ids = _select_clips(cfg)
+    clip_length = int(cfg.clip_length)
+    log.info("Selected %d clips (global ids %s)", len(global_ids), global_ids)
 
-    # Determine num_codes from KPMS config
-    if not hasattr(np, "bool8"):
-        np.bool8 = np.bool_
-    import keypoint_moseq as kpms_lib
+    # Build all segmenters once.
+    segmenters: dict = {}
+    for name, seg_cfg in cfg.segmenters.items():
+        log.info("Loading segmenter %s ...", name)
+        segmenters[name] = load_segmenter(
+            name, seg_cfg,
+            fk_h5=cfg.paths.reference_h5,
+            stac_xml=cfg.paths.stac_xml,
+            tmp_dir=tmp_dir,
+        )
 
-    kpms_config = kpms_lib.load_config(kpms_model_dir)
-    num_codes = kpms_config["trans_hypparams"]["num_states"]
-    log.info(f"  KPMS model: {num_codes} codes")
+    summary: dict = {"stages": stages, "clip_ids": global_ids}
 
-    # Collect results across datasets
-    all_accuracies: dict[str, dict[str, float]] = {}
+    if 1 in stages:
+        ref_qpos = _load_ref_qpos(
+            str(cfg.paths.reference_h5), global_ids, clip_length,
+        )
+        summary["stage1"] = _run_stage1(
+            cfg, output_dir, segmenters, ref_qpos, global_ids,
+        )
 
-    datasets = {
-        "inference": (cfg.inference, load_generalization_qpos),
-        "generalization": (cfg.generalization, load_generalization_qpos),
-    }
+    if 2 in stages:
+        summary["stage2"] = _run_stage2(
+            cfg, output_dir, segmenters, local_positions, global_ids,
+        )
 
-    for ds_name, (ds_cfg, load_fn) in datasets.items():
-        log.info(f"\n{'='*60}")
-        log.info(f"  Dataset: {ds_name} (clip_length={ds_cfg.clip_length})")
-        log.info(f"{'='*60}")
-
-        ds_dir = output_dir / ds_name
-        ds_dir.mkdir(parents=True, exist_ok=True)
-
-        # Load all conditions
-        condition_data = load_fn(ds_cfg)
-        clip_length = int(ds_cfg.clip_length)
-        fk_h5 = str(ds_cfg.fk_h5)
-        ds_accuracies = {}
-
-        for cond in CONDITIONS:
-            if cond not in condition_data:
-                continue
-            qpos_list, original_codes = condition_data[cond]
-            log.info(f"\n  --- Condition: {CONDITION_LABELS[cond]} ---")
-            log.info(f"    {len(qpos_list)} clips, clip_length={clip_length}")
-
-            re_codes, valid_mask, coverage = run_kpms_on_qpos(
-                qpos_list, original_codes, clip_length,
-                fk_h5, stac_xml,
-                kpms_model_dir, kpms_model_name, kpms_num_iters,
-            )
-
-            acc = compute_accuracy(original_codes, re_codes, valid_mask)
-            cm = compute_confusion_matrix(original_codes, re_codes, valid_mask, num_codes)
-
-            ds_accuracies[cond] = acc
-            log.info(f"    Accuracy: {acc:.1%} (coverage: {coverage:.1%})")
-
-            # Save
-            np.savez_compressed(
-                ds_dir / f"{cond}_roundtrip.npz",
-                re_codes=re_codes, valid_mask=valid_mask,
-                original_codes=original_codes, confusion_matrix=cm,
-                accuracy=acc, coverage=coverage,
-            )
-
-            # Confusion matrix plot
-            plot_confusion_matrix(
-                cm,
-                f"{CONDITION_LABELS[cond]} ({ds_name})",
-                ds_dir / f"{cond}_confusion.png",
-            )
-
-        all_accuracies[ds_name] = ds_accuracies
-
-    # Summary bar chart
-    log.info("\n" + "=" * 60)
-    log.info("  SUMMARY")
-    log.info("=" * 60)
-    for ds_name, accs in all_accuracies.items():
-        log.info(f"  {ds_name}:")
-        for cond, acc in accs.items():
-            log.info(f"    {CONDITION_LABELS[cond]}: {acc:.1%}")
-
-    plot_accuracy_comparison(all_accuracies, output_dir / "roundtrip_accuracy.png")
-
-    # Save summary JSON
-    summary = {
-        ds: {cond: float(acc) for cond, acc in accs.items()}
-        for ds, accs in all_accuracies.items()
-    }
-    with open(output_dir / "roundtrip_summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
-
-    log.info(f"\n  All outputs saved to: {output_dir}")
-    log.info("=== Round-Trip Experiment Complete ===")
+    (output_dir / "roundtrip_summary.json").write_text(
+        json.dumps(summary, indent=2)
+    )
+    log.info("\n=== Done. Outputs under %s ===", output_dir)
 
 
 if __name__ == "__main__":
