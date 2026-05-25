@@ -106,6 +106,107 @@ def _clf_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     return out
 
 
+def _info_metrics(c: np.ndarray, c_hat: np.ndarray) -> dict:
+    """Permutation-invariant clustering-comparison metrics.
+
+    Treats ``c`` and ``ĉ`` as two labelings of the same frames and asks:
+    *given c, can you predict ĉ — regardless of label identity?* Insensitive
+    to a consistent relabeling of codes (which presence/per-frame call a
+    total failure but is really perfect information preservation).
+
+    - ``nmi``: normalized mutual information (0 = independent, 1 = same up
+      to permutation). Not chance-corrected.
+    - ``ami``: adjusted mutual information — NMI minus the chance baseline.
+      Comparable across pairs with different code counts.
+    - ``ari``: adjusted Rand index — pair-counting variant of AMI.
+    - ``hungarian_accuracy``: after the optimal permutation of ĉ's labels
+      onto c's labels, what fraction of frames match? An interpretable
+      "what if relabeling were allowed" version of per-frame accuracy.
+    """
+    from scipy.optimize import linear_sum_assignment
+    from sklearn.metrics import (
+        adjusted_mutual_info_score,
+        adjusted_rand_score,
+        normalized_mutual_info_score,
+    )
+
+    yt = np.asarray(c).ravel()
+    yp = np.asarray(c_hat).ravel()
+    valid = (yt >= 0) & (yp >= 0)
+    yt, yp = yt[valid], yp[valid]
+    if yt.size == 0:
+        return {"nmi": 0.0, "ami": 0.0, "ari": 0.0,
+                "hungarian_accuracy": 0.0, "n_frames": 0}
+
+    nmi = float(normalized_mutual_info_score(yt, yp))
+    ami = float(adjusted_mutual_info_score(yt, yp))
+    ari = float(adjusted_rand_score(yt, yp))
+
+    # Hungarian: permute ĉ's labels onto c's labels to maximize agreement.
+    c_lbls = np.unique(yt)
+    h_lbls = np.unique(yp)
+    c_idx = {int(v): i for i, v in enumerate(c_lbls)}
+    h_idx = {int(v): i for i, v in enumerate(h_lbls)}
+    n = max(len(c_lbls), len(h_lbls))
+    cm = np.zeros((n, n), dtype=np.int64)
+    for a, b in zip(yt.tolist(), yp.tolist()):
+        cm[c_idx[int(a)], h_idx[int(b)]] += 1
+    row_ind, col_ind = linear_sum_assignment(-cm)
+    hungarian = float(cm[row_ind, col_ind].sum() / yt.size)
+
+    return {"nmi": nmi, "ami": ami, "ari": ari,
+            "hungarian_accuracy": hungarian,
+            "n_frames": int(yt.size)}
+
+
+def _presence_metrics(c: np.ndarray, c_hat: np.ndarray) -> dict:
+    """Code-presence metric: did the segmenter detect the codes used to
+    construct the generation? Ignores timing, duration, and ordering — the
+    fair question is "is each code that drove the rollout present anywhere
+    in ĉ?" Per-frame accuracy is a much stricter sibling that conflates
+    code-information loss with GRU-settling transient, argmin jitter, and
+    one-frame shifts.
+
+    Args:
+        c: input/instructing codes (per-frame). -1 entries dropped.
+        c_hat: re-segmented codes (per-frame). -1 entries dropped.
+
+    Returns:
+        - presence_recall    = |set(c) ∩ set(ĉ)| / |set(c)|  (asked-for codes seen)
+        - presence_precision = |set(c) ∩ set(ĉ)| / |set(ĉ)|  (ĉ stays on script)
+        - presence_f1        = harmonic mean of the two
+        - weighted_recall    = fraction of c's *frames* whose code is in set(ĉ),
+                               so missing a frequently-used code costs more.
+        - n_codes_c, n_codes_chat, n_overlap: set sizes for context.
+    """
+    c = np.asarray(c).ravel()
+    ch = np.asarray(c_hat).ravel()
+    c_vals = c[c >= 0]
+    ch_vals = ch[ch >= 0]
+    cs = set(int(x) for x in c_vals)
+    chs = set(int(x) for x in ch_vals)
+    overlap = cs & chs
+    tp = len(overlap)
+    precision = (tp / len(chs)) if chs else 0.0
+    recall = (tp / len(cs)) if cs else 0.0
+    f1 = ((2 * precision * recall) / (precision + recall)
+          if (precision + recall) else 0.0)
+    if c_vals.size:
+        present_mask = np.isin(c_vals, np.asarray(sorted(chs), dtype=c_vals.dtype))
+        weighted_recall = float(present_mask.mean())
+    else:
+        weighted_recall = 0.0
+    return {
+        "presence_precision": float(precision),
+        "presence_recall": float(recall),
+        "presence_f1": float(f1),
+        "weighted_recall": weighted_recall,
+        "n_codes_c": len(cs),
+        "n_codes_chat": len(chs),
+        "n_overlap": tp,
+    }
+
+
 def _confusion(y_true: np.ndarray, y_pred: np.ndarray, num_codes: int) -> np.ndarray:
     """Fixed-size ``(num_codes, num_codes)`` confusion matrix (valid frames)."""
     from sklearn.metrics import confusion_matrix
@@ -189,6 +290,39 @@ def _plot_bars(labels: list[str], values: list[float], title: str,
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.set_ylim(0, 1.1)
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    fig.savefig(path.with_suffix(".svg"), bbox_inches="tight", transparent=True)
+    plt.close(fig)
+
+
+def _plot_grouped_bars(labels: list[str], groups: dict[str, list[float]],
+                       title: str, ylabel: str, path: Path) -> None:
+    """Grouped bar chart: N pairs across the x-axis, M bars per pair."""
+    set_nature_style()
+    keys = list(groups.keys())
+    n = len(labels)
+    m = len(keys)
+    bar_width = 0.8 / max(m, 1)
+    palette = [NATURE_COLORS["blue"], NATURE_COLORS["orange"],
+               NATURE_COLORS["green"], NATURE_COLORS["purple"]]
+    fig, ax = plt.subplots(figsize=(1.1 * n + 1.6, 3.0))
+    x = np.arange(n)
+    for i, (key, vals) in enumerate(groups.items()):
+        offset = (i - (m - 1) / 2) * bar_width
+        bars = ax.bar(
+            x + offset, vals, bar_width, color=palette[i % len(palette)],
+            edgecolor="none", label=key,
+        )
+        for bar, v in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                    f"{v:.2f}", ha="center", va="bottom", fontsize=5.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=20, ha="right")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.set_ylim(0, 1.15)
+    ax.legend(frameon=False, fontsize=7)
     fig.tight_layout()
     fig.savefig(path, dpi=300, bbox_inches="tight")
     fig.savefig(path.with_suffix(".svg"), bbox_inches="tight", transparent=True)
@@ -498,11 +632,13 @@ def _run_stage2(cfg: DictConfig, output_dir: Path, segmenters: dict,
         )
         c = c[:, :ch_len]
 
-        # Metrics: per (clip, repeat), all-frame + transition-masked. The
-        # masked variant drops (a) frames within transient_window of a code
-        # change (GRU settling) and (b) the segmenter's window-padding
-        # boundary frames (replicated edge codes, not independently observed).
-        all_m, masked_m = [], []
+        # Metrics: per (clip, repeat).
+        #   - presence: did each code in c appear anywhere in ĉ? Ignores
+        #     timing/duration/ordering — this is the "fair" round-trip metric.
+        #   - all_frames: strict per-frame ĉ_t == c_t (the harshest metric).
+        #   - transition_masked: per-frame with the GRU-settling transient and
+        #     the segmenter's window-padding boundary frames dropped.
+        all_m, masked_m, presence_m, info_m = [], [], [], []
         cm = np.zeros((seg.num_codes, seg.num_codes), dtype=np.int64)
         dist_pool, correct_pool = [], []
         bnd_lo, bnd_hi = seg.boundary_pad
@@ -513,6 +649,8 @@ def _run_stage2(cfg: DictConfig, output_dir: Path, segmenters: dict,
             dist = _dist_since_transition(c[ci])
             for rep in range(n_rollout_repeats):
                 ch = c_hat[ci, rep]
+                presence_m.append(_presence_metrics(c[ci], ch))
+                info_m.append(_info_metrics(c[ci], ch))
                 all_m.append(_clf_metrics(c[ci], ch))
                 masked_m.append(_clf_metrics(c[ci][keep], ch[keep]))
                 cm += _confusion(c[ci], ch, seg.num_codes)
@@ -521,6 +659,8 @@ def _run_stage2(cfg: DictConfig, output_dir: Path, segmenters: dict,
                 correct_pool.append((c[ci] == ch)[valid])
 
         pair_summary = {
+            "presence": _mean_std_dicts(presence_m),
+            "information": _mean_std_dicts(info_m),
             "all_frames": _mean_std_dicts(all_m),
             "transition_masked": _mean_std_dicts(masked_m),
             "n_clips": n_clips,
@@ -557,10 +697,36 @@ def _run_stage2(cfg: DictConfig, output_dir: Path, segmenters: dict,
 
     if summary:
         labels = list(summary.keys())
+        prec = [summary[t]["presence"].get("presence_precision", 0.0)
+                for t in labels]
+        rec = [summary[t]["presence"].get("presence_recall", 0.0)
+               for t in labels]
+        f1 = [summary[t]["presence"].get("presence_f1", 0.0)
+              for t in labels]
+        _plot_grouped_bars(
+            labels, {"precision": prec, "recall": rec, "F1": f1},
+            "Stage 2 — round-trip code presence",
+            "set-level metric (over codes used in each clip)",
+            output_dir / "stage2_presence.png",
+        )
+        # Permutation-invariant clustering measures (label-id independent).
+        nmi = [summary[t]["information"].get("nmi", 0.0) for t in labels]
+        ami = [summary[t]["information"].get("ami", 0.0) for t in labels]
+        ari = [summary[t]["information"].get("ari", 0.0) for t in labels]
+        hung = [summary[t]["information"].get("hungarian_accuracy", 0.0)
+                for t in labels]
+        _plot_grouped_bars(
+            labels,
+            {"NMI": nmi, "AMI": ami, "ARI": ari, "Hungarian-acc": hung},
+            "Stage 2 — round-trip information (permutation-invariant)",
+            "score (1.0 = same up to relabeling)",
+            output_dir / "stage2_information.png",
+        )
+        # Keep the strict per-frame view as a secondary plot for reference.
         values = [summary[t]["transition_masked"].get("accuracy", 0.0)
                   for t in labels]
         _plot_bars(labels, values,
-                   "Stage 2 — round-trip fidelity (transition-masked)",
+                   "Stage 2 — per-frame accuracy (strict, transition-masked)",
                    "per-frame accuracy", output_dir / "stage2_accuracy.png")
     return summary
 
