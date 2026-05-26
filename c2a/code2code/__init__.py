@@ -27,6 +27,7 @@ caller sets ``code2code.reward_mode != "off"`` with a KPMS code source.
 """
 
 from c2a.code2code.adapter_base import C2CTokenizerAdapter
+from c2a.code2code.ps_vqvae_adapter import PSVQVAEAdapter
 from c2a.code2code.vqvae_adapter import VQVAEAdapter
 
-__all__ = ["C2CTokenizerAdapter", "VQVAEAdapter"]
+__all__ = ["C2CTokenizerAdapter", "PSVQVAEAdapter", "VQVAEAdapter"]
