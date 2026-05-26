@@ -48,7 +48,9 @@ from c2a.moseq_ppo_networks import (
 )
 from c2a.moseq_ppo import train as moseq_train
 from c2a.moseq_env_wrapper import MoSeqImitation
-from c2a.codegen.code_sources import load_codes
+from c2a.codegen.code_sources import (
+    SOURCE_KINEMATICS_VAE, SOURCE_PS_VQVAE, SOURCE_VQVAE, load_codes,
+)
 
 
 def _setup_environment() -> None:
@@ -375,6 +377,229 @@ def moseq_rollout_logging_fn(
         )
 
 
+# ---------------------------------------------------------------------------
+# code2code reward-mode plumbing
+# ---------------------------------------------------------------------------
+
+
+def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
+    """Build the c2c_* kwargs for :class:`MoSeqImitation`.
+
+    Loads the configured tokenizer adapter, validates code-source
+    compatibility, auto-calibrates τ if requested, and returns a dict
+    of kwargs to splat into ``MoSeqImitation(**c2c_kwargs)``. When
+    ``code2code.reward_mode == "off"``, returns an empty dict — env
+    behavior is bit-equivalent to the pre-c2c default.
+
+    Args:
+        cfg: Full Hydra cfg.
+        payload: ``CodesPayload`` from :func:`load_codes`.
+        codes_path: Resolved path to the codes npz (for PS-VQVAE
+            group-size lookup).
+
+    Returns:
+        Dict of c2c_* kwargs. Empty when c2c is disabled.
+
+    Raises:
+        ValueError: incompatible code source for c2c, missing tokenizer
+            ckpt, codebook-size mismatch.
+        NotImplementedError: tokenizer_kind not in
+            {vae, vqvae, ps_vqvae}.
+    """
+    c2c_cfg = cfg.get("code2code", None)
+    if c2c_cfg is None:
+        return {}
+    reward_mode = str(c2c_cfg.get("reward_mode", "off"))
+    if reward_mode == "off":
+        return {}
+
+    # code2code only supports neural tokenizers (VAE / VQVAE / PS-VQVAE).
+    # KPMS / gt_directional_turn can't run inside the env step
+    # (see scratch/2026-05-26-code2code-mode/README.md §5).
+    if payload.code_source not in (
+        SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE,
+    ):
+        raise ValueError(
+            f"code2code.reward_mode={reward_mode!r} requires a neural "
+            f"tokenizer code source (kinematics_vae / vqvae / ps_vqvae). "
+            f"Got code_source={payload.code_source!r}. Either set "
+            f"code2code.reward_mode: off or switch to a neural code source."
+        )
+
+    tokenizer_kind = c2c_cfg.get("tokenizer_kind", None)
+    if tokenizer_kind is None:
+        raise ValueError(
+            "code2code.reward_mode != 'off' requires "
+            "code2code.tokenizer_kind to be one of 'vae'/'vqvae'/'ps_vqvae'."
+        )
+    tokenizer_ckpt = c2c_cfg.get("tokenizer_ckpt", None)
+    if tokenizer_ckpt is None:
+        raise ValueError(
+            "code2code.reward_mode != 'off' requires "
+            "code2code.tokenizer_ckpt to point to the tokenizer step dir."
+        )
+    ckpt_p = Path(str(tokenizer_ckpt))
+    if not ckpt_p.is_absolute():
+        ckpt_p = get_repo_root() / ckpt_p
+    if not ckpt_p.exists():
+        raise FileNotFoundError(
+            f"code2code.tokenizer_ckpt={tokenizer_ckpt} does not resolve "
+            f"to an existing directory (tried {ckpt_p})."
+        )
+
+    arch_cfg = c2c_cfg.get("vqvae_arch", {})
+    arch_kwargs = dict(
+        n_joints=int(arch_cfg.get("n_joints", 67)),
+        use_qvel=bool(arch_cfg.get("use_qvel", False)),
+        window_len=int(arch_cfg.get("window_len", 10)),
+        horizon=int(arch_cfg.get("horizon", 5)),
+        conv_channels=tuple(arch_cfg.get("conv_channels", [64, 128, 256])),
+        conv_kernel_size=int(arch_cfg.get("conv_kernel_size", 3)),
+        conv_head_layers=tuple(arch_cfg.get("conv_head_layers", [256])),
+        decoder_layer_sizes=tuple(arch_cfg.get("decoder_layer_sizes", [256, 256, 256])),
+    )
+
+    if tokenizer_kind == "vqvae":
+        from c2a.code2code import VQVAEAdapter
+        adapter = VQVAEAdapter.from_ckpt_dir(ckpt_p, **arch_kwargs)
+
+    elif tokenizer_kind == "ps_vqvae":
+        from c2a.code2code import PSVQVAEAdapter
+        # Group sizes can come from the config OR from the codes npz.
+        gd = c2c_cfg.get("ps_group_dims", None)
+        gks = c2c_cfg.get("ps_group_codebook_sizes", None)
+        if gd is None or gks is None:
+            if codes_path is None:
+                raise ValueError(
+                    "PS-VQ-VAE c2c adapter requires ps_group_dims and "
+                    "ps_group_codebook_sizes either set in cfg.code2code "
+                    "or available in the codes npz; neither was found."
+                )
+            data = np.load(str(codes_path), allow_pickle=False)
+            if "ps_group_dims" not in data or "ps_group_codebook_sizes" not in data:
+                raise RuntimeError(
+                    f"PS-VQ-VAE codes npz at {codes_path} is missing "
+                    f"ps_group_dims or ps_group_codebook_sizes; cannot "
+                    f"build PS-VQ-VAE c2c adapter without them."
+                )
+            gd = tuple(int(d) for d in data["ps_group_dims"])
+            gks = tuple(int(k) for k in data["ps_group_codebook_sizes"])
+        else:
+            gd = tuple(int(d) for d in gd)
+            gks = tuple(int(k) for k in gks)
+        adapter = PSVQVAEAdapter.from_ckpt_dir(
+            ckpt_p, group_dims=gd, group_codebook_sizes=gks, **arch_kwargs,
+        )
+
+    elif tokenizer_kind == "vae":
+        from c2a.code2code import VAEAdapter
+        vae_pkl = c2c_cfg.get("vae_tokenizer_pkl", None)
+        if vae_pkl is None:
+            raise ValueError(
+                "code2code.tokenizer_kind='vae' requires "
+                "code2code.vae_tokenizer_pkl to be set."
+            )
+        vae_pkl_p = Path(str(vae_pkl))
+        if not vae_pkl_p.is_absolute():
+            vae_pkl_p = get_repo_root() / vae_pkl_p
+        if not vae_pkl_p.exists():
+            raise FileNotFoundError(
+                f"code2code.vae_tokenizer_pkl={vae_pkl} does not resolve "
+                f"(tried {vae_pkl_p})."
+            )
+        adapter = VAEAdapter.from_ckpt_dir(
+            ckpt_p, tokenizer_pkl=vae_pkl_p, **arch_kwargs,
+        )
+
+    else:
+        raise NotImplementedError(
+            f"code2code.tokenizer_kind={tokenizer_kind!r} not implemented; "
+            f"expected one of: vae, vqvae, ps_vqvae"
+        )
+
+    # Codebook-size consistency: the tokenizer's K must match what the
+    # codes npz reports (silent mismatch = garbage targets).
+    if adapter.codebook_size != int(payload.num_codes):
+        raise RuntimeError(
+            f"code2code adapter codebook_size={adapter.codebook_size} "
+            f"!= payload.num_codes={payload.num_codes}. The tokenizer "
+            f"ckpt and codes_path must come from the same training run."
+        )
+
+    # Temperature: auto-calibrate, or use the user-specified scalar.
+    temp_cfg = c2c_cfg.get("temperature", "auto")
+    distance_form = str(c2c_cfg.get("distance_form", "cosine"))
+    if str(temp_cfg) == "auto":
+        from c2a.code2code.calibrate import calibrate_temperature
+
+        ref_h5 = cfg.env_config.reference_data_path
+        clip_length = int(cfg.env_config.clip_length)
+        # Pull reference qpos and codes for calibration. We use the
+        # training-split clips + codes (a subset is fine).
+        import h5py
+
+        with h5py.File(ref_h5, "r") as f:
+            qpos_flat = f["qpos"][:]
+        n_total = qpos_flat.shape[0] // clip_length
+        clipped = qpos_flat[: n_total * clip_length].reshape(
+            n_total, clip_length, -1,
+        ).astype(np.float32)
+        # payload.train_codes is aligned to train_clips row order; we
+        # can use it directly. clipped is in original H5 order, so we
+        # need to subset by train_indices to align.
+        train_inds = None
+        try:
+            with open(cfg.env_config.balanced_split_path) as f:
+                splits = json.load(f)
+            train_inds = np.array(
+                splits["balanced"]["train_indices"], dtype=np.int64,
+            )
+        except Exception:
+            train_inds = np.arange(payload.train_codes.shape[0])
+        cal_qpos = clipped[train_inds[: int(c2c_cfg.get("calibrate_n_clips", 50))]]
+        cal_codes = payload.train_codes[
+            : int(c2c_cfg.get("calibrate_n_clips", 50))
+        ]
+        _, tau = calibrate_temperature(
+            adapter,
+            ref_qpos=cal_qpos,
+            target_codes=cal_codes,
+            distance_form=distance_form,  # type: ignore[arg-type]
+            target_initial_reward=float(
+                c2c_cfg.get("calibrate_target_reward", 0.3)
+            ),
+            n_clips_sample=int(c2c_cfg.get("calibrate_n_clips", 50)),
+            n_windows_per_clip=int(c2c_cfg.get("calibrate_n_windows_per_clip", 8)),
+        )
+        temperature = float(tau)
+    else:
+        temperature = float(temp_cfg)
+
+    logging.info(
+        "code2code reward mode: %s, tokenizer_kind=%s, ckpt=%s, "
+        "K=%d, code_dim=%d, distance=%s, reward_form=%s, tau=%.4f, "
+        "alpha=%.3f, track_weight=%.3f, replace_alive_bonus=%.3f",
+        reward_mode, tokenizer_kind, ckpt_p,
+        adapter.codebook_size, adapter.code_dim,
+        distance_form, str(c2c_cfg.get("reward_form", "exp_neg_distance")),
+        temperature,
+        float(c2c_cfg.get("alpha", 0.5)),
+        float(c2c_cfg.get("track_weight", 1.0)),
+        float(c2c_cfg.get("replace_alive_bonus", 0.0)),
+    )
+
+    return dict(
+        c2c_adapter=adapter,
+        c2c_alpha=float(c2c_cfg.get("alpha", 0.5)),
+        c2c_track_weight=float(c2c_cfg.get("track_weight", 1.0)),
+        c2c_temperature=temperature,
+        c2c_distance_form=distance_form,  # type: ignore[arg-type]
+        c2c_reward_form=str(c2c_cfg.get("reward_form", "exp_neg_distance")),  # type: ignore[arg-type]
+        c2c_reward_mode=reward_mode,  # type: ignore[arg-type]
+        c2c_replace_alive_bonus=float(c2c_cfg.get("replace_alive_bonus", 0.0)),
+    )
+
+
 @hydra.main(version_base=None, config_path="configs", config_name="moseq_decoder")
 def main(cfg: DictConfig) -> None:
     """Main MoSeq decoder training entry point."""
@@ -495,6 +720,17 @@ def main(cfg: DictConfig) -> None:
     # Code stack size: how many consecutive codes to give the decoder
     code_stack_size = int(cfg.network_config.get("code_stack_size", 1))
 
+    # ------------------------------------------------------------------
+    # code2code reward mode: optional frozen-tokenizer reward shaping
+    # ------------------------------------------------------------------
+    # When enabled, an instance of c2a.code2code.C2CTokenizerAdapter is
+    # constructed from the configured tokenizer ckpt and threaded into
+    # MoSeqImitation. The env computes the code-match reward at every
+    # step. The adapter is NEVER part of the policy params and PPO
+    # never updates it — see scratch/2026-05-26-code2code-mode/
+    # design-A-reward-shaping.md for the architectural rationale.
+    c2c_kwargs = _build_c2c_env_kwargs(cfg, payload, codes_path)
+
     # MoSeqImitation overrides _get_obs to inject kpms_code, flatten nested
     # obs, and strip the "state" hierarchy — all inline. No wrapper chain
     # needed, since BraxDomainRandomizationVmapWrapper bypasses wrappers
@@ -502,10 +738,12 @@ def main(cfg: DictConfig) -> None:
     env = MoSeqImitation(
         config=env_cfg_ml, clips=train_clips, kpms_codes=train_codes,
         code_stack_size=code_stack_size,
+        **c2c_kwargs,
     )
     test_env = MoSeqImitation(
         config=env_cfg_ml, clips=test_clips, kpms_codes=test_codes,
         code_stack_size=code_stack_size,
+        **c2c_kwargs,
     )
 
     logging.info(f"Environment config: {cfg.env_config}")
@@ -916,6 +1154,7 @@ def main(cfg: DictConfig) -> None:
     rollout_env = MoSeqImitation(
         config=rollout_cfg, clips=test_clips, kpms_codes=test_codes,
         code_stack_size=code_stack_size,
+        **c2c_kwargs,
     )
 
     jit_reset = jax.jit(rollout_env.reset)
@@ -988,6 +1227,13 @@ def main(cfg: DictConfig) -> None:
                 "distill_mean_norm", "distill_logvar_mean",
             ):
                 grouped[f"distillation/{k}"] = v
+            elif k.startswith("c2c_") or k.startswith("c2c/"):
+                # code2code reward-mode diagnostics emitted from the env
+                # via state.info (c2c_reward, c2c_distance,
+                # c2c_discrete_match, c2c_track_reward). Surface them
+                # under the c2c/ WandB group.
+                key = k if k.startswith("c2c/") else f"c2c/{k[4:]}"
+                grouped[key] = v
             # Keep originals for backward compat with shared code
             grouped[k] = v
         wandb_logging.wandb_progress(num_steps, grouped)
