@@ -193,14 +193,25 @@ class MoSeqImitation(Imitation):
 
         new_info = dict(state.info)
         new_info["motion_window"] = buf
-        # episode_* prefix is required for track-mjx's eval aggregator
-        # to surface these scalars in the eval metrics dict (they're
-        # otherwise dropped because track-mjx only collects keys that
-        # match its episode-reward conventions).
+        # Mirror the c2c scalars in state.info for any per-step
+        # consumer that inspects raw env output.
         new_info["episode_c2c_reward"] = jnp.float32(0.0)
         new_info["episode_c2c_distance"] = jnp.float32(0.0)
         new_info["episode_c2c_discrete_match"] = jnp.float32(0.0)
         new_info["episode_c2c_track_reward"] = state.reward.astype(jnp.float32)
+
+        # Adding the c2c keys to state.metrics is what surfaces them in
+        # the WandB eval dict. track-mjx's eval aggregator iterates
+        # state.metrics.keys() at EpisodeWrapper.reset, initializes
+        # state.info['episode_metrics'][k] for each, and accumulates
+        # state.metrics[k] per-step. The aggregator then emits
+        # eval/episode_<k> = mean of (sum of state.metrics[k] over
+        # the episode) across parallel envs.
+        state.metrics["c2c_reward"] = jnp.float32(0.0)
+        state.metrics["c2c_distance"] = jnp.float32(0.0)
+        state.metrics["c2c_discrete_match"] = jnp.float32(0.0)
+        state.metrics["c2c_track_reward"] = state.reward.astype(jnp.float32)
+
         return state.replace(info=new_info)
 
     def step(self, state, action):
@@ -250,11 +261,20 @@ class MoSeqImitation(Imitation):
 
         new_info = dict(state.info)
         new_info["motion_window"] = new_buf
-        new_info["episode_c2c_reward"] = (
-            self._c2c_alpha * match
-        ).astype(jnp.float32)
-        new_info["episode_c2c_distance"] = d.astype(jnp.float32)
+        scaled_reward = (self._c2c_alpha * match).astype(jnp.float32)
+        scaled_distance = d.astype(jnp.float32)
+        track_reward = state.reward.astype(jnp.float32)
+        new_info["episode_c2c_reward"] = scaled_reward
+        new_info["episode_c2c_distance"] = scaled_distance
         new_info["episode_c2c_discrete_match"] = discrete_match
-        new_info["episode_c2c_track_reward"] = state.reward.astype(jnp.float32)
+        new_info["episode_c2c_track_reward"] = track_reward
+
+        # Mirror into state.metrics so EpisodeWrapper accumulates and
+        # the eval aggregator surfaces as eval/episode_c2c_*. See
+        # reset() for the full plumbing comment.
+        state.metrics["c2c_reward"] = scaled_reward
+        state.metrics["c2c_distance"] = scaled_distance
+        state.metrics["c2c_discrete_match"] = discrete_match
+        state.metrics["c2c_track_reward"] = track_reward
 
         return state.replace(reward=new_reward, info=new_info)

@@ -1232,15 +1232,15 @@ def main(cfg: DictConfig) -> None:
                 or k.startswith("c2c/")
                 or "episode_c2c_" in k
             ):
-                # code2code reward-mode diagnostics. Emitted from the
-                # env via state.info as episode_c2c_*, then aggregated
-                # by track-mjx into eval/episode_c2c_* and
-                # eval/test_set/episode_c2c_*. We route all of those
-                # plus the raw c2c_* training metrics into the c2c/
-                # WandB group.
+                # code2code reward-mode diagnostics. The env writes
+                # c2c_* into state.metrics so track-mjx accumulates
+                # them and the eval aggregator surfaces them as
+                # eval/episode_c2c_*  (train rollouts) and
+                # eval/test_set/episode_c2c_*  (test rollouts).
+                # We also accept training/episode_c2c_*  and raw
+                # c2c_* (from the loss path, if any future addition).
+                # All of them route into the c2c/ WandB panel group.
                 if "episode_c2c_" in k:
-                    # eval/episode_c2c_reward -> c2c/eval/reward
-                    # eval/test_set/episode_c2c_reward -> c2c/eval_test/reward
                     short = k.split("episode_c2c_", 1)[1]
                     if k.startswith("eval/test_set/"):
                         key = f"c2c/eval_test/{short}"
