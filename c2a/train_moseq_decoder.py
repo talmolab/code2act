@@ -1227,12 +1227,29 @@ def main(cfg: DictConfig) -> None:
                 "distill_mean_norm", "distill_logvar_mean",
             ):
                 grouped[f"distillation/{k}"] = v
-            elif k.startswith("c2c_") or k.startswith("c2c/"):
-                # code2code reward-mode diagnostics emitted from the env
-                # via state.info (c2c_reward, c2c_distance,
-                # c2c_discrete_match, c2c_track_reward). Surface them
-                # under the c2c/ WandB group.
-                key = k if k.startswith("c2c/") else f"c2c/{k[4:]}"
+            elif (
+                k.startswith("c2c_")
+                or k.startswith("c2c/")
+                or "episode_c2c_" in k
+            ):
+                # code2code reward-mode diagnostics. Emitted from the
+                # env via state.info as episode_c2c_*, then aggregated
+                # by track-mjx into eval/episode_c2c_* and
+                # eval/test_set/episode_c2c_*. We route all of those
+                # plus the raw c2c_* training metrics into the c2c/
+                # WandB group.
+                if "episode_c2c_" in k:
+                    # eval/episode_c2c_reward -> c2c/eval/reward
+                    # eval/test_set/episode_c2c_reward -> c2c/eval_test/reward
+                    short = k.split("episode_c2c_", 1)[1]
+                    if k.startswith("eval/test_set/"):
+                        key = f"c2c/eval_test/{short}"
+                    elif k.startswith("eval/"):
+                        key = f"c2c/eval/{short}"
+                    else:
+                        key = f"c2c/{short}"
+                else:
+                    key = k if k.startswith("c2c/") else f"c2c/{k[4:]}"
                 grouped[key] = v
             # Keep originals for backward compat with shared code
             grouped[k] = v

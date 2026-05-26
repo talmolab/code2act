@@ -193,10 +193,14 @@ class MoSeqImitation(Imitation):
 
         new_info = dict(state.info)
         new_info["motion_window"] = buf
-        new_info["c2c_reward"] = jnp.float32(0.0)
-        new_info["c2c_distance"] = jnp.float32(0.0)
-        new_info["c2c_discrete_match"] = jnp.float32(0.0)
-        new_info["c2c_track_reward"] = state.reward.astype(jnp.float32)
+        # episode_* prefix is required for track-mjx's eval aggregator
+        # to surface these scalars in the eval metrics dict (they're
+        # otherwise dropped because track-mjx only collects keys that
+        # match its episode-reward conventions).
+        new_info["episode_c2c_reward"] = jnp.float32(0.0)
+        new_info["episode_c2c_distance"] = jnp.float32(0.0)
+        new_info["episode_c2c_discrete_match"] = jnp.float32(0.0)
+        new_info["episode_c2c_track_reward"] = state.reward.astype(jnp.float32)
         return state.replace(info=new_info)
 
     def step(self, state, action):
@@ -246,9 +250,11 @@ class MoSeqImitation(Imitation):
 
         new_info = dict(state.info)
         new_info["motion_window"] = new_buf
-        new_info["c2c_reward"] = (self._c2c_alpha * match).astype(jnp.float32)
-        new_info["c2c_distance"] = d.astype(jnp.float32)
-        new_info["c2c_discrete_match"] = discrete_match
-        new_info["c2c_track_reward"] = state.reward.astype(jnp.float32)
+        new_info["episode_c2c_reward"] = (
+            self._c2c_alpha * match
+        ).astype(jnp.float32)
+        new_info["episode_c2c_distance"] = d.astype(jnp.float32)
+        new_info["episode_c2c_discrete_match"] = discrete_match
+        new_info["episode_c2c_track_reward"] = state.reward.astype(jnp.float32)
 
         return state.replace(reward=new_reward, info=new_info)
