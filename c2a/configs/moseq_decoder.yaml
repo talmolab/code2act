@@ -237,6 +237,73 @@ train_setup:
     deterministic_eval: true
 
 # =============================================================================
+# code2code reward mode (optional)
+# =============================================================================
+# When ``code2code.reward_mode != off``, the env runs the frozen
+# tokenizer on the rollout motion at every step and shapes the reward
+# by the distance between the encoded z and the codebook entry for the
+# target code. Encoder + codebook stay FROZEN — PPO never updates
+# them. This is fundamentally different from the (removed) e2e_mode,
+# which let PPO drift the codebook into a private control basis.
+#
+# Requirements:
+#   - kpms_config.code_source must be 'kinematics_vae' | 'vqvae' | 'ps_vqvae'.
+#     KPMS / gt_directional_turn raise NotSupportedError.
+#   - The tokenizer_ckpt and kpms_config.codes_path MUST come from the
+#     same training run (codebook-size match is asserted at startup).
+#
+# See scratch/2026-05-26-code2code-mode/design-A-reward-shaping.md.
+code2code:
+  reward_mode: off              # off | additive | replace
+  tokenizer_kind: null          # vae | vqvae | ps_vqvae
+  tokenizer_ckpt: null          # path to the tokenizer step_NNNNN dir
+
+  # Mix weights (literature: AMP convention is track=0.5, alpha=0.5;
+  # this conservative default keeps tracking dominant)
+  alpha: 0.5                    # weight on the code-match term
+  track_weight: 1.0             # weight on the existing tracking reward
+                                # in additive mode (ignored in replace)
+  replace_alive_bonus: 0.0      # constant per-step bonus in replace
+                                # mode (suggest 0.1 for a soft floor)
+
+  # Reward shape — see literature.md §"Design implications"
+  reward_form: exp_neg_distance # exp_neg_distance | neg_distance
+  distance_form: cosine         # cosine (CALM default) | l2
+
+  # Temperature for exp_neg_distance. "auto" calls
+  # calibrate_temperature(tokenizer, ref_clips) at startup to set τ
+  # such that the initial reward ≈ 0.3 (mid-saturation). Override
+  # with a float for manual control.
+  temperature: auto
+  calibrate_target_reward: 0.3
+  calibrate_n_clips: 50
+  calibrate_n_windows_per_clip: 8
+
+  # VAE-only: path to the tokenizer.pkl with K-Means centroids
+  vae_tokenizer_pkl: null
+
+  # VQVAE / PS-VQVAE: encoder/decoder architecture knobs (must match
+  # the ckpt's training-time config). Same shape as the
+  # (now-removed) e2e_config.vqvae_arch.
+  vqvae_arch:
+    n_joints: 67
+    use_qvel: false
+    window_len: 10
+    horizon: 5
+    conv_channels: [64, 128, 256]
+    conv_kernel_size: 3
+    conv_head_layers: [256]
+    decoder_layer_sizes: [256, 256, 256]
+
+  # PS-VQVAE-only: per-group codebook structure. Pulled from the
+  # tokenizer's best_codes.npz (ps_group_dims +
+  # ps_group_codebook_sizes) when null.
+  ps_group_dims: null
+  ps_group_codebook_sizes: null
+
+  log_diagnostics: true         # emit c2c/* WandB metrics every step
+
+# =============================================================================
 # Logging Configuration
 # =============================================================================
 logging_config:
