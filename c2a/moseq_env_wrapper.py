@@ -235,11 +235,15 @@ class MoSeqImitation(Imitation):
         c_target = jnp.round(state.obs["kpms_code"][..., 0]).astype(jnp.int32)
 
         # 4. Distance + match score.
+        # Guard against NaN z (from NaN qpos during physics failure): replace
+        # the match score with 0 so the reward stays finite and gradients are
+        # clean.  The episode is already being terminated by nan_termination,
+        # so a zero match is the correct reward for a degenerate step.
         d = adapter.distance(z, c_target, distance_form=self._c2c_distance_form)
         if self._c2c_reward_form == "exp_neg_distance":
-            match = jnp.exp(-d / self._c2c_temperature)
+            match = jnp.nan_to_num(jnp.exp(-d / self._c2c_temperature), nan=0.0)
         else:  # "neg_distance"
-            match = -d
+            match = jnp.nan_to_num(-d, nan=0.0)
 
         # 5. Modify reward per reward_mode.
         if self._c2c_reward_mode == "additive":
@@ -256,6 +260,7 @@ class MoSeqImitation(Imitation):
         all_dists = adapter.distances_to_all_codes(
             z, distance_form=self._c2c_distance_form,
         )
+        all_dists = jnp.nan_to_num(all_dists, nan=jnp.inf)
         nearest = jnp.argmin(all_dists)
         discrete_match = (nearest == c_target).astype(jnp.float32)
 

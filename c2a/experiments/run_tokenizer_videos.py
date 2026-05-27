@@ -138,6 +138,64 @@ def _pick_representative_bout(
     return (ci, s, e)
 
 
+def _pick_n_representative_bouts(
+    bouts: list[tuple[int, int, int]],
+    target_duration_frames: int,
+    n: int,
+    *,
+    min_frames: int = 5,
+    max_frames: int = 60,
+) -> list[tuple[int, int, int]]:
+    """Pick exactly ``n`` bouts, preferring distinct clips (diverse motion
+    contexts). Pads with the first qualifying bout when fewer unique
+    bouts qualify so callers always get a fixed-length list.
+    """
+    if not bouts:
+        return []
+    ranked = sorted(
+        bouts, key=lambda b: abs((b[2] - b[1]) - target_duration_frames),
+    )
+
+    def trim(ci_s_e: tuple[int, int, int]) -> tuple[int, int, int] | None:
+        ci, s, e = ci_s_e
+        length = e - s
+        if length < min_frames:
+            return None
+        if length > max_frames:
+            center = (s + e) // 2
+            s = max(0, center - max_frames // 2)
+            e = s + max_frames
+        return (ci, s, e)
+
+    picks: list[tuple[int, int, int]] = []
+    used_clips: set[int] = set()
+    for b in ranked:
+        t = trim(b)
+        if t is None or t[0] in used_clips:
+            continue
+        picks.append(t)
+        used_clips.add(t[0])
+        if len(picks) >= n:
+            break
+    # Backfill with any other qualifying bouts (may reuse a clip).
+    if len(picks) < n:
+        already = set(picks)
+        for b in ranked:
+            t = trim(b)
+            if t is None or t in already:
+                continue
+            picks.append(t)
+            already.add(t)
+            if len(picks) >= n:
+                break
+    # Final recycle if still short of n.
+    if picks and len(picks) < n:
+        first = picks[0]
+        while len(picks) < n:
+            picks.append(first)
+    return picks
+
+
 # =============================================================================
 # MuJoCo renderer (Nature-styled, light background)
 # =============================================================================
@@ -330,46 +388,72 @@ def render_syllable_grid_video(
         log.warning("[%s] no qualifying syllables; skipping grid video", family)
         return
 
-    # Pick representative bout per chosen syllable.
-    picks: list[tuple[int, tuple[int, int, int]]] = []  # (syllable, bout)
+    # Pick 4 representative bouts per chosen syllable — each cell will be
+    # a 2×2 mini-grid of those bouts running in synchronized time.
+    n_sub = 4
+    picks: list[tuple[int, list[tuple[int, int, int]]]] = []
     for c in cand:
-        pick = _pick_representative_bout(
-            bouts[c], target_duration_frames=target_dur_frames,
+        ex = _pick_n_representative_bouts(
+            bouts[c], target_duration_frames=target_dur_frames, n=n_sub,
         )
-        if pick is not None:
-            picks.append((c, pick))
+        if ex:
+            picks.append((c, ex))
     if not picks:
         log.warning("[%s] no representative bouts; skipping grid video", family)
         return
 
     log.info(
-        "[%s] %s — K=%d, grid of %d syllables (max %d), rendering → %s",
+        "[%s] %s — K=%d, grid of %d syllables (max %d), 2x2 sub-grid/cell, "
+        "rendering → %s",
         family, config_label, K, len(picks), max_panels, out_path,
     )
 
-    # Render each bout's frames at cell size; pad/loop to common length L.
+    # Each cell becomes a 2x2 mini-grid of sub-renders. To preserve the
+    # cell's outer aspect ratio we render each sub-frame at HALF the
+    # cell's width and height, then tile into the full cell.
     cell_w, cell_h = cell_size
+    sub_w = max(1, cell_w // 2)
+    sub_h = max(1, cell_h // 2)
+    cell_w = sub_w * 2  # exact cell footprint (drops the odd remainder)
+    cell_h = sub_h * 2
     code_colors = get_code_colormap(max(K, len(picks)))
-    renderer = _Renderer(xml_path=xml_path, height=cell_h, width=cell_w,
+    renderer = _Renderer(xml_path=xml_path, height=sub_h, width=sub_w,
                          distance=0.5, elevation=-22.0, azimuth=90.0)
     per_cell_frames: list[list[np.ndarray]] = []
     per_cell_meta: list[tuple[int, int, int]] = []  # (c, n_frames, n_bouts)
     L = 0
-    for c, (ci, s, e) in picks:
-        frames = []
-        for fi in range(s, e):
-            rgb = renderer.render_qpos(ref_qpos[ci, fi])
-            # Light overlay: code chip in top-left.
-            chip = _draw_code_chip(
-                code_idx=c, color=tuple(int(x) for x in code_colors[c % len(code_colors)]),
-                width=58, height=22, font_size=14,
-            )
-            out = rgb.copy()
-            out[2:2 + chip.shape[0], 2:2 + chip.shape[1]] = chip
-            frames.append(out)
-        per_cell_frames.append(frames)
-        per_cell_meta.append((c, e - s, len(bouts[c])))
-        L = max(L, len(frames))
+    for c, examples in picks:
+        chip = _draw_code_chip(
+            code_idx=c,
+            color=tuple(int(x) for x in code_colors[c % len(code_colors)]),
+            width=42, height=18, font_size=11,
+        )
+        # Render each of the 4 sub-bouts independently.
+        sub_streams: list[list[np.ndarray]] = []
+        for ci, s, e in examples:
+            sub_frames = []
+            for fi in range(s, e):
+                sub_frames.append(renderer.render_qpos(ref_qpos[ci, fi]))
+            sub_streams.append(sub_frames)
+        # Synchronize sub-stream length by looping shorter ones.
+        cell_L = max(len(ss) for ss in sub_streams)
+        for k, ss in enumerate(sub_streams):
+            if len(ss) < cell_L:
+                reps = (cell_L + len(ss) - 1) // len(ss)
+                sub_streams[k] = (ss * reps)[:cell_L]
+        # Compose each timestep as a 2×2 grid; place the code chip in the
+        # top-left of the upper-left sub-cell.
+        composed: list[np.ndarray] = []
+        for fi in range(cell_L):
+            top = np.concatenate([sub_streams[0][fi], sub_streams[1][fi]], axis=1)
+            bot = np.concatenate([sub_streams[2][fi], sub_streams[3][fi]], axis=1)
+            tile = np.concatenate([top, bot], axis=0)
+            tile = tile.copy()
+            tile[2:2 + chip.shape[0], 2:2 + chip.shape[1]] = chip
+            composed.append(tile)
+        per_cell_frames.append(composed)
+        per_cell_meta.append((c, cell_L, len(bouts[c])))
+        L = max(L, cell_L)
 
     # Loop shorter cells to match L.
     for k, frames in enumerate(per_cell_frames):
@@ -386,7 +470,7 @@ def render_syllable_grid_video(
     banner = _draw_banner(
         grid_w,
         f"{FAMILY_TITLES.get(family, family)} — {config_label}  ·  "
-        f"K={K}  ·  showing {len(picks)} syllables (top by usage)",
+        f"K={K}  ·  {len(picks)} syllables × 2×2 examples (top by usage)",
         height=36,
     )
 

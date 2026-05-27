@@ -61,22 +61,29 @@ neural:
     sweep_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae_sweep
 
 # ---------------------------------------------------------------------------
-# Plotting options
+# Purity metric — MMD between within-syllable and across-syllable kinematic
+# distributions, mirroring run_code_distinctness (P1). Selection criterion.
 # ---------------------------------------------------------------------------
-plotting:
-  # Median-duration reference line (the "~400 ms target" from the
-  # reference image's panel 1).
-  duration_target_ms: 400.0
+purity:
+  # Reference data the tokenizers were fit on. Used to map (clip_idx,
+  # start:end) bouts → qpos sequences for the MMD argument.
+  reference_h5: ${paths.reference_h5}
+  n_frames_per_clip: 250
 
-  # Gaussian σ around the duration target used by the Goldilocks
-  # score. 200 ms is ±50% — 200ms or 600ms scores ~0.37; 400ms scores
-  # 1.0.
-  duration_sigma_ms: 200.0
+  # Drop the first 3 qpos dims (root xyz) so MMD compares POSTURE, not
+  # absolute body position in world frame.
+  strip_root: true
 
-  # Heatmap row sorting. Within a family, rows ordered by ascending K.
-  # The columns of the heatmap show frame-frequency RANKS (descending),
-  # so each row's profile is the within-row sorted bar chart.
-  heatmap_norm: per_row_fraction  # per_row_fraction | absolute_count
+  # Number of random (c1, c2) pairs to draw for the across-syllable
+  # distribution per config.
+  n_across_pairs: 30
+
+  # Minimum bouts a syllable needs to enter the within-syllable
+  # split-half computation. Syllables below this threshold are dropped
+  # from purity scoring (but still counted in n_active reports).
+  min_bouts_for_within: 4
+
+  seed: 0
 
 # ---------------------------------------------------------------------------
 # Output dir
