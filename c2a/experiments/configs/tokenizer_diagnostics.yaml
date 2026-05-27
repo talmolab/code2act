@@ -1,0 +1,91 @@
+# Tokenizer diagnostics — produces the kappa-sweep EML curve plus
+# the four image.png metrics across KPMS + neural tokenizer families.
+#
+# Run::
+#
+#     python -m c2a.experiments.run_tokenizer_diagnostics
+#
+defaults:
+  - _self_
+
+# ---------------------------------------------------------------------------
+# Paths (resolved against C2A_ROOT when relative)
+# ---------------------------------------------------------------------------
+paths:
+  c2a_root: ${oc.env:C2A_ROOT,.}
+  reference_h5: ${.c2a_root}/data/rodent/rodent_reference_clips.h5
+
+# ---------------------------------------------------------------------------
+# KPMS sweep — read from sweep_results.json + per-(setting,seed) results.h5
+# ---------------------------------------------------------------------------
+kpms:
+  sweep_root: ${paths.c2a_root}/outputs/tokenizer/kpms_sweep
+  sweep_results_json: ${.sweep_root}/sweep_results.json
+
+  # For the frequency heatmap, pick ONE seed per (n_states, kappa) — the
+  # one used by best-model selection. Default 4 matches the sweep's
+  # picked best.
+  representative_seed: 4
+
+  # Subset to plot in the frequency heatmap. Empty = all (n_states,
+  # kappa) pairs encountered in sweep_results.
+  heatmap_filter:
+    n_states_in: []          # e.g. [15, 20, 30]
+    kappa_in: []             # e.g. [50, 100, 300, 1000]
+
+# ---------------------------------------------------------------------------
+# Neural tokenizers — each family loads codes from best_codes.npz files
+# ---------------------------------------------------------------------------
+neural:
+  fps: 50.0
+
+  vae:
+    family: vae
+    standalone:                  # the top-level (default) ckpt
+      ckpt_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/vae
+      label: k=30 (default)
+    sweep_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/vae_sweep
+
+  vqvae:
+    family: vqvae
+    standalone:
+      ckpt_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae
+      label: k=30 (default)
+    sweep_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae_sweep
+
+  ps_vqvae:
+    family: ps_vqvae
+    standalone:
+      ckpt_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae
+      label: (4,4,4) (default)
+    sweep_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae_sweep
+
+# ---------------------------------------------------------------------------
+# Plotting options
+# ---------------------------------------------------------------------------
+plotting:
+  # Median-duration reference line (the "~400 ms target" from the
+  # reference image's panel 1).
+  duration_target_ms: 400.0
+
+  # Gaussian σ around the duration target used by the Goldilocks
+  # score. 200 ms is ±50% — 200ms or 600ms scores ~0.37; 400ms scores
+  # 1.0.
+  duration_sigma_ms: 200.0
+
+  # Heatmap row sorting. Within a family, rows ordered by ascending K.
+  # The columns of the heatmap show frame-frequency RANKS (descending),
+  # so each row's profile is the within-row sorted bar chart.
+  heatmap_norm: per_row_fraction  # per_row_fraction | absolute_count
+
+# ---------------------------------------------------------------------------
+# Output dir
+# ---------------------------------------------------------------------------
+output:
+  base_dir: ${paths.c2a_root}/outputs/tokenizer_diagnostics
+
+hydra:
+  run:
+    dir: ${output.base_dir}/_hydra
+  job:
+    chdir: false

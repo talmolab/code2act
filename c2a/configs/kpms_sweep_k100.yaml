@@ -1,0 +1,72 @@
+# =============================================================================
+# KPMS K=100 Hyperparameter Sweep — NEW (2026-05-26)
+# =============================================================================
+# K fixed at 100 (Bayesian sticky-HMM uses what it needs from the prior).
+# Sweeps κ across a wider log-spaced range than the previous sweep, and
+# fits BOTH arhmm and full SLDS variants.
+#
+# Output: outputs/tokenizer/kpms_sweep/ (previous K=15/20/30 sweep
+# archived under outputs/tokenizer/legacy/kpms_sweep/).
+#
+# Usage:
+#   python -m c2a.codegen.run_sweep --config c2a/configs/kpms_sweep_k100.yaml
+# =============================================================================
+
+model: kpms
+
+data:
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  stac_xml_path: ${oc.env:C2A_ROOT,.}/c2a/assets/rodent.xml
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  labeled_clip_range: [0, 841]
+  csv_to_h5_subsample: 2
+
+sweep:
+  num_states: [100]
+  # Log-spaced from below to above the predicted 400 ms sweet spot.
+  # Dwell time ≈ κ / (κ + K); at K=100, κ ≈ 1500–3000 hits a 95%
+  # self-transition probability ≈ 20-frame (400 ms) dwell.
+  kappa: [100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+  latent_dim: [10]
+  # Fit BOTH the AR-only HMM and full SLDS. SLDS does the ARHMM warmup
+  # then runs full Bayesian filtering on top (slower but captures
+  # gradual transitions better).
+  model_type: ["arhmm", "slds"]
+  seeds_per_setting: 5
+  ar_iters: 100
+  full_iters: 500
+
+selection:
+  target_duration_ms: 400
+  mocap_hz: 15
+  tolerance_frac: 0.3
+
+output:
+  base_dir: outputs/tokenizer/kpms_sweep
+
+codegen:
+  sweep_results: outputs/tokenizer/kpms_sweep/sweep_results.json
+  balanced_split: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  output: outputs/tokenizer/kpms_sweep/best_codes.npz
+
+auto_render:
+  rank: mse
+  top_k: 5
+  trajectory_plots: true
+  trajectory_plots_kwargs:
+    pre: 0.167
+    post: 0.5
+    min_frequency: 0.0
+    min_duration: 3
+    fps: 30
+    projection_planes: ["xy", "xz"]
+    n_snapshots: 5
+    n_samples_per_syllable: 50
+    keypoint_colormap: autumn
+    save_png: true
+    save_gifs: true
+  syllable_grids: false
+  n_examples: 5
+  bout_strategy: longest
+  format: both

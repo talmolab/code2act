@@ -1,0 +1,64 @@
+# Tokenizer-diagnostics video stage.
+#
+# Run::
+#
+#     python -m c2a.experiments.run_tokenizer_videos
+#
+defaults:
+  - _self_
+
+paths:
+  c2a_root: ${oc.env:C2A_ROOT,.}
+
+input:
+  summary_json: ${paths.c2a_root}/outputs/tokenizer_diagnostics/tokenizer_diagnostics_summary.json
+
+reference:
+  h5_path: ${paths.c2a_root}/data/rodent/rodent_reference_clips.h5
+  n_frames_per_clip: 250
+  fps: 50
+
+renderer:
+  xml_path: ${paths.c2a_root}/c2a/assets/rodent.xml
+  height: 360
+  width: 640
+  # Free-camera tracks the rodent each frame; set `camera` to a fixed
+  # camera name in the XML to override.
+  camera: null
+  distance: 0.5
+  elevation: -20.0
+  azimuth: 90.0
+
+outputs:
+  syllable_grid: true
+  segmentation_overlay: true
+
+  # Per-syllable bout selection (target ~400ms = 20 frames @ 50fps).
+  target_dur_frames: 20
+  min_bouts_per_syllable: 3
+
+  # Grid layout
+  grid_max_panels: 24
+  grid_cell_w: 200
+  grid_cell_h: 160
+
+  # Segmentation overlay layout
+  seg_rodent_w: 720
+  seg_rodent_h: 540
+  bar_height: 38
+  bar_label_width: 220
+  chip_width: 110
+
+  # If empty, pick 5 clips at random using `segmentation_seed`. Set to
+  # a list of int clip ids to override.
+  segmentation_clip_ids: []
+  segmentation_seed: 0
+
+output:
+  base_dir: ${paths.c2a_root}/outputs/tokenizer_diagnostics/video
+
+hydra:
+  run:
+    dir: ${output.base_dir}/_hydra
+  job:
+    chdir: false
