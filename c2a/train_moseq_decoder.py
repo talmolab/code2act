@@ -656,6 +656,28 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     else:
         temperature = float(temp_cfg)
 
+    # ─── Reference-data round-trip integrity check ─────────────────────────
+    # Verify that the runtime encode/lookup pipeline reproduces the
+    # calibration on reference data. Catches: wrong normalizer loaded,
+    # mis-indexed codebook, wrong window-len/rate convention, wrong
+    # encoder weights, etc. This is fail-fast: a misaligned pipeline
+    # cannot be detected during PPO (rewards just look noisy), so we
+    # gate startup on it.
+    from c2a.code2code.calibrate import validate_reference_round_trip
+
+    validate_reference_round_trip(
+        adapter,
+        ref_qpos=cal_qpos,
+        target_codes=cal_codes,
+        tau=temperature,
+        distance_form=distance_form,  # type: ignore[arg-type]
+        reward_form=str(c2c_cfg.get("reward_form", "exp_neg_distance")),
+        expected_reward=float(c2c_cfg.get("calibrate_target_reward", 0.3)),
+        tolerance=float(c2c_cfg.get("integrity_check_tolerance", 0.08)),
+        n_clips_sample=int(c2c_cfg.get("calibrate_n_clips", 50)),
+        n_windows_per_clip=int(c2c_cfg.get("calibrate_n_windows_per_clip", 8)),
+    )
+
     logging.info(
         "code2code reward mode: %s, tokenizer_kind=%s, ckpt=%s, "
         "K=%d, code_dim=%d, distance=%s, reward_form=%s, tau=%.4f, "

@@ -27,8 +27,22 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE2ACT_ROOT="$(dirname "$SCRIPT_DIR")"
-VENV_PYTHON="$CODE2ACT_ROOT/.venv/bin/python"
 export C2A_ROOT="$CODE2ACT_ROOT"
+
+# WandB — caller must supply WANDB_API_KEY in the environment (e.g.,
+# via `wandb login` or a shell-rc export). Do NOT inline a token here:
+# this script is checked into the repo and any token committed becomes
+# leaked the moment it lands in the git history.
+export WANDB_MODE="${WANDB_MODE:-online}"
+if [ -z "${WANDB_API_KEY:-}" ]; then
+  echo "ERROR: WANDB_API_KEY is not set. Run 'wandb login' or export it." >&2
+  exit 1
+fi
+
+# MuJoCo headless rendering
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 # ---------------------------------------------------------------------------
 # Tokenizer (K=25, kl=0.001 — best from the 2026-05-26 VAE sweep)
@@ -50,7 +64,8 @@ done
 # ---------------------------------------------------------------------------
 # Launch
 # ---------------------------------------------------------------------------
-"$VENV_PYTHON" -m c2a.train_moseq_decoder \
+cd "$CODE2ACT_ROOT"
+python3.12 bash_scripts/_pyrun.py c2a.train_moseq_decoder \
     kpms_config.code_source=kinematics_vae \
     kpms_config.codes_path="${CODES_PATH}" \
     code2code.reward_mode=replace \
@@ -59,5 +74,6 @@ done
     code2code.vae_tokenizer_pkl="${VAE_PKL}" \
     code2code.alpha=1.0 \
     code2code.replace_alive_bonus=0.1 \
-    train_setup.run_name=c2c_vae_k25_kl001_replace_distill \
+    network_config.distill_kl_weight=1.0 \
+    train_setup.run_name=c2c_vae_k25_kl001_replace_distill_kl1 \
     "$@"

@@ -148,3 +148,157 @@ def calibrate_temperature(
     )
 
     return median_d, tau
+
+
+def validate_reference_round_trip(
+    adapter: "C2CTokenizerAdapter",
+    ref_qpos: jnp.ndarray,
+    target_codes: jnp.ndarray,
+    *,
+    tau: float,
+    distance_form: DistanceForm = "cosine",
+    reward_form: str = "exp_neg_distance",
+    expected_reward: float = 0.30,
+    tolerance: float = 0.08,
+    n_clips_sample: int = 40,
+    n_windows_per_clip: int = 10,
+    seed: int = 0,
+) -> dict:
+    """Reference-data round-trip integrity check for the c2c reward.
+
+    Feeds mocap-rate reference windows through the (frozen) adapter and
+    verifies that the resulting per-step reward is centered on the
+    calibration target. This catches a class of silent failure modes:
+    wrong normalizer loaded, mis-indexed codebook, wrong window length,
+    wrong feature extraction, mismatched encoder weights, etc.
+
+    Also performs a NEGATIVE control: encode windows with intentionally
+    shuffled target codes (so the codebook entry doesn't correspond to
+    the encoded window) and verify the reward is much lower than the
+    positive case. Without this control, a check that always passes
+    (e.g., because tau is enormous) would never fail.
+
+    Args:
+        adapter: Frozen c2c tokenizer adapter (vae/vqvae/ps_vqvae).
+        ref_qpos: ``(n_clips, n_frames, nq)`` reference qpos at mocap rate.
+        target_codes: ``(n_clips, n_frames)`` precomputed per-frame codes.
+        tau: Temperature from calibrate_temperature.
+        distance_form: must match what the env uses.
+        reward_form: must match what the env uses.
+        expected_reward: target the calibration was tuned to (default 0.30
+            matches ``calibrate_target_reward`` in the base config).
+        tolerance: how far median(reward) is allowed to drift from
+            ``expected_reward`` before raising. Default ±0.08 = roughly
+            one standard error at the sample sizes below.
+        n_clips_sample: number of clips to sample.
+        n_windows_per_clip: number of windows to sample per clip.
+        seed: PRNG seed for sampling.
+
+    Returns:
+        Dict with ``median_distance``, ``median_reward``,
+        ``negative_median_reward``, ``n_samples``, and the
+        positive-vs-negative ``contrast``.
+
+    Raises:
+        AssertionError: if median positive reward is outside
+            ``[expected_reward - tolerance, expected_reward + tolerance]``,
+            OR if the positive-vs-negative contrast is < 0.05 (meaning
+            the check can't distinguish matched from shuffled codes).
+    """
+    ref_qpos = np.asarray(ref_qpos, dtype=np.float32)
+    target_codes = np.asarray(target_codes, dtype=np.int32)
+    n_clips, n_frames = target_codes.shape
+    w = adapter.window_len
+    if n_frames < w:
+        raise ValueError(
+            f"n_frames={n_frames} < window_len={w}; cannot extract a "
+            f"reference window for round-trip validation."
+        )
+
+    rng = np.random.RandomState(int(seed))
+    sample_size = min(int(n_clips_sample), int(n_clips))
+    clip_idx = rng.choice(n_clips, size=sample_size, replace=False)
+
+    @jax.jit
+    def _dist(qpos_window: jnp.ndarray, c: jnp.ndarray) -> jnp.ndarray:
+        z = adapter.encode_from_qpos(qpos_window)
+        return adapter.distance(z, c, distance_form=distance_form)
+
+    pos_rewards: list[float] = []
+    pos_distances: list[float] = []
+    neg_rewards: list[float] = []
+
+    for ci in clip_idx:
+        valid_starts = n_frames - w + 1
+        n_w = min(int(n_windows_per_clip), valid_starts)
+        win_starts = rng.choice(valid_starts, size=n_w, replace=False)
+        for s in win_starts:
+            window = jnp.asarray(ref_qpos[ci, s : s + w])
+            # POSITIVE: codebook entry is the actual code for this window.
+            c_true = jnp.int32(int(target_codes[ci, s + w - 1]))
+            d_pos = float(_dist(window, c_true))
+            pos_distances.append(d_pos)
+            if reward_form == "exp_neg_distance":
+                pos_rewards.append(float(math.exp(-d_pos / tau)))
+            else:
+                pos_rewards.append(-d_pos)
+            # NEGATIVE: codebook entry is a different randomly-chosen
+            # code (with sufficient codes the chance of accidentally
+            # picking c_true is small; we resample if needed).
+            n_codes = adapter.codebook_size
+            c_neg = int(rng.randint(n_codes))
+            while c_neg == int(c_true):
+                c_neg = int(rng.randint(n_codes))
+            d_neg = float(_dist(window, jnp.int32(c_neg)))
+            if reward_form == "exp_neg_distance":
+                neg_rewards.append(float(math.exp(-d_neg / tau)))
+            else:
+                neg_rewards.append(-d_neg)
+
+    if not pos_rewards:
+        raise RuntimeError(
+            "validate_reference_round_trip produced no samples."
+        )
+
+    median_d = float(np.median(pos_distances))
+    median_r = float(np.median(pos_rewards))
+    median_neg_r = float(np.median(neg_rewards))
+    contrast = median_r - median_neg_r
+
+    log.info(
+        "c2c reference round-trip: median_d=%.4f, median_r=%.4f "
+        "(target %.4f ± %.4f); negative_median_r=%.4f; contrast=%.4f",
+        median_d, median_r, expected_reward, tolerance,
+        median_neg_r, contrast,
+    )
+
+    if abs(median_r - expected_reward) > tolerance:
+        raise AssertionError(
+            f"c2c reference round-trip FAILED: median reward "
+            f"{median_r:.4f} is outside the expected range "
+            f"[{expected_reward - tolerance:.4f}, "
+            f"{expected_reward + tolerance:.4f}]. This indicates the "
+            f"runtime encode/lookup pipeline does not reproduce the "
+            f"calibration. Likely culprits: wrong normalizer, "
+            f"mis-indexed codebook, window length / rate mismatch, "
+            f"or wrong encoder weights. Check the most recent change "
+            f"to c2a/moseq_env_wrapper.py or c2a/code2code/."
+        )
+
+    if contrast < 0.05:
+        raise AssertionError(
+            f"c2c reference round-trip FAILED on the negative control: "
+            f"positive median reward {median_r:.4f} vs shuffled-code "
+            f"median {median_neg_r:.4f} (contrast {contrast:.4f} < "
+            f"0.05). The reward signal cannot distinguish a matched "
+            f"codebook entry from a random one, which means the "
+            f"distance function or temperature is degenerate."
+        )
+
+    return {
+        "median_distance": median_d,
+        "median_reward": median_r,
+        "negative_median_reward": median_neg_r,
+        "contrast": contrast,
+        "n_samples": len(pos_rewards),
+    }

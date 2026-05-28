@@ -131,6 +131,29 @@ class MoSeqImitation(Imitation):
                 f"got None."
             )
 
+        # Rate alignment between the rollout buffer (control-rate) and
+        # the tokenizer (mocap-rate). The VAE/VQ encoder was fit on
+        # windows sampled at the reference's mocap_hz; the env runs at
+        # 1/ctrl_dt Hz. To feed the encoder a window that spans the
+        # same physical duration with the same per-frame spacing as
+        # training, we keep a (window_len * stride)-long buffer at
+        # control-rate and subsample [stride-1::stride] at encode time.
+        # stride = round(1 / (ctrl_dt * mocap_hz)).
+        if self._c2c_active:
+            rate_ratio = 1.0 / (config.ctrl_dt * config.mocap_hz)
+            stride = round(rate_ratio)
+            if abs(stride - rate_ratio) > 1e-9:
+                raise ValueError(
+                    f"c2c rate alignment: 1/(ctrl_dt*mocap_hz) = "
+                    f"{rate_ratio} is not an integer. Cannot align the "
+                    f"rollout buffer to the tokenizer's training rate; "
+                    f"either retrain the tokenizer at control rate or "
+                    f"set ctrl_dt = 1/(mocap_hz * k) for some integer k."
+                )
+            self._c2c_buffer_stride = int(stride)
+        else:
+            self._c2c_buffer_stride = 1
+
     # ------------------------------------------------------------------
     # Override _get_obs to inject kpms_code
     # ------------------------------------------------------------------
@@ -184,12 +207,18 @@ class MoSeqImitation(Imitation):
         if not self._c2c_active:
             return state
 
-        # Initialize the rolling motion buffer with `w` copies of the
-        # reset qpos. This makes the first encoder forward see a
-        # constant-pose window (causal zero-padding equivalent).
+        # Initialize the rolling motion buffer with ``w * stride`` copies
+        # of the reset qpos. The buffer accumulates one qpos per control
+        # step; we subsample it to mocap-rate spacing at encode time
+        # (see step() and __init__ for the rate-alignment rationale).
+        # Buffer size = adapter.window_len * c2c_buffer_stride so that
+        # buf[stride-1::stride] yields exactly window_len entries at
+        # mocap-rate spacing.
         w = self._c2c_adapter.window_len
+        stride = self._c2c_buffer_stride
+        buf_size = w * stride
         init_qpos = state.data.qpos                            # (nq,)
-        buf = jnp.broadcast_to(init_qpos[None, :], (w, init_qpos.shape[0]))
+        buf = jnp.broadcast_to(init_qpos[None, :], (buf_size, init_qpos.shape[0]))
 
         new_info = dict(state.info)
         new_info["motion_window"] = buf
@@ -231,13 +260,19 @@ class MoSeqImitation(Imitation):
 
         # 1. Roll buffer: drop oldest, append new qpos.
         new_qpos = state.data.qpos                            # (nq,)
-        buf = state.info["motion_window"]                     # (w, nq)
+        buf = state.info["motion_window"]                     # (w*stride, nq)
         new_buf = jnp.concatenate(
             [buf[1:], new_qpos[None, :]], axis=0,
         )
 
-        # 2. Encode the buffer to z (single-window, single-sample).
-        z = adapter.encode_from_qpos(new_buf)                 # (code_dim,)
+        # 2. Subsample to mocap-rate spacing and encode.
+        # With buffer of length w*stride filled at control rate, the
+        # slice [stride-1::stride] gives exactly w entries spaced by
+        # mocap_hz (the tokenizer's training rate), ending at the
+        # newest entry. See __init__ for the stride derivation.
+        stride = self._c2c_buffer_stride
+        encoder_window = new_buf[stride - 1::stride]          # (w, nq)
+        z = adapter.encode_from_qpos(encoder_window)          # (code_dim,)
 
         # 3. Target code: first-in-stack from kpms_code obs.
         c_target = jnp.round(state.obs["kpms_code"][..., 0]).astype(jnp.int32)
