@@ -199,6 +199,14 @@ class MoSeqImitation(Imitation):
         new_info["episode_c2c_distance"] = jnp.float32(0.0)
         new_info["episode_c2c_discrete_match"] = jnp.float32(0.0)
         new_info["episode_c2c_track_reward"] = state.reward.astype(jnp.float32)
+        # Per-step "reconstructed" code: the frozen tokenizer's nearest
+        # codebook entry for the rollout's actual motion. Logging the
+        # raw value (alongside the binary ``discrete_match``) lets the
+        # render pipeline draw a second timeline bar comparing the
+        # target code to what the agent's motion actually maps to.
+        # Sentinel ``-1`` at reset; populated by ``step`` once a motion
+        # window has accrued.
+        new_info["c2c_reconstructed_code"] = jnp.int32(-1)
 
         # Adding the c2c keys to state.metrics is what surfaces them in
         # the WandB eval dict. track-mjx's eval aggregator iterates
@@ -273,6 +281,10 @@ class MoSeqImitation(Imitation):
         new_info["episode_c2c_distance"] = scaled_distance
         new_info["episode_c2c_discrete_match"] = discrete_match
         new_info["episode_c2c_track_reward"] = track_reward
+        # Per-step reconstructed code (raw argmin index) — see reset()
+        # comment. Used by the render pipeline to draw a "what code the
+        # rollout's motion encodes to" timeline bar.
+        new_info["c2c_reconstructed_code"] = nearest.astype(jnp.int32)
 
         # Mirror into state.metrics so EpisodeWrapper accumulates and
         # the eval aggregator surfaces as eval/episode_c2c_*. See

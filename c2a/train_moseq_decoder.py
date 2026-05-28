@@ -81,6 +81,10 @@ def _run_eval_rollouts(
     all_rollout_indices: list[np.ndarray] = []
     all_rollout_states: list[list] = []
     all_rollout_rewards: list[list] = []
+    # Per-frame "reconstructed" codes — what the frozen tokenizer's
+    # argmin says about the agent's actual motion at each step. Empty
+    # array per rollout when c2c is off (info field absent).
+    all_rollout_reconstructed: list[np.ndarray] = []
 
     for rollout_i in range(n_rollouts):
         key, subkey = jax.random.split(key)
@@ -89,6 +93,7 @@ def _run_eval_rollouts(
         rollout_states = [state]
         rollout_indices = []
         rollout_rewards = []
+        rollout_reconstructed: list[int] = []
 
         if use_rnn and ppo_network is not None:
             hidden = ppo_network.policy_network.init_hidden(1)
@@ -120,6 +125,14 @@ def _run_eval_rollouts(
             state = jit_step(state, action)
             rollout_states.append(state)
             rollout_rewards.append(float(state.reward))
+            # When c2c is active the env writes ``c2c_reconstructed_code``
+            # — the frozen tokenizer's nearest codebook entry for the
+            # agent's actual motion at this step. Capture aligned with
+            # ``rollout_indices`` for the side-by-side timeline bar.
+            if "c2c_reconstructed_code" in state.info:
+                rollout_reconstructed.append(
+                    int(state.info["c2c_reconstructed_code"])
+                )
 
             if state.done:
                 if hidden is not None and ppo_network is not None:
@@ -129,8 +142,14 @@ def _run_eval_rollouts(
         all_rollout_indices.append(np.array(rollout_indices))
         all_rollout_states.append(rollout_states)
         all_rollout_rewards.append(rollout_rewards)
+        all_rollout_reconstructed.append(
+            np.array(rollout_reconstructed, dtype=np.int64)
+        )
 
-    return all_rollout_indices, all_rollout_states, all_rollout_rewards, key
+    return (
+        all_rollout_indices, all_rollout_states, all_rollout_rewards,
+        all_rollout_reconstructed, key,
+    )
 
 
 def _log_eval_metrics(
@@ -145,6 +164,7 @@ def _log_eval_metrics(
     render_video,
     metric_prefix="moseq",
     video_prefix="videos",
+    all_reconstructed=None,
 ):
     """Log metrics, code plots, and videos from eval rollouts.
 
@@ -245,22 +265,77 @@ def _log_eval_metrics(
                     if vid_i < len(all_rollout_indices)
                     else None
                 )
+                vid_reconstructed = (
+                    all_reconstructed[vid_i]
+                    if (
+                        all_reconstructed is not None
+                        and vid_i < len(all_reconstructed)
+                        and len(all_reconstructed[vid_i]) > 0
+                    )
+                    else None
+                )
                 video_path = (
                     f"{model_path}/{current_step}_{metric_prefix}_vid{vid_i}.mp4"
                 )
 
-                render_rollout_to_video(
-                    env=env,
-                    rollout_states=vid_states,
-                    output_path=video_path,
-                    camera=f"{cfg.render_config.render_camera_name}{env._suffix}",
-                    width=640,
-                    height=480,
-                    fps=render_fps,
-                    indices=vid_indices,
-                    num_codes=num_codes,
-                    code_bar_height=30,
-                )
+                # When the c2c env is active we have BOTH the target
+                # code per frame (vid_indices, from the policy's obs)
+                # AND the reconstructed code per frame (vid_reconstructed,
+                # the frozen tokenizer's nearest entry for the agent's
+                # actual motion). Pass both as stacked bars so the
+                # rendered video shows the per-step alignment / mismatch
+                # between what was asked and what was produced.
+                if vid_reconstructed is not None and vid_indices is not None:
+                    # Align lengths (rollout may terminate before the
+                    # full episode_length; trim to the shorter).
+                    n_aligned = min(len(vid_indices), len(vid_reconstructed))
+                    # Recompute num_codes to span BOTH bars so the color
+                    # palette is consistent across them.
+                    nc_for_bars = max(
+                        int(num_codes) if num_codes is not None else 1,
+                        int(np.max(vid_indices[:n_aligned])) + 1
+                        if n_aligned > 0 else 1,
+                        int(np.max(vid_reconstructed[:n_aligned])) + 1
+                        if n_aligned > 0 and (vid_reconstructed[:n_aligned] >= 0).any()
+                        else 1,
+                    )
+                    # Replace sentinel -1 (no-code-yet) with 0 so the
+                    # color modulo math doesn't wrap to a wrong color.
+                    rec_clean = np.where(
+                        vid_reconstructed[:n_aligned] < 0, 0,
+                        vid_reconstructed[:n_aligned],
+                    ).astype(vid_indices.dtype)
+                    render_rollout_to_video(
+                        env=env,
+                        rollout_states=vid_states,
+                        output_path=video_path,
+                        camera=f"{cfg.render_config.render_camera_name}"
+                               f"{env._suffix}",
+                        width=640,
+                        height=480,
+                        fps=render_fps,
+                        indices_per_depth=[
+                            np.asarray(vid_indices[:n_aligned]),
+                            rec_clean,
+                        ],
+                        bar_row_labels=("target", "reconstructed"),
+                        num_codes=nc_for_bars,
+                        code_bar_height=30,
+                    )
+                else:
+                    render_rollout_to_video(
+                        env=env,
+                        rollout_states=vid_states,
+                        output_path=video_path,
+                        camera=f"{cfg.render_config.render_camera_name}"
+                               f"{env._suffix}",
+                        width=640,
+                        height=480,
+                        fps=render_fps,
+                        indices=vid_indices,
+                        num_codes=num_codes,
+                        code_bar_height=30,
+                    )
 
                 wandb.log(
                     {
@@ -316,7 +391,9 @@ def moseq_rollout_logging_fn(
     key = policy_params_fn_key
 
     # --- Full eval (z_e=1.0) ---
-    all_indices, all_states, all_rewards, key = _run_eval_rollouts(
+    (
+        all_indices, all_states, all_rewards, all_reconstructed, key,
+    ) = _run_eval_rollouts(
         env,
         jit_reset,
         jit_step,
@@ -340,11 +417,14 @@ def moseq_rollout_logging_fn(
         render_video,
         metric_prefix="moseq",
         video_prefix="videos",
+        all_reconstructed=all_reconstructed,
     )
 
     # --- Decoder-only eval (z_e=0.0) ---
     if jit_decoder_only_inference_fn is not None:
-        do_indices, do_states, do_rewards, key = _run_eval_rollouts(
+        (
+            do_indices, do_states, do_rewards, do_reconstructed, key,
+        ) = _run_eval_rollouts(
             env,
             jit_reset,
             jit_step,
@@ -368,6 +448,7 @@ def moseq_rollout_logging_fn(
             render_video,
             metric_prefix="decoder_only",
             video_prefix="videos",
+            all_reconstructed=do_reconstructed,
         )
 
         # Reward gap: how much performance is lost without z_e
