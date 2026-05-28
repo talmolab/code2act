@@ -5,6 +5,7 @@ propel/
 Code2Act-website/
 venv/
 env/
+_pyrun.py
 
 # Python
 __pycache__/
