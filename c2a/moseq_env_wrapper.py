@@ -48,7 +48,7 @@ from vnl_playground.tasks.rodent.imitation import ReferenceClips
 from c2a.code2code.adapter_base import C2CTokenizerAdapter, DistanceForm
 
 
-C2CRewardMode = Literal["off", "additive", "replace"]
+C2CRewardMode = Literal["off", "additive", "replace", "curriculum"]
 C2CRewardForm = Literal["exp_neg_distance", "neg_distance"]
 
 
@@ -87,15 +87,18 @@ class MoSeqImitation(Imitation):
         c2c_reward_form: C2CRewardForm = "exp_neg_distance",
         c2c_reward_mode: C2CRewardMode = "off",
         c2c_replace_alive_bonus: float = 0.0,
+        # Curriculum-mode knobs (only consulted when reward_mode == 'curriculum')
+        c2c_curriculum_alpha_fn: Optional[Any] = None,
+        c2c_curriculum_target_total_steps: Optional[int] = None,
     ):
         super().__init__(config=config, clips=clips)
         self._kpms_codes = jnp.asarray(kpms_codes, dtype=jnp.int32)
         self._code_stack_size = int(code_stack_size)
 
-        if c2c_reward_mode not in ("off", "additive", "replace"):
+        if c2c_reward_mode not in ("off", "additive", "replace", "curriculum"):
             raise ValueError(
-                f"c2c_reward_mode must be 'off', 'additive', or 'replace'; "
-                f"got {c2c_reward_mode!r}"
+                f"c2c_reward_mode must be 'off', 'additive', 'replace', or "
+                f"'curriculum'; got {c2c_reward_mode!r}"
             )
         if c2c_reward_form not in ("exp_neg_distance", "neg_distance"):
             raise ValueError(
@@ -116,6 +119,29 @@ class MoSeqImitation(Imitation):
         self._c2c_reward_form = c2c_reward_form
         self._c2c_reward_mode = c2c_reward_mode
         self._c2c_replace_alive_bonus = float(c2c_replace_alive_bonus)
+
+        # Curriculum-mode plumbing.
+        self._c2c_curriculum_alpha_fn = c2c_curriculum_alpha_fn
+        if c2c_reward_mode == "curriculum":
+            if c2c_curriculum_alpha_fn is None:
+                raise ValueError(
+                    "c2c_reward_mode='curriculum' requires "
+                    "c2c_curriculum_alpha_fn (build via "
+                    "c2a.code2code.schedules.make_curriculum_schedules)."
+                )
+            if (
+                c2c_curriculum_target_total_steps is None
+                or c2c_curriculum_target_total_steps <= 0
+            ):
+                raise ValueError(
+                    "c2c_reward_mode='curriculum' requires "
+                    "c2c_curriculum_target_total_steps > 0."
+                )
+            self._c2c_curriculum_target_total_steps = float(
+                c2c_curriculum_target_total_steps
+            )
+        else:
+            self._c2c_curriculum_target_total_steps = 1.0
 
         # Master enable flag: the env shapes reward only if an adapter
         # is configured AND reward_mode is not "off". Both reset() and
@@ -222,6 +248,18 @@ class MoSeqImitation(Imitation):
 
         new_info = dict(state.info)
         new_info["motion_window"] = buf
+        # Curriculum-mode env step counter (incremented once per step()
+        # call from 0 at reset).  Used to compute τ = step / target and
+        # therefore α(τ) inside step().  Always present so the pytree
+        # shape is uniform across the env's lifetime.
+        new_info["c2c_env_step"] = jnp.int32(0)
+        # Per-step c2c reward components — needed by the curriculum
+        # PPO-loss path for Vendi diversity reward.  Default to zeros
+        # so the state.info pytree shape stays uniform.
+        new_info["c2c_z_rollout"] = jnp.zeros(
+            (self._c2c_adapter.code_dim,), dtype=jnp.float32
+        )
+        new_info["c2c_target_code"] = jnp.int32(0)
         # Mirror the c2c scalars in state.info for any per-step
         # consumer that inspects raw env output.
         new_info["episode_c2c_reward"] = jnp.float32(0.0)
@@ -248,6 +286,11 @@ class MoSeqImitation(Imitation):
         state.metrics["c2c_distance"] = jnp.float32(0.0)
         state.metrics["c2c_discrete_match"] = jnp.float32(0.0)
         state.metrics["c2c_track_reward"] = state.reward.astype(jnp.float32)
+        # Curriculum-mode metrics — always present for uniform pytree.
+        # Populated meaningfully only when reward_mode == 'curriculum'.
+        state.metrics["c2c_curriculum_alpha"] = jnp.float32(0.0)
+        state.metrics["c2c_curriculum_r_track"] = state.reward.astype(jnp.float32)
+        state.metrics["c2c_curriculum_r_c2c_raw"] = jnp.float32(0.0)
 
         return state.replace(info=new_info)
 
@@ -289,13 +332,32 @@ class MoSeqImitation(Imitation):
             match = jnp.nan_to_num(-d, nan=0.0)
 
         # 5. Modify reward per reward_mode.
+        # Per-step curriculum bookkeeping (computed for ALL modes; only
+        # consumed in 'curriculum' mode).  Always-present fields keep
+        # the pytree shape uniform across modes.
+        prev_env_step = state.info["c2c_env_step"]
+        new_env_step = prev_env_step + jnp.int32(1)
+        tau = jnp.float32(new_env_step) / jnp.float32(
+            self._c2c_curriculum_target_total_steps
+        )
         if self._c2c_reward_mode == "additive":
             new_reward = (
                 self._c2c_track_weight * state.reward + self._c2c_alpha * match
             )
-        else:  # "replace"
+            curriculum_alpha = jnp.float32(0.0)
+        elif self._c2c_reward_mode == "replace":
             new_reward = (
                 self._c2c_alpha * match + self._c2c_replace_alive_bonus
+            )
+            curriculum_alpha = jnp.float32(0.0)
+        else:  # "curriculum" — tanh-scheduled (1-α)·track + α·c2c
+            curriculum_alpha = self._c2c_curriculum_alpha_fn(tau).astype(jnp.float32)
+            # tracking reward (already weighted by env's own reward
+            # terms) at (1-α), raw c2c match (scaled by self._c2c_alpha
+            # which is its base magnitude knob) at α.
+            new_reward = (
+                (1.0 - curriculum_alpha) * state.reward
+                + curriculum_alpha * (self._c2c_alpha * match)
             )
 
         # 6. Diagnostic: argmin over the full codebook (reward-hacking
@@ -309,6 +371,7 @@ class MoSeqImitation(Imitation):
 
         new_info = dict(state.info)
         new_info["motion_window"] = new_buf
+        new_info["c2c_env_step"] = new_env_step
         scaled_reward = (self._c2c_alpha * match).astype(jnp.float32)
         scaled_distance = d.astype(jnp.float32)
         track_reward = state.reward.astype(jnp.float32)
@@ -316,6 +379,10 @@ class MoSeqImitation(Imitation):
         new_info["episode_c2c_distance"] = scaled_distance
         new_info["episode_c2c_discrete_match"] = discrete_match
         new_info["episode_c2c_track_reward"] = track_reward
+        # Curriculum-mode extras (consumed by the PPO loss for Vendi).
+        # Stored every step so the pytree shape is mode-invariant.
+        new_info["c2c_z_rollout"] = z.astype(jnp.float32)
+        new_info["c2c_target_code"] = c_target.astype(jnp.int32)
         # Per-step reconstructed code (raw argmin index) — see reset()
         # comment. Used by the render pipeline to draw a "what code the
         # rollout's motion encodes to" timeline bar.
@@ -328,5 +395,8 @@ class MoSeqImitation(Imitation):
         state.metrics["c2c_distance"] = scaled_distance
         state.metrics["c2c_discrete_match"] = discrete_match
         state.metrics["c2c_track_reward"] = track_reward
+        state.metrics["c2c_curriculum_alpha"] = curriculum_alpha
+        state.metrics["c2c_curriculum_r_track"] = track_reward
+        state.metrics["c2c_curriculum_r_c2c_raw"] = scaled_reward
 
         return state.replace(reward=new_reward, info=new_info)

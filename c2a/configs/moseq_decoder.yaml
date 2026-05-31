@@ -303,6 +303,32 @@ code2code:
 
   log_diagnostics: true         # emit c2c/* WandB metrics every step
 
+  # ---------------------------------------------------------------------------
+  # Curriculum-mode schedule (only consulted when reward_mode == 'curriculum')
+  # ---------------------------------------------------------------------------
+  # Total env reward per step:
+  #   (1 - α(τ)) · r_track + α(τ) · (alpha · match) + β(τ) · log(VS)
+  # where τ = current_env_step / num_timesteps ∈ [0, 1] and the diversity
+  # bonus log(VS) is computed in the PPO loss (see c2a/code2code/diversity.py).
+  #
+  # Hard validation in c2a/code2code/schedules.py:
+  #   - alpha_max > 0.75 is REJECTED — c2c reward is root-invariant; tracking
+  #     at weight ≥ 0.25 must remain primary forever to keep the policy stable.
+  #     See scratch/registry/2026-05-30-c2c-reward-is-root-invariant/.
+  #   - bootstrap (= num_timesteps × max(tau_mid - tau_scale, 0)) < 1e9 env
+  #     steps is REJECTED — tracking needs that long to converge from scratch.
+  curriculum_config:
+    alpha_min: 0.05          # c2c weight at τ = 0 (tracking nearly pure)
+    alpha_max: 0.75          # c2c weight at τ = 1 (HARD CAP)
+    tau_mid: 0.30            # α transition midpoint (τ at which α = (min+max)/2)
+    tau_scale: 0.05          # α transition sharpness (~10% of training)
+    beta_max: 0.10           # diversity bonus weight at τ = 1
+    tau_div_start: 0.55      # diversity ramp midpoint (later than α midpoint)
+    tau_div_scale: 0.05      # diversity ramp sharpness
+    vendi_min_group_size: 5  # codes with fewer envs get diversity = 0
+    vendi_kernel: "cosine"   # cosine | gaussian
+    vendi_sigma: 1.0         # gaussian kernel bandwidth (ignored for cosine)
+
 # =============================================================================
 # Logging Configuration
 # =============================================================================

@@ -1,0 +1,156 @@
+"""Curriculum schedule utilities for the c2c curriculum reward mode.
+
+Schedules are smooth tanh ramps in the normalized training progress
+``τ = current_step / target_total_steps``:
+
+    schedule(τ) = v_min + (v_max − v_min) · 0.5 · (1 + tanh((τ − mid) / scale))
+
+So ``schedule(mid) = (v_min + v_max) / 2`` exactly, and the value
+saturates near v_max as τ → 1 (sharpness controlled by ``scale``).
+
+This module exposes:
+
+* :func:`tanh_schedule` — generic tanh ramp factory.
+* :func:`make_curriculum_schedules` — validates curriculum-config dict
+  and returns ``(alpha_fn, beta_fn)``.  Validation rejects α_max > 0.75
+  and configs where bootstrap < 1e9 env steps (see retrospective
+  ``scratch/registry/2026-05-30-c2c-reward-is-root-invariant/``).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+import jax.numpy as jnp
+
+
+# Hard caps enforced at config-validation time.  See the
+# c2c-reward-is-root-invariant retrospective and the curriculum plan.
+ALPHA_MAX_HARD_CAP = 0.75
+MIN_BOOTSTRAP_STEPS = int(1e9)
+
+
+def tanh_schedule(
+    value_min: float,
+    value_max: float,
+    mid: float,
+    scale: float,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Generic tanh schedule factory.
+
+    Args:
+        value_min: value at τ → −∞ (also approximately at τ = 0 for
+            reasonable mid/scale).
+        value_max: value at τ → +∞ (approximately at τ = 1).
+        mid: τ at which the schedule reaches (v_min + v_max) / 2.
+        scale: transition sharpness.  Smaller → sharper transition.
+
+    Returns:
+        Callable ``f(τ) -> scheduled value`` that broadcasts over τ.
+    """
+    v_min = float(value_min)
+    v_max = float(value_max)
+    m = float(mid)
+    s = float(scale)
+
+    def schedule_fn(tau: jnp.ndarray) -> jnp.ndarray:
+        return v_min + (v_max - v_min) * 0.5 * (1.0 + jnp.tanh((tau - m) / s))
+
+    return schedule_fn
+
+
+def make_curriculum_schedules(
+    cfg: Any,
+    num_timesteps: int | None = None,
+) -> tuple[Callable[[jnp.ndarray], jnp.ndarray], Callable[[jnp.ndarray], jnp.ndarray]]:
+    """Build (alpha_fn, beta_fn) from a curriculum_config mapping.
+
+    The config must supply ``alpha_min``, ``alpha_max``, ``tau_mid``,
+    ``tau_scale``, ``beta_max``, ``tau_div_start``, ``tau_div_scale``.
+
+    Validation:
+
+    * ``alpha_max`` cannot exceed :data:`ALPHA_MAX_HARD_CAP` (0.75).
+      Higher values would let c2c reward dominate over tracking once the
+      schedule saturates, which is the failure mode the retrospective
+      documents.
+    * If ``num_timesteps`` is supplied, the bootstrap window
+      ``num_timesteps · max(τ_mid − τ_scale, 0)`` must be at least
+      :data:`MIN_BOOTSTRAP_STEPS` (1e9 env steps) — otherwise the policy
+      enters the transition before tracking has converged.
+
+    Args:
+        cfg: mapping-like (DictConfig, dict, or attribute-only object)
+            with the curriculum keys listed above.
+        num_timesteps: total training env-steps target (for bootstrap
+            validation).  Skip the check when None.
+
+    Returns:
+        ``(alpha_fn, beta_fn)`` — each takes τ ∈ [0, 1] and returns the
+        scheduled weight.
+
+    Raises:
+        ValueError: on any validation failure.
+    """
+    def _get(key, default=None):
+        if hasattr(cfg, "get"):
+            return cfg.get(key, default)
+        return getattr(cfg, key, default)
+
+    alpha_min = float(_get("alpha_min", 0.05))
+    alpha_max = float(_get("alpha_max", 0.75))
+    tau_mid = float(_get("tau_mid", 0.30))
+    tau_scale = float(_get("tau_scale", 0.05))
+    beta_max = float(_get("beta_max", 0.10))
+    tau_div_start = float(_get("tau_div_start", 0.55))
+    tau_div_scale = float(_get("tau_div_scale", 0.05))
+
+    # ── Hard cap on alpha_max ─────────────────────────────────────────
+    if alpha_max > ALPHA_MAX_HARD_CAP + 1e-9:
+        raise ValueError(
+            f"curriculum_config.alpha_max={alpha_max} exceeds the hard "
+            f"cap {ALPHA_MAX_HARD_CAP}.  Raising α_max above 0.75 lets "
+            f"the (root-invariant) c2c reward dominate over tracking "
+            f"asymptotically, which empirically lets the policy drift "
+            f"in world coordinates.  See "
+            f"scratch/registry/2026-05-30-c2c-reward-is-root-invariant/."
+        )
+    if alpha_min < 0.0 or alpha_min > alpha_max:
+        raise ValueError(
+            f"curriculum_config.alpha_min={alpha_min} must satisfy "
+            f"0 ≤ alpha_min ≤ alpha_max={alpha_max}."
+        )
+    if tau_scale <= 0.0 or tau_div_scale <= 0.0:
+        raise ValueError(
+            "curriculum_config.tau_scale and tau_div_scale must be > 0."
+        )
+    if not (0.0 <= tau_mid <= 1.0) or not (0.0 <= tau_div_start <= 1.0):
+        raise ValueError(
+            "curriculum_config.tau_mid and tau_div_start must be in [0, 1]."
+        )
+    if beta_max < 0.0:
+        raise ValueError(
+            f"curriculum_config.beta_max={beta_max} must be ≥ 0."
+        )
+
+    # ── Bootstrap length check ────────────────────────────────────────
+    if num_timesteps is not None:
+        bootstrap_fraction = max(tau_mid - tau_scale, 0.0)
+        bootstrap_steps = num_timesteps * bootstrap_fraction
+        if bootstrap_steps < MIN_BOOTSTRAP_STEPS:
+            raise ValueError(
+                f"curriculum bootstrap window is only "
+                f"{bootstrap_steps:.2e} env steps "
+                f"({tau_mid=}, {tau_scale=}, "
+                f"num_timesteps={num_timesteps}), but tracking needs at "
+                f"least {MIN_BOOTSTRAP_STEPS:.2e} steps to converge "
+                f"under PPO + tracking reward.  Either increase "
+                f"num_timesteps so num_timesteps × (tau_mid − tau_scale) "
+                f"≥ {MIN_BOOTSTRAP_STEPS:.0e}, or lower tau_mid / "
+                f"tau_scale accordingly."
+            )
+
+    alpha_fn = tanh_schedule(alpha_min, alpha_max, tau_mid, tau_scale)
+    beta_fn = tanh_schedule(0.0, beta_max, tau_div_start, tau_div_scale)
+    return alpha_fn, beta_fn

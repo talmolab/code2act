@@ -691,6 +691,34 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
         float(c2c_cfg.get("replace_alive_bonus", 0.0)),
     )
 
+    # ─── Curriculum-mode plumbing ───────────────────────────────────────
+    # Build the α(τ) schedule and pass it + the total-step target into
+    # the env so step() can compute τ.  Validation (α_max ≤ 0.75 and
+    # bootstrap ≥ 1e9 steps) lives in make_curriculum_schedules and
+    # raises before we even instantiate the env.
+    c2c_curriculum_alpha_fn = None
+    c2c_curriculum_target_total_steps = None
+    if reward_mode == "curriculum":
+        from c2a.code2code.schedules import make_curriculum_schedules
+
+        cur_cfg = c2c_cfg.get("curriculum_config", None)
+        if cur_cfg is None:
+            raise ValueError(
+                "code2code.reward_mode='curriculum' requires "
+                "code2code.curriculum_config block (alpha_min, alpha_max, "
+                "tau_mid, tau_scale, beta_max, tau_div_start, tau_div_scale)."
+            )
+        target_total_steps = int(cfg.train_setup.train_config.num_timesteps)
+        c2c_curriculum_alpha_fn, _ = make_curriculum_schedules(
+            cur_cfg, num_timesteps=target_total_steps,
+        )
+        c2c_curriculum_target_total_steps = target_total_steps
+        logging.info(
+            "curriculum mode: alpha schedule built, target_total_steps=%d "
+            "(α validation passed: α_max ≤ 0.75 and bootstrap ≥ 1e9 steps)",
+            target_total_steps,
+        )
+
     return dict(
         c2c_adapter=adapter,
         c2c_alpha=float(c2c_cfg.get("alpha", 0.5)),
@@ -700,6 +728,8 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
         c2c_reward_form=str(c2c_cfg.get("reward_form", "exp_neg_distance")),  # type: ignore[arg-type]
         c2c_reward_mode=reward_mode,  # type: ignore[arg-type]
         c2c_replace_alive_bonus=float(c2c_cfg.get("replace_alive_bonus", 0.0)),
+        c2c_curriculum_alpha_fn=c2c_curriculum_alpha_fn,
+        c2c_curriculum_target_total_steps=c2c_curriculum_target_total_steps,
     )
 
 
@@ -1330,6 +1360,25 @@ def main(cfg: DictConfig) -> None:
                 "distill_mean_norm", "distill_logvar_mean",
             ):
                 grouped[f"distillation/{k}"] = v
+            elif (
+                k.startswith("c2c_curriculum_")
+                or "episode_c2c_curriculum_" in k
+            ):
+                # Curriculum-mode reward components — α, raw track
+                # reward, raw c2c reward — surfaced as eval/episode_c2c_curriculum_*
+                # by EpisodeWrapper.  Route into the curriculum/ panel.
+                if "episode_c2c_curriculum_" in k:
+                    short = k.split("episode_c2c_curriculum_", 1)[1]
+                    if k.startswith("eval/test_set/"):
+                        key = f"curriculum/eval_test/{short}"
+                    elif k.startswith("eval/"):
+                        key = f"curriculum/eval/{short}"
+                    else:
+                        key = f"curriculum/{short}"
+                else:
+                    # c2c_curriculum_alpha → curriculum/alpha
+                    key = f"curriculum/{k[len('c2c_curriculum_'):]}"
+                grouped[key] = v
             elif (
                 k.startswith("c2c_")
                 or k.startswith("c2c/")
