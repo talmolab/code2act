@@ -48,7 +48,7 @@ from vnl_playground.tasks.rodent.imitation import ReferenceClips
 from c2a.code2code.adapter_base import C2CTokenizerAdapter, DistanceForm
 
 
-C2CRewardMode = Literal["off", "additive", "replace", "curriculum"]
+C2CRewardMode = Literal["off", "additive", "replace", "curriculum", "finetune"]
 C2CRewardForm = Literal["exp_neg_distance", "neg_distance"]
 
 
@@ -95,10 +95,10 @@ class MoSeqImitation(Imitation):
         self._kpms_codes = jnp.asarray(kpms_codes, dtype=jnp.int32)
         self._code_stack_size = int(code_stack_size)
 
-        if c2c_reward_mode not in ("off", "additive", "replace", "curriculum"):
+        if c2c_reward_mode not in ("off", "additive", "replace", "curriculum", "finetune"):
             raise ValueError(
-                f"c2c_reward_mode must be 'off', 'additive', 'replace', or "
-                f"'curriculum'; got {c2c_reward_mode!r}"
+                f"c2c_reward_mode must be 'off', 'additive', 'replace', "
+                f"'curriculum', or 'finetune'; got {c2c_reward_mode!r}"
             )
         if c2c_reward_form not in ("exp_neg_distance", "neg_distance"):
             raise ValueError(
@@ -120,22 +120,26 @@ class MoSeqImitation(Imitation):
         self._c2c_reward_mode = c2c_reward_mode
         self._c2c_replace_alive_bonus = float(c2c_replace_alive_bonus)
 
-        # Curriculum-mode plumbing.
+        # Curriculum & finetune share the same reward-composition path:
+        # both expose an alpha_fn(τ) and a target_total_steps, and the env
+        # composes new_reward = (1 - α)·r_track + α·r_c2c.  The two modes
+        # differ only in which schedule function is passed in.
         self._c2c_curriculum_alpha_fn = c2c_curriculum_alpha_fn
-        if c2c_reward_mode == "curriculum":
+        if c2c_reward_mode in ("curriculum", "finetune"):
             if c2c_curriculum_alpha_fn is None:
                 raise ValueError(
-                    "c2c_reward_mode='curriculum' requires "
-                    "c2c_curriculum_alpha_fn (build via "
-                    "c2a.code2code.schedules.make_curriculum_schedules)."
+                    f"c2c_reward_mode={c2c_reward_mode!r} requires "
+                    f"c2c_curriculum_alpha_fn (build via "
+                    f"c2a.code2code.schedules.make_curriculum_schedules "
+                    f"or make_finetune_schedules)."
                 )
             if (
                 c2c_curriculum_target_total_steps is None
                 or c2c_curriculum_target_total_steps <= 0
             ):
                 raise ValueError(
-                    "c2c_reward_mode='curriculum' requires "
-                    "c2c_curriculum_target_total_steps > 0."
+                    f"c2c_reward_mode={c2c_reward_mode!r} requires "
+                    f"c2c_curriculum_target_total_steps > 0."
                 )
             self._c2c_curriculum_target_total_steps = float(
                 c2c_curriculum_target_total_steps
@@ -350,11 +354,11 @@ class MoSeqImitation(Imitation):
                 self._c2c_alpha * match + self._c2c_replace_alive_bonus
             )
             curriculum_alpha = jnp.float32(0.0)
-        else:  # "curriculum" — tanh-scheduled (1-α)·track + α·c2c
+        else:  # "curriculum" OR "finetune" — α(τ)-scheduled mix
+            # Curriculum uses a tanh ramp; finetune uses a constant
+            # (optionally with a brief linear warmup).  Both go through
+            # the same composition: (1-α)·r_track + α·(self._c2c_alpha · match).
             curriculum_alpha = self._c2c_curriculum_alpha_fn(tau).astype(jnp.float32)
-            # tracking reward (already weighted by env's own reward
-            # terms) at (1-α), raw c2c match (scaled by self._c2c_alpha
-            # which is its base magnitude knob) at α.
             new_reward = (
                 (1.0 - curriculum_alpha) * state.reward
                 + curriculum_alpha * (self._c2c_alpha * match)

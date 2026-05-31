@@ -463,6 +463,77 @@ def moseq_rollout_logging_fn(
 # ---------------------------------------------------------------------------
 
 
+def _warn_if_ckpt_had_c2c_enabled(ckpt_path: Path) -> None:
+    """Best-effort check: warn if a fine-tune checkpoint was originally
+    trained with c2c reward turned on.
+
+    The user's stated intent for ``finetune`` mode is to load a pure-
+    tracking checkpoint and stack c2c + diversity on top.  Loading a
+    ckpt that itself was c2c-trained would violate that intent —
+    warn loudly (not fatally; the user may have a good reason).
+
+    Strategy: find the Hydra config saved alongside the original
+    training run (under ``outputs/YYYY-MM-DD/HH-MM-SS/.hydra/config.yaml``)
+    by searching for the ckpt's run-id in saved configs.  If we find
+    one, parse and inspect ``code2code.reward_mode``.
+    """
+    ckpt_p = Path(ckpt_path).resolve()
+    run_id = ckpt_p.name           # e.g., "260513_062522_599062"
+    outputs_root = get_repo_root() / "outputs"
+    if not outputs_root.exists():
+        logging.warning(
+            "finetune: outputs/ dir not found — cannot verify ckpt %s "
+            "was trained without c2c.", run_id,
+        )
+        return
+
+    saved_config_path = None
+    for candidate in outputs_root.rglob(".hydra/config.yaml"):
+        try:
+            if run_id in candidate.read_text():
+                saved_config_path = candidate
+                break
+        except OSError:
+            continue
+
+    if saved_config_path is None:
+        logging.warning(
+            "finetune: could not locate the saved Hydra config for ckpt "
+            "%s. Cannot verify it was trained without c2c. (Searched %s.)",
+            run_id, outputs_root,
+        )
+        return
+
+    try:
+        saved = OmegaConf.load(saved_config_path)
+    except Exception as e:
+        logging.warning(
+            "finetune: failed to parse saved config %s: %s. "
+            "Cannot verify c2c-off provenance.",
+            saved_config_path, e,
+        )
+        return
+
+    saved_c2c = saved.get("code2code", None) if hasattr(saved, "get") else None
+    saved_mode = "off"
+    if saved_c2c is not None:
+        saved_mode = str(saved_c2c.get("reward_mode", "off"))
+    if saved_mode != "off":
+        logging.warning(
+            "finetune: loaded checkpoint at %s was trained with "
+            "code2code.reward_mode=%r (not 'off'). The user's stated "
+            "intent for finetune mode is to load a PURE-TRACKING ckpt. "
+            "Proceeding anyway, but downstream behavior may differ from "
+            "expectation.", ckpt_path, saved_mode,
+        )
+    else:
+        logging.info(
+            "finetune: verified ckpt %s was trained pure-tracking "
+            "(saved config %s: code2code.reward_mode='off').",
+            run_id, saved_config_path,
+        )
+
+
 def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     """Build the c2c_* kwargs for :class:`MoSeqImitation`.
 
@@ -716,6 +787,79 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
         logging.info(
             "curriculum mode: alpha schedule built, target_total_steps=%d "
             "(α validation passed: α_max ≤ 0.75 and bootstrap ≥ 1e9 steps)",
+            target_total_steps,
+        )
+
+    elif reward_mode == "finetune":
+        from c2a.code2code.schedules import make_finetune_schedules
+
+        ft_cfg = c2c_cfg.get("finetune_config", None)
+        if ft_cfg is None:
+            raise ValueError(
+                "code2code.reward_mode='finetune' requires "
+                "code2code.finetune_config block (alpha, beta, "
+                "warmup_fraction, default_checkpoint, expected_num_codes)."
+            )
+
+        # Resolve checkpoint path from finetune_config.default_checkpoint.
+        # NOTE: we deliberately do NOT use train_setup.checkpoint_to_restore
+        # — that field triggers track-mjx's resume-from-crash path which
+        # expects a different ckpt layout.  Override the finetune ckpt
+        # via `code2code.finetune_config.default_checkpoint=...` instead.
+        ckpt_path_str = str(ft_cfg.get("default_checkpoint", ""))
+        if not ckpt_path_str:
+            raise ValueError(
+                "finetune mode requires a checkpoint: set "
+                "code2code.finetune_config.default_checkpoint."
+            )
+        ckpt_path = Path(ckpt_path_str)
+        if not ckpt_path.is_absolute():
+            ckpt_path = get_repo_root() / ckpt_path
+        if not ckpt_path.exists():
+            raise FileNotFoundError(
+                f"finetune checkpoint does not exist: {ckpt_path}. "
+                f"Default is {ft_cfg.get('default_checkpoint')}."
+            )
+        # Stash the resolved finetune ckpt path on the code2code config so
+        # _post_init_params_fn (later in main()) can find it.  We do NOT
+        # set train_setup.checkpoint_to_restore — that field triggers
+        # track-mjx's resume-from-crash path (load_from_run_state), which
+        # expects a different ckpt layout.  Instead we load the full
+        # policy params via _post_init_params_fn, the proper hook for
+        # "load specific subtrees from a different ckpt".
+        OmegaConf.update(
+            cfg, "code2code.finetune_config._resolved_checkpoint",
+            str(ckpt_path.resolve()), merge=False,
+        )
+
+        _warn_if_ckpt_had_c2c_enabled(ckpt_path)
+
+        # Sanity: num_codes from current config must match the
+        # tokenizer the ckpt was trained with (the policy's code-
+        # embedding table has shape [num_codes, code_embed_dim] and
+        # must align with the K of the runtime tokenizer).
+        _expected_K = int(ft_cfg.get("expected_num_codes", 50))
+        _actual_K = int(cfg.network_config.num_codes)
+        if _actual_K != _expected_K:
+            raise ValueError(
+                f"finetune mode: network_config.num_codes={_actual_K} "
+                f"but the loaded checkpoint expects num_codes={_expected_K} "
+                f"(per code2code.finetune_config.expected_num_codes). "
+                f"Either configure the matching tokenizer or update "
+                f"expected_num_codes."
+            )
+
+        target_total_steps = int(cfg.train_setup.train_config.num_timesteps)
+        c2c_curriculum_alpha_fn, _ = make_finetune_schedules(
+            ft_cfg, num_timesteps=target_total_steps,
+        )
+        c2c_curriculum_target_total_steps = target_total_steps
+        logging.info(
+            "finetune mode: ckpt=%s, alpha=%.3f, beta=%.3f, warmup=%.2f, "
+            "target_total_steps=%d",
+            ckpt_path, float(ft_cfg.get("alpha", 0.75)),
+            float(ft_cfg.get("beta", 0.10)),
+            float(ft_cfg.get("warmup_fraction", 0.05)),
             target_total_steps,
         )
 
@@ -1075,8 +1219,104 @@ def main(cfg: DictConfig) -> None:
     # We therefore skip both subtree assignments on resume (the resumed
     # checkpoint already carries the correct current values for both).
     _resume_in_progress = cfg.train_setup.get("checkpoint_to_restore", None) is not None
+
+    # Finetune mode: load the FULL policy params (not just a subtree)
+    # from the finetune checkpoint via _post_init_params_fn.  This is
+    # mutually exclusive with the MIMIC encoder/decoder re-loading
+    # below — the finetune ckpt was trained with the same distillation
+    # backbone, so its policy already has the right encoder/decoder
+    # subtrees baked in.  Resolved ckpt path was stashed in
+    # code2code.finetune_config._resolved_checkpoint by _build_c2c_env_kwargs.
+    _finetune_ckpt_path = None
+    _is_finetune_mode = (
+        cfg.code2code.get("reward_mode", "off") == "finetune"
+    )
+    if _is_finetune_mode:
+        _finetune_ckpt_path = cfg.code2code.finetune_config.get(
+            "_resolved_checkpoint", None
+        )
+        if _finetune_ckpt_path is None:
+            raise RuntimeError(
+                "finetune mode reached _post_init_params_fn setup but no "
+                "resolved checkpoint path was stashed by "
+                "_build_c2c_env_kwargs. This is a bug — please report."
+            )
+
     _post_init_params_fn = None
-    if use_distillation_head and distillation_encoder_checkpoint is not None:
+    if _is_finetune_mode:
+        # Finetune branch: load full policy params from the finetune ckpt.
+        # Takes precedence over the MIMIC encoder/decoder loading below.
+        _ft_ckpt_path = str(_finetune_ckpt_path)
+
+        def _post_init_params_fn(training_state):
+            """Finetune mode: load full policy params from the finetune ckpt.
+
+            Reads the latest MoSeqPPONetwork_N step from the ckpt manager
+            (using step_prefix="MoSeqPPONetwork", matching how moseq_ppo.py
+            saves) and assigns the entire policy params tree.  Does NOT
+            restore optimizer state (we want fresh Adam moments for the
+            new reward landscape) or value-network params (re-learned
+            from scratch in early iters; minor cost).  Normalizer state
+            is restored alongside the policy via the standard Composite
+            tuple unpacking.
+            """
+            if _resume_in_progress:
+                logging.info(
+                    "finetune: checkpoint_to_restore is also set "
+                    "(resume-from-crash). Skipping finetune ckpt load "
+                    "in favor of the resumed training_state."
+                )
+                return training_state
+
+            mgr_options = ocp.CheckpointManagerOptions(
+                create=False, step_prefix="MoSeqPPONetwork",
+            )
+            with ocp.CheckpointManager(_ft_ckpt_path, options=mgr_options) as mgr:
+                latest = mgr.latest_step()
+                if latest is None:
+                    raise FileNotFoundError(
+                        f"finetune: no MoSeqPPONetwork_* steps found in "
+                        f"{_ft_ckpt_path}"
+                    )
+                restored = mgr.restore(
+                    latest,
+                    args=ocp.args.Composite(
+                        policy=ocp.args.StandardRestore(),
+                    ),
+                )
+            loaded_normalizer, loaded_policy_params = restored["policy"]
+
+            # Full subtree assignment.  The finetune ckpt was trained
+            # with the same network_config (verified via
+            # expected_num_codes assertion in _build_c2c_env_kwargs),
+            # so the param tree shapes line up.
+            training_state.params.policy["params"] = loaded_policy_params["params"]
+
+            # Restore the observation normalizer alongside.  The policy
+            # was trained on normalized inputs; using fresh-zeroed
+            # normalizer stats would feed it OOD inputs at iter 0.
+            try:
+                training_state = training_state.replace(
+                    normalizer_params=loaded_normalizer
+                )
+                logging.info(
+                    "finetune: loaded normalizer state from %s/MoSeqPPONetwork_%d",
+                    _ft_ckpt_path, latest,
+                )
+            except (AttributeError, TypeError) as e:
+                logging.warning(
+                    "finetune: could not restore normalizer state (%s). "
+                    "Iter 0 will see un-normalized obs; PPO will recover "
+                    "but slowly.", e,
+                )
+
+            logging.info(
+                "finetune: loaded FULL policy params from %s/MoSeqPPONetwork_%d",
+                _ft_ckpt_path, latest,
+            )
+            return training_state
+
+    elif use_distillation_head and distillation_encoder_checkpoint is not None:
         # Orbax requires absolute paths. Resolve relatives against the repo
         # root (same rule as codes_path / balanced_split_path above). Without
         # this, a config like `${oc.env:C2A_ROOT,.}/trained_mimic_ckpts/...`

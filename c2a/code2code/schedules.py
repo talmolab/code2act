@@ -154,3 +154,90 @@ def make_curriculum_schedules(
     alpha_fn = tanh_schedule(alpha_min, alpha_max, tau_mid, tau_scale)
     beta_fn = tanh_schedule(0.0, beta_max, tau_div_start, tau_div_scale)
     return alpha_fn, beta_fn
+
+
+def make_finetune_schedules(
+    cfg: Any,
+    num_timesteps: int | None = None,
+) -> tuple[Callable[[jnp.ndarray], jnp.ndarray], Callable[[jnp.ndarray], jnp.ndarray]]:
+    """Build (alpha_fn, beta_fn) for the ``finetune`` reward mode.
+
+    Unlike :func:`make_curriculum_schedules`, finetune mode does NOT need
+    a bootstrap window — the policy is loaded pretrained from a
+    pure-tracking checkpoint. Defaults:
+
+    * α and β each ramp linearly from 0 to their target over the first
+      ``warmup_fraction`` of training (default 5%), then hold constant.
+    * ``warmup_fraction = 0`` gives pure constants from τ = 0.
+
+    The α ≤ :data:`ALPHA_MAX_HARD_CAP` cap is still enforced — c2c is
+    root-invariant regardless of training origin, so the tracking
+    floor (1 − α) ≥ 0.25 stability argument applies.
+
+    Args:
+        cfg: mapping-like with keys ``alpha`` (default 0.75), ``beta``
+            (default 0.10), ``warmup_fraction`` (default 0.05).
+        num_timesteps: unused (kept for signature parity with
+            :func:`make_curriculum_schedules`; finetune has no
+            bootstrap-length validation to apply).
+
+    Returns:
+        ``(alpha_fn, beta_fn)`` — each takes τ ∈ [0, 1] and returns the
+        scheduled weight.
+
+    Raises:
+        ValueError: on validation failure (α > cap, α/β out of range,
+        warmup_fraction not in [0, 1)).
+    """
+    del num_timesteps  # signature parity only
+
+    def _get(key, default=None):
+        if hasattr(cfg, "get"):
+            return cfg.get(key, default)
+        return getattr(cfg, key, default)
+
+    alpha = float(_get("alpha", 0.75))
+    beta = float(_get("beta", 0.10))
+    warmup = float(_get("warmup_fraction", 0.05))
+
+    if alpha > ALPHA_MAX_HARD_CAP + 1e-9:
+        raise ValueError(
+            f"finetune_config.alpha={alpha} exceeds the hard cap "
+            f"{ALPHA_MAX_HARD_CAP}. See "
+            f"scratch/registry/2026-05-30-c2c-reward-is-root-invariant/ "
+            f"— the c2c reward is root-invariant; tracking weight (1−α) "
+            f"must remain ≥ 0.25 to keep the policy from drifting in "
+            f"world coordinates."
+        )
+    if not (0.0 <= alpha <= 1.0):
+        raise ValueError(
+            f"finetune_config.alpha={alpha} must be in [0, 1]."
+        )
+    if beta < 0.0:
+        raise ValueError(
+            f"finetune_config.beta={beta} must be ≥ 0."
+        )
+    if not (0.0 <= warmup < 1.0):
+        raise ValueError(
+            f"finetune_config.warmup_fraction={warmup} must be in [0, 1)."
+        )
+
+    if warmup <= 0.0:
+        # Pure constants — return closures that ignore τ.
+        def alpha_fn(tau: jnp.ndarray) -> jnp.ndarray:
+            return jnp.full_like(jnp.asarray(tau, dtype=jnp.float32), alpha)
+
+        def beta_fn(tau: jnp.ndarray) -> jnp.ndarray:
+            return jnp.full_like(jnp.asarray(tau, dtype=jnp.float32), beta)
+    else:
+        # Linear ramp 0 → target over first ``warmup`` fraction, then
+        # hold at target.  jnp.minimum saturates the ramp at 1.0.
+        def alpha_fn(tau: jnp.ndarray) -> jnp.ndarray:
+            ramp = jnp.minimum(tau / warmup, 1.0)
+            return alpha * ramp
+
+        def beta_fn(tau: jnp.ndarray) -> jnp.ndarray:
+            ramp = jnp.minimum(tau / warmup, 1.0)
+            return beta * ramp
+
+    return alpha_fn, beta_fn

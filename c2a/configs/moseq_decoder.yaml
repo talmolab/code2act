@@ -329,6 +329,36 @@ code2code:
     vendi_kernel: "cosine"   # cosine | gaussian
     vendi_sigma: 1.0         # gaussian kernel bandwidth (ignored for cosine)
 
+  # ---------------------------------------------------------------------------
+  # Finetune-mode config (only consulted when reward_mode == 'finetune')
+  # ---------------------------------------------------------------------------
+  # Loads a pretrained pure-tracking checkpoint (specified via
+  # train_setup.checkpoint_to_restore — defaults to the path below) and
+  # adds c2c + diversity on top with constant (or briefly-warmed-up) α
+  # and β. Bootstrap-length validation is skipped (no bootstrap needed —
+  # policy is loaded). α ≤ 0.75 hard cap still applies.
+  #
+  # Requirements:
+  #   - Checkpoint MUST be pure-tracking (trained pre-2026-05-26, or
+  #     with code2code.reward_mode == 'off'). Loading a c2c-trained ckpt
+  #     here logs a warning but proceeds.
+  #   - Tokenizer MUST match the K that the original checkpoint was
+  #     trained with — the policy's code-embedding table is sized to
+  #     that K. The default ckpt (260513_062522_599062) was trained
+  #     with num_codes=50 and the K=30 default vae tokenizer at
+  #     outputs/tokenizer/trained_kinematics_vae_ckpts/vae/.
+  finetune_config:
+    alpha: 0.75              # c2c weight (constant after warmup)
+    beta: 0.10               # diversity weight (constant after warmup)
+    warmup_fraction: 0.05    # linear ramp 0→target over first 5%; 0 = pure constants
+    default_checkpoint: ${oc.env:C2A_ROOT,.}/model_checkpoints/260513_062522_599062
+    expected_num_codes: 50   # asserted at startup against network_config.num_codes
+    # Internal: resolved-absolute checkpoint path written by
+    # _build_c2c_env_kwargs after path normalization; consumed by
+    # _post_init_params_fn for the actual policy-params load.  Declared
+    # here so OmegaConf struct mode allows the runtime update.
+    _resolved_checkpoint: null
+
 # =============================================================================
 # Logging Configuration
 # =============================================================================
