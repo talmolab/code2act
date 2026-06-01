@@ -60,18 +60,24 @@ def grouped_vendi_per_step(
     c_step: jnp.ndarray,
     num_codes: int,
     min_group_size: int,
+    max_envs: int | None = None,
 ) -> jnp.ndarray:
     """Vendi score per group, distributed back to per-env diversity reward.
 
     Implementation strategy: for each code c in [0, num_codes), build a
     mask of envs whose target code is c.  Compute the cosine kernel on
-    the FULL batch (B×B), but masked so off-group entries become 1 (the
-    additive identity for the cosine-shifted kernel — see note below).
+    a fixed-shape ``(B_eig, B_eig)`` block (where ``B_eig = min(B,
+    max_envs)``), masked so off-group entries become 0 — see note below.
     The per-group VS is then `exp(H(λ/n_c))` where n_c is the active
     group size and λ are eigenvalues of the masked sub-kernel.
 
     For JIT-friendliness we use a per-code scan with fixed-size matrices
-    (B×B) rather than dynamic slicing.
+    rather than dynamic slicing.  The cost is dominated by ``eigvalsh``
+    on a ``B_eig × B_eig`` matrix per code per step, which is O(B_eig³)
+    — passing ``max_envs`` keeps this tractable when the rollout batch
+    grows large (at B=2048 the unsubsampled cost is unworkable; B_eig=64
+    is ~32 000× cheaper and produces a representative estimate of the
+    same group-diversity quantity since envs are i.i.d.).
 
     Args:
         z_step: ``(B, d)`` rollout-encoded z per env at this timestep.
@@ -80,15 +86,31 @@ def grouped_vendi_per_step(
         min_group_size: groups smaller than this return ``log(VS) = 0``
             for their member envs (avoids noisy eigendecomp on tiny
             matrices).
+        max_envs: when set and ``< B``, compute Vendi on the first
+            ``max_envs`` envs only and broadcast each code's log(VS)
+            back to ALL envs whose target code matches.  Cuts the
+            eigendecomp cost from O(B³) to O(max_envs³) per code per
+            step.  ``None`` = no subsample (original behavior).
 
     Returns:
-        ``(B,)`` per-env ``log(VS_{c_b})`` (zero for envs in small groups).
+        ``(B,)`` per-env ``log(VS_{c_b})`` (zero for envs in small groups,
+        or whose target code did not appear ``≥ min_group_size`` times
+        within the eigendecomp subset).
     """
     B = z_step.shape[0]
     eps = 1e-10
 
-    Z_norm = z_step / (jnp.linalg.norm(z_step, axis=-1, keepdims=True) + eps)
-    cos_full = Z_norm @ Z_norm.T                     # (B, B) in [-1, 1]
+    if max_envs is not None and max_envs < B:
+        z_eig = z_step[:max_envs]
+        c_eig = c_step[:max_envs]
+        B_eig = int(max_envs)
+    else:
+        z_eig = z_step
+        c_eig = c_step
+        B_eig = B
+
+    Z_norm = z_eig / (jnp.linalg.norm(z_eig, axis=-1, keepdims=True) + eps)
+    cos_full = Z_norm @ Z_norm.T                     # (B_eig, B_eig) in [-1, 1]
 
     def per_code_log_vs(c):
         """Compute log(VS) for code c and broadcast to all envs in c's group.
@@ -103,17 +125,17 @@ def grouped_vendi_per_step(
         shifted kernel is 1).  So normalizing the top-n_c eigvals by n_c
         gives the per-group probability distribution exactly.
         """
-        in_group = (c_step == c).astype(jnp.float32)  # (B,)
+        in_group = (c_eig == c).astype(jnp.float32)   # (B_eig,)
         n_c = jnp.sum(in_group)                       # scalar group size
 
-        outer_mask = in_group[:, None] * in_group[None, :]   # (B, B)
+        outer_mask = in_group[:, None] * in_group[None, :]   # (B_eig, B_eig)
         # K_in_group block padded with zeros outside.  Diagonal in-group = 1.
         K_masked = 0.5 * (cos_full + 1.0) * outer_mask
-        eigvals = jnp.linalg.eigvalsh(K_masked)        # (B,) sorted ascending
-        eigvals_desc = jnp.sort(eigvals)[::-1]         # (B,) sorted descending
+        eigvals = jnp.linalg.eigvalsh(K_masked)        # (B_eig,) sorted ascending
+        eigvals_desc = jnp.sort(eigvals)[::-1]         # sorted descending
 
         # Top n_c eigvals are the non-zero ones (from the in-group block).
-        positions = jnp.arange(B)
+        positions = jnp.arange(B_eig)
         keep_mask = (positions < n_c).astype(jnp.float32)
         eigvals_kept = eigvals_desc * keep_mask        # zero-out the bottom
 
@@ -126,22 +148,24 @@ def grouped_vendi_per_step(
         VS = jnp.exp(H)
         log_VS = jnp.log(jnp.maximum(VS, 1.0))
 
-        # Gate on group size
+        # Gate on group size (within the subset)
         valid = (n_c >= min_group_size).astype(jnp.float32)
-        return log_VS * valid, in_group               # both broadcast/scatter back
+        return log_VS * valid
 
-    # Scan over codes; accumulate per-env diversity reward.
+    # Scan over codes; produce a per-code scalar log(VS).
     code_indices = jnp.arange(num_codes)
-    log_vs_per_code, in_group_per_code = jax.vmap(per_code_log_vs)(code_indices)
-    # log_vs_per_code: (num_codes,)
-    # in_group_per_code: (num_codes, B)
+    log_vs_per_code = jax.vmap(per_code_log_vs)(code_indices)   # (num_codes,)
 
-    # Each env's reward = the log(VS) of the code group it belongs to.
-    # Since each env has exactly one target code, only one row of
-    # in_group_per_code is 1 for that env; sum over codes selects it.
+    # Broadcast each code's log(VS) to ALL envs whose target code matches.
+    # We use the FULL c_step here (not c_eig) so that envs outside the
+    # eigendecomp subset still receive the diversity reward for their
+    # code group — the subset is just an i.i.d. estimator of VS_c.
+    in_group_full = (
+        c_step[:, None] == jnp.arange(num_codes)[None, :]
+    ).astype(jnp.float32)                                       # (B, K)
     r_diversity = jnp.sum(
-        log_vs_per_code[:, None] * in_group_per_code, axis=0
-    )                                                  # (B,)
+        log_vs_per_code[None, :] * in_group_full, axis=1
+    )                                                           # (B,)
     return r_diversity
 
 
@@ -150,6 +174,7 @@ def grouped_vendi_per_timestep(
     c_seq: jnp.ndarray,
     num_codes: int,
     min_group_size: int,
+    max_envs: int | None = None,
 ) -> jnp.ndarray:
     """vmap of :func:`grouped_vendi_per_step` over the time axis.
 
@@ -158,11 +183,13 @@ def grouped_vendi_per_timestep(
         c_seq: ``(T, B)`` target codes over time.
         num_codes: codebook size.
         min_group_size: see :func:`grouped_vendi_per_step`.
+        max_envs: see :func:`grouped_vendi_per_step` — when set, caps
+            the eigendecomp at the first ``max_envs`` envs per step.
 
     Returns:
         ``(T, B)`` per-step per-env ``log(VS)`` diversity rewards.
     """
     return jax.vmap(
         grouped_vendi_per_step,
-        in_axes=(0, 0, None, None),
-    )(z_seq, c_seq, num_codes, min_group_size)
+        in_axes=(0, 0, None, None, None),
+    )(z_seq, c_seq, num_codes, min_group_size, max_envs)

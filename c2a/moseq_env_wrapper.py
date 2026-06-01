@@ -89,6 +89,7 @@ class MoSeqImitation(Imitation):
         c2c_replace_alive_bonus: float = 0.0,
         # Curriculum-mode knobs (only consulted when reward_mode == 'curriculum')
         c2c_curriculum_alpha_fn: Optional[Any] = None,
+        c2c_curriculum_beta_fn: Optional[Any] = None,
         c2c_curriculum_target_total_steps: Optional[int] = None,
     ):
         super().__init__(config=config, clips=clips)
@@ -125,6 +126,10 @@ class MoSeqImitation(Imitation):
         # composes new_reward = (1 - α)·r_track + α·r_c2c.  The two modes
         # differ only in which schedule function is passed in.
         self._c2c_curriculum_alpha_fn = c2c_curriculum_alpha_fn
+        # beta_fn is optional: when present, the env writes β(τ) every step
+        # for the PPO loss to consume as the Vendi-diversity reward weight.
+        # If None, the loss-side path treats it as 0 → no diversity bonus.
+        self._c2c_curriculum_beta_fn = c2c_curriculum_beta_fn
         if c2c_reward_mode in ("curriculum", "finetune"):
             if c2c_curriculum_alpha_fn is None:
                 raise ValueError(
@@ -264,6 +269,13 @@ class MoSeqImitation(Imitation):
             (self._c2c_adapter.code_dim,), dtype=jnp.float32
         )
         new_info["c2c_target_code"] = jnp.int32(0)
+        # Curriculum/finetune schedule scalars surfaced via state.info so
+        # the PPO loss can read them through extras["state_extras"] and
+        # apply β(τ) · log(VS) as the diversity bonus on the reward.
+        # Default 0.0 keeps the pytree shape uniform across modes; non-
+        # curriculum modes never overwrite them.
+        new_info["c2c_curriculum_alpha"] = jnp.float32(0.0)
+        new_info["c2c_curriculum_beta"] = jnp.float32(0.0)
         # Mirror the c2c scalars in state.info for any per-step
         # consumer that inspects raw env output.
         new_info["episode_c2c_reward"] = jnp.float32(0.0)
@@ -293,6 +305,7 @@ class MoSeqImitation(Imitation):
         # Curriculum-mode metrics — always present for uniform pytree.
         # Populated meaningfully only when reward_mode == 'curriculum'.
         state.metrics["c2c_curriculum_alpha"] = jnp.float32(0.0)
+        state.metrics["c2c_curriculum_beta"] = jnp.float32(0.0)
         state.metrics["c2c_curriculum_r_track"] = state.reward.astype(jnp.float32)
         state.metrics["c2c_curriculum_r_c2c_raw"] = jnp.float32(0.0)
 
@@ -349,16 +362,24 @@ class MoSeqImitation(Imitation):
                 self._c2c_track_weight * state.reward + self._c2c_alpha * match
             )
             curriculum_alpha = jnp.float32(0.0)
+            curriculum_beta = jnp.float32(0.0)
         elif self._c2c_reward_mode == "replace":
             new_reward = (
                 self._c2c_alpha * match + self._c2c_replace_alive_bonus
             )
             curriculum_alpha = jnp.float32(0.0)
+            curriculum_beta = jnp.float32(0.0)
         else:  # "curriculum" OR "finetune" — α(τ)-scheduled mix
             # Curriculum uses a tanh ramp; finetune uses a constant
             # (optionally with a brief linear warmup).  Both go through
             # the same composition: (1-α)·r_track + α·(self._c2c_alpha · match).
+            # β(τ) is computed here so the loss can apply β · log(VS) as
+            # the cross-env diversity bonus without re-deriving the schedule.
             curriculum_alpha = self._c2c_curriculum_alpha_fn(tau).astype(jnp.float32)
+            if self._c2c_curriculum_beta_fn is not None:
+                curriculum_beta = self._c2c_curriculum_beta_fn(tau).astype(jnp.float32)
+            else:
+                curriculum_beta = jnp.float32(0.0)
             new_reward = (
                 (1.0 - curriculum_alpha) * state.reward
                 + curriculum_alpha * (self._c2c_alpha * match)
@@ -387,6 +408,11 @@ class MoSeqImitation(Imitation):
         # Stored every step so the pytree shape is mode-invariant.
         new_info["c2c_z_rollout"] = z.astype(jnp.float32)
         new_info["c2c_target_code"] = c_target.astype(jnp.int32)
+        # Schedule scalars surfaced to state.info so the PPO loss can
+        # read β(τ) via extras["state_extras"] and apply β · log(VS) on
+        # the rollout — no need to re-derive the schedule loss-side.
+        new_info["c2c_curriculum_alpha"] = curriculum_alpha
+        new_info["c2c_curriculum_beta"] = curriculum_beta
         # Per-step reconstructed code (raw argmin index) — see reset()
         # comment. Used by the render pipeline to draw a "what code the
         # rollout's motion encodes to" timeline bar.
@@ -400,6 +426,7 @@ class MoSeqImitation(Imitation):
         state.metrics["c2c_discrete_match"] = discrete_match
         state.metrics["c2c_track_reward"] = track_reward
         state.metrics["c2c_curriculum_alpha"] = curriculum_alpha
+        state.metrics["c2c_curriculum_beta"] = curriculum_beta
         state.metrics["c2c_curriculum_r_track"] = track_reward
         state.metrics["c2c_curriculum_r_c2c_raw"] = scaled_reward
 

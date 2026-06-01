@@ -71,6 +71,20 @@ def generate_unroll_rnn_moseq(
         actions, policy_extras, new_hidden = policy(state.obs, hidden, current_key)
         nstate = env.step(state, actions)
         state_extras = {x: nstate.info[x] for x in extra_fields}
+        # MoSeq-specific extras the loss consumes for the Vendi diversity
+        # bonus.  Always present in nstate.info: seeded in env reset and
+        # written every env step (see MoSeqImitation.reset/step), so the
+        # scan pytree shape is uniform across all modes.  Vendi only fires
+        # in curriculum/finetune modes where β > 0; in other modes the β
+        # entry is zero and the diversity term contributes nothing.
+        for _c2c_key in (
+            "c2c_z_rollout",
+            "c2c_target_code",
+            "c2c_curriculum_alpha",
+            "c2c_curriculum_beta",
+        ):
+            if _c2c_key in nstate.info:
+                state_extras[_c2c_key] = nstate.info[_c2c_key]
 
         transition = types.Transition(
             observation=state.obs,
@@ -149,6 +163,11 @@ def train(
     kl_weight_fn: Callable[[int], float] | None = None,
     distill_kl_weight: float = 0.0,
     post_init_params_fn: Callable | None = None,
+    # Vendi diversity bonus (curriculum + finetune modes)
+    vendi_enabled: bool = False,
+    vendi_num_codes: int = 0,
+    vendi_min_group_size: int = 4,
+    vendi_max_envs: int | None = None,
 ):
     """Train a MoSeq decoder PPO agent.
 
@@ -220,6 +239,10 @@ def train(
                 kl_weight=effective_kl,
                 z_e_scale=z_e_scale,
                 distill_kl_weight=_distill_kl_weight,
+                vendi_enabled=vendi_enabled,
+                vendi_num_codes=vendi_num_codes,
+                vendi_min_group_size=vendi_min_group_size,
+                vendi_max_envs=vendi_max_envs,
             )
 
         original_losses.compute_ppo_loss = moseq_rnn_loss_wrapper
