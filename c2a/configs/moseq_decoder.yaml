@@ -379,6 +379,26 @@ code2code:
     tau_hold: 0.02
     tau_fade_end: 0.15
 
+  # ---------------------------------------------------------------------------
+  # Distinguishability term (Phase 4 / Term 3 of the skill-diversity objective)
+  # ---------------------------------------------------------------------------
+  # Per-step KL between π(·|s, z) and the code-marginalized π̄(·|s),
+  # estimated by re-running the policy with K distance-weighted alt codes.
+  # Reward is added to per-step rewards BEFORE GAE so it flows through
+  # advantages.  Cost: K extra apply_sequence calls per loss invocation.
+  distinguish_config:
+    enabled: true
+    weight: 0.01              # λ_A target (KL bonus weight at saturation)
+    num_alt_codes: 3          # K — extra forward passes per loss call
+    sampling: distance_weighted   # alternative: "uniform" (not implemented yet)
+    sampling_distance: cosine     # matches c2c reward distance metric
+    # lambda_A ramp shape (re-uses make_distillation_schedule under the hood
+    # by passing init=weight, final=0 and inverting):
+    lambda_A_schedule:
+      # finetune mode:
+      tau_hold: 0.02         # λ_A=0 for τ < tau_hold (while loaded ckpt warms up)
+      tau_fade_end: 0.10     # λ_A reaches `weight` at this τ
+
 # =============================================================================
 # Logging Configuration
 # =============================================================================

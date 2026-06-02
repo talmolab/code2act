@@ -1267,6 +1267,79 @@ def main(cfg: DictConfig) -> None:
                 float(_distill_sched_cfg.get("final", 0.0)),
             )
 
+    # Distinguishability term (Phase 4 / Term 3).  When enabled, precompute
+    # the (num_codes, num_codes) distance-weighted alt-code sampling table
+    # from the adapter's frozen codebook, and build the λ_A(τ) ramp.
+    _distinguish_enabled = False
+    _distinguish_weight_fn = None
+    _distinguish_sampling_probs = None
+    _distinguish_num_alt_codes = 3
+    _dist_cfg = cfg.code2code.get("distinguish_config", None)
+    if _dist_cfg is not None and bool(_dist_cfg.get("enabled", False)):
+        _dist_adapter = c2c_kwargs.get("c2c_adapter", None)
+        if _dist_adapter is None:
+            raise ValueError(
+                "code2code.distinguish_config.enabled=True requires a VAE "
+                "adapter (which provides the codebook for distance-weighted "
+                "alt-code sampling).  Ensure code2code.tokenizer_kind=vae "
+                "and the adapter loads successfully."
+            )
+        from c2a.code2code.distinguishability import (
+            precompute_alt_code_sampling_probs,
+        )
+
+        _distinguish_enabled = True
+        _distinguish_num_alt_codes = int(_dist_cfg.get("num_alt_codes", 3))
+        _distinguish_sampling_probs = precompute_alt_code_sampling_probs(
+            _dist_adapter.all_codebook_entries()
+        )
+
+        # λ_A(τ) ramp.  Reused make_distillation_schedule with init/final
+        # swapped for an ascending ramp (init=0 at τ=0, final=weight at τ=1).
+        # For finetune mode we hold at 0 until tau_start, then linearly
+        # ramp up to `weight`.  For curriculum we use a tanh starting later
+        # to match α's transition.
+        from c2a.code2code.schedules import make_distillation_schedule
+
+        _weight_target = float(_dist_cfg.get("weight", 0.01))
+        _mode_for_ramp = (
+            "curriculum"
+            if cfg.code2code.get("reward_mode", "off") == "curriculum"
+            else "finetune"
+        )
+        _ramp_cfg = _dist_cfg.get(
+            "lambda_A_schedule",
+            None,
+        )
+        # Build a config that make_distillation_schedule can re-use: we
+        # reverse init/final so the "fade" becomes a "ramp up".  We then
+        # post-process the returned function to invert the start/end values.
+        if _ramp_cfg is None:
+            # Aggressive defaults: ramp starts almost immediately, reaches
+            # full at τ=0.10 (finetune) or τ=0.32 (curriculum).
+            _ramp_cfg = (
+                {"tau_hold": 0.02, "tau_fade_end": 0.10}
+                if _mode_for_ramp == "finetune"
+                else {"tau_mid": 0.25, "tau_scale": 0.04}
+            )
+        # Compose a schedule that goes 0 → weight as τ → 1.  We get this
+        # for free by passing init=weight, final=0 to make_distillation_schedule
+        # (which produces a *decay* from weight to 0) and then re-inverting.
+        _fade_fn = make_distillation_schedule(
+            {"init": _weight_target, "final": 0.0, **_ramp_cfg},
+            mode=_mode_for_ramp,
+        )
+
+        def _distinguish_weight_fn(tau, _fade=_fade_fn, _w=_weight_target):
+            # _fade(τ) ranges from _w down to 0; we want 0 up to _w.
+            return _w - _fade(tau)
+
+        logging.info(
+            "distinguishability term: enabled (mode=%s, weight=%.4f, "
+            "num_alt_codes=%d, sampling=distance_weighted)",
+            _mode_for_ramp, _weight_target, _distinguish_num_alt_codes,
+        )
+
     _post_init_params_fn = None
     if _is_finetune_mode:
         # Finetune branch: load full policy params from the finetune ckpt.
@@ -1551,6 +1624,10 @@ def main(cfg: DictConfig) -> None:
         num_timesteps_for_schedule=int(
             cfg.train_setup.train_config.num_timesteps
         ),
+        distinguish_enabled=_distinguish_enabled,
+        distinguish_weight_fn=_distinguish_weight_fn,
+        distinguish_sampling_probs=_distinguish_sampling_probs,
+        distinguish_num_alt_codes=_distinguish_num_alt_codes,
         post_init_params_fn=_post_init_params_fn,
     )
 
@@ -1634,6 +1711,10 @@ def main(cfg: DictConfig) -> None:
                 "distill_kl_weight_now",
             ):
                 grouped[f"distillation/{k}"] = v
+            elif k.startswith("distinguish_"):
+                # Distinguishability term metrics (Term 3 of skill-diversity
+                # objective): per-step KL, λ_A weight, reward bonus mean.
+                grouped[f"distinguish/{k}"] = v
             elif (
                 k.startswith("c2c_curriculum_")
                 or "episode_c2c_curriculum_" in k

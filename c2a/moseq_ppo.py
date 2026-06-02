@@ -162,6 +162,10 @@ def train(
     distill_kl_weight: float = 0.0,
     distill_kl_weight_fn: Callable[[float], float] | None = None,
     num_timesteps_for_schedule: int | None = None,
+    distinguish_enabled: bool = False,
+    distinguish_weight_fn: Callable[[float], float] | None = None,
+    distinguish_sampling_probs: Any | None = None,
+    distinguish_num_alt_codes: int = 3,
     post_init_params_fn: Callable | None = None,
 ):
     """Train a MoSeq decoder PPO agent.
@@ -188,6 +192,10 @@ def train(
     _kl_weight_fn = kl_weight_fn
     _distill_kl_weight = distill_kl_weight
     _distill_kl_weight_fn = distill_kl_weight_fn
+    _distinguish_enabled = distinguish_enabled
+    _distinguish_weight_fn = distinguish_weight_fn
+    _distinguish_sampling_probs = distinguish_sampling_probs
+    _distinguish_num_alt_codes = distinguish_num_alt_codes
     # Normalize the integer step counter against the total training horizon
     # so callers schedule on τ = step / num_timesteps_for_schedule.
     # When None, fall back to num_timesteps (always present in this train()).
@@ -233,6 +241,11 @@ def train(
             if _distill_kl_weight_fn is not None:
                 tau_now = step / _schedule_total
                 distill_kl_weight_now = _distill_kl_weight_fn(tau_now)
+            # Distinguishability λ_A ramp: same τ source as distillation fade.
+            distinguish_weight_now = 0.0
+            if _distinguish_enabled and _distinguish_weight_fn is not None:
+                tau_now = step / _schedule_total
+                distinguish_weight_now = _distinguish_weight_fn(tau_now)
             return compute_moseq_recurrent_ppo_loss(
                 params=params,
                 normalizer_params=normalizer_params,
@@ -251,6 +264,10 @@ def train(
                 z_e_scale=z_e_scale,
                 distill_kl_weight=_distill_kl_weight,
                 distill_kl_weight_now=distill_kl_weight_now,
+                distinguish_enabled=_distinguish_enabled,
+                distinguish_weight_now=distinguish_weight_now,
+                distinguish_sampling_probs=_distinguish_sampling_probs,
+                distinguish_num_alt_codes=_distinguish_num_alt_codes,
             )
 
         original_losses.compute_ppo_loss = moseq_rnn_loss_wrapper
