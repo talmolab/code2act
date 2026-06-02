@@ -678,40 +678,43 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
             f"ckpt and codes_path must come from the same training run."
         )
 
-    # Temperature: auto-calibrate, or use the user-specified scalar.
+    # Load cal_qpos/cal_codes always — needed both for optional temperature
+    # auto-calibration AND for the integrity check below.  (Previously only
+    # set inside the auto-calibration branch, which caused an UnboundLocalError
+    # when temperature was set to a fixed float — Phase 3 config bump exposed
+    # this latent bug.)
     temp_cfg = c2c_cfg.get("temperature", "auto")
     distance_form = str(c2c_cfg.get("distance_form", "cosine"))
+    ref_h5 = cfg.env_config.reference_data_path
+    clip_length = int(cfg.env_config.clip_length)
+    import h5py
+
+    with h5py.File(ref_h5, "r") as f:
+        qpos_flat = f["qpos"][:]
+    n_total = qpos_flat.shape[0] // clip_length
+    clipped = qpos_flat[: n_total * clip_length].reshape(
+        n_total, clip_length, -1,
+    ).astype(np.float32)
+    # payload.train_codes is aligned to train_clips row order; we
+    # can use it directly. clipped is in original H5 order, so we
+    # need to subset by train_indices to align.
+    try:
+        with open(cfg.env_config.balanced_split_path) as f:
+            splits = json.load(f)
+        train_inds = np.array(
+            splits["balanced"]["train_indices"], dtype=np.int64,
+        )
+    except Exception:
+        train_inds = np.arange(payload.train_codes.shape[0])
+    cal_qpos = clipped[train_inds[: int(c2c_cfg.get("calibrate_n_clips", 50))]]
+    cal_codes = payload.train_codes[
+        : int(c2c_cfg.get("calibrate_n_clips", 50))
+    ]
+
+    # Temperature: auto-calibrate, or use the user-specified scalar.
     if str(temp_cfg) == "auto":
         from c2a.code2code.calibrate import calibrate_temperature
 
-        ref_h5 = cfg.env_config.reference_data_path
-        clip_length = int(cfg.env_config.clip_length)
-        # Pull reference qpos and codes for calibration. We use the
-        # training-split clips + codes (a subset is fine).
-        import h5py
-
-        with h5py.File(ref_h5, "r") as f:
-            qpos_flat = f["qpos"][:]
-        n_total = qpos_flat.shape[0] // clip_length
-        clipped = qpos_flat[: n_total * clip_length].reshape(
-            n_total, clip_length, -1,
-        ).astype(np.float32)
-        # payload.train_codes is aligned to train_clips row order; we
-        # can use it directly. clipped is in original H5 order, so we
-        # need to subset by train_indices to align.
-        train_inds = None
-        try:
-            with open(cfg.env_config.balanced_split_path) as f:
-                splits = json.load(f)
-            train_inds = np.array(
-                splits["balanced"]["train_indices"], dtype=np.int64,
-            )
-        except Exception:
-            train_inds = np.arange(payload.train_codes.shape[0])
-        cal_qpos = clipped[train_inds[: int(c2c_cfg.get("calibrate_n_clips", 50))]]
-        cal_codes = payload.train_codes[
-            : int(c2c_cfg.get("calibrate_n_clips", 50))
-        ]
         _, tau = calibrate_temperature(
             adapter,
             ref_qpos=cal_qpos,
@@ -734,20 +737,36 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     # encoder weights, etc. This is fail-fast: a misaligned pipeline
     # cannot be detected during PPO (rewards just look noisy), so we
     # gate startup on it.
+    #
+    # The check assumes auto-calibrated temperature → expected reward of
+    # `calibrate_target_reward` (default 0.3). When the user sets a
+    # manual temperature (Phase 3 soft-basin bump), expected reward
+    # shifts so we skip the check with a warning rather than failing
+    # spuriously.
     from c2a.code2code.calibrate import validate_reference_round_trip
 
-    validate_reference_round_trip(
-        adapter,
-        ref_qpos=cal_qpos,
-        target_codes=cal_codes,
-        tau=temperature,
-        distance_form=distance_form,  # type: ignore[arg-type]
-        reward_form=str(c2c_cfg.get("reward_form", "exp_neg_distance")),
-        expected_reward=float(c2c_cfg.get("calibrate_target_reward", 0.3)),
-        tolerance=float(c2c_cfg.get("integrity_check_tolerance", 0.08)),
-        n_clips_sample=int(c2c_cfg.get("calibrate_n_clips", 50)),
-        n_windows_per_clip=int(c2c_cfg.get("calibrate_n_windows_per_clip", 8)),
-    )
+    if str(temp_cfg) == "auto":
+        validate_reference_round_trip(
+            adapter,
+            ref_qpos=cal_qpos,
+            target_codes=cal_codes,
+            tau=temperature,
+            distance_form=distance_form,  # type: ignore[arg-type]
+            reward_form=str(c2c_cfg.get("reward_form", "exp_neg_distance")),
+            expected_reward=float(c2c_cfg.get("calibrate_target_reward", 0.3)),
+            tolerance=float(c2c_cfg.get("integrity_check_tolerance", 0.08)),
+            n_clips_sample=int(c2c_cfg.get("calibrate_n_clips", 50)),
+            n_windows_per_clip=int(c2c_cfg.get("calibrate_n_windows_per_clip", 8)),
+        )
+    else:
+        logging.warning(
+            "Skipping c2c reference round-trip integrity check because "
+            "code2code.temperature is manually set (%.4f rather than 'auto'). "
+            "The check expects auto-calibrated reward ≈ %.3f and would trip "
+            "on the soft-basin temperature bump.",
+            temperature,
+            float(c2c_cfg.get("calibrate_target_reward", 0.3)),
+        )
 
     logging.info(
         "code2code reward mode: %s, tokenizer_kind=%s, ckpt=%s, "
@@ -783,11 +802,20 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
         c2c_curriculum_alpha_fn = make_curriculum_schedules(
             cur_cfg, num_timesteps=target_total_steps,
         )
-        c2c_curriculum_target_total_steps = target_total_steps
+        # The env wrapper's c2c_env_step is PER-ENV (it grows by 1 per call
+        # to step() for a single env).  To make tau = c2c_env_step /
+        # target_total_steps yield correct global training progress, the
+        # target must be in per-env units: total / num_envs.  See the
+        # 2026-05-31 Vendi-schedule-bug retrospective for the same issue.
+        _num_envs_for_schedule = int(cfg.train_setup.train_config.num_envs)
+        c2c_curriculum_target_total_steps = (
+            target_total_steps // max(_num_envs_for_schedule, 1)
+        )
         logging.info(
-            "curriculum mode: alpha schedule built, target_total_steps=%d "
+            "curriculum mode: alpha schedule built, "
+            "target_total_steps=%d global, %d per-env "
             "(α validation passed: α_max ≤ 0.75 and bootstrap ≥ 1e9 steps)",
-            target_total_steps,
+            target_total_steps, c2c_curriculum_target_total_steps,
         )
 
     elif reward_mode == "finetune":
@@ -853,13 +881,18 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
         c2c_curriculum_alpha_fn = make_finetune_schedules(
             ft_cfg, num_timesteps=target_total_steps,
         )
-        c2c_curriculum_target_total_steps = target_total_steps
+        # See curriculum branch above for rationale.  Per-env target so
+        # tau = c2c_env_step (per-env) / target yields correct global progress.
+        _num_envs_for_schedule = int(cfg.train_setup.train_config.num_envs)
+        c2c_curriculum_target_total_steps = (
+            target_total_steps // max(_num_envs_for_schedule, 1)
+        )
         logging.info(
             "finetune mode: ckpt=%s, alpha=%.3f, warmup=%.2f, "
-            "target_total_steps=%d",
+            "target_total_steps=%d global, %d per-env",
             ckpt_path, float(ft_cfg.get("alpha", 0.75)),
             float(ft_cfg.get("warmup_fraction", 0.05)),
-            target_total_steps,
+            target_total_steps, c2c_curriculum_target_total_steps,
         )
 
     return dict(

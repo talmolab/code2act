@@ -500,15 +500,18 @@ def compute_moseq_recurrent_ppo_loss(
         scaled_kl_loss = jnp.array(0.0)
 
     # Distillation KL loss (distill head predicts frozen encoder distribution).
-    # When distill_kl_weight_now is provided, it overrides the static
-    # distill_kl_weight — this is how the loss-side fade schedule
-    # (make_distillation_schedule) is plumbed in.
+    # When distill_kl_weight_now is provided (loss-side fade schedule from
+    # make_distillation_schedule), it overrides the static distill_kl_weight.
+    # The weight is a traced JAX value when schedules are active, so we can't
+    # use it in a Python `if`; we always compute distill_kl when distill_means
+    # is structurally available (compile-time) and multiply by the (possibly
+    # traced) weight — the weight is 0 outside the active distillation window.
     effective_distill_kl_weight = (
         distill_kl_weight_now
         if distill_kl_weight_now is not None
         else distill_kl_weight
     )
-    if distill_means is not None and effective_distill_kl_weight > 0:
+    if distill_means is not None:
         distill_kl_loss = compute_distill_kl_loss(
             cont_mean, cont_logvar, distill_means, distill_logvars,
         )

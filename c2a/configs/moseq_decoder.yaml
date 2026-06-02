@@ -216,7 +216,12 @@ train_setup:
 
   eval_every: 20_000_000
   episode_length: 200
-  reset_every: 20_000_000
+  # reset_every controls how often brax PPO fully resets env state.
+  # Set to > num_timesteps so c2c_env_step (per-env counter used by the α
+  # schedule) is NOT periodically zeroed mid-training.  Without this, α
+  # cycles in a tiny range and never reaches its target value (the same
+  # mechanism that broke the Vendi β schedule).
+  reset_every: 2_000_000_000
 
   train_config:
     num_envs: 2048
