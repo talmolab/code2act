@@ -15,8 +15,6 @@ import jax.numpy as jnp
 from brax.training import types
 from brax.training.types import Params
 
-from c2a.code2code.diversity import grouped_vendi_per_timestep
-
 
 @flax.struct.dataclass
 class PPONetworkParams:
@@ -296,10 +294,6 @@ def compute_moseq_recurrent_ppo_loss(
     kl_weight: float = 0.0,
     z_e_scale: float = 1.0,
     distill_kl_weight: float = 0.0,
-    vendi_enabled: bool = False,
-    vendi_num_codes: int = 0,
-    vendi_min_group_size: int = 4,
-    vendi_max_envs: int | None = None,
 ) -> tuple[jnp.ndarray, types.Metrics]:
     """Compute PPO loss for the recurrent MoSeq decoder.
 
@@ -401,39 +395,6 @@ def compute_moseq_recurrent_ppo_loss(
     rewards = data.reward * reward_scaling
     truncation = data.extras["state_extras"]["truncation"]
     termination = (1 - data.discount) * (1 - truncation)
-
-    # ---- Vendi diversity bonus (curriculum + finetune modes) ----
-    # Per-(t, code-group) Vendi rewards the batch for producing many
-    # distinct realizations of the same target code.  The env wrote z,
-    # target_code, and β(τ) to state.info every step; we read them
-    # through state_extras, compute log(VS) per (t, group), and add
-    # β · log(VS) to the per-env reward BEFORE GAE so the diversity
-    # signal flows into advantages.  Disabled modes skip this block
-    # entirely — no trace cost when vendi_enabled=False.
-    if vendi_enabled:
-        z_seq = data.extras["state_extras"]["c2c_z_rollout"]       # (T, B, d)
-        c_seq = data.extras["state_extras"]["c2c_target_code"]     # (T, B)
-        beta_seq = data.extras["state_extras"]["c2c_curriculum_beta"]  # (T, B)
-        log_vs_seq = grouped_vendi_per_timestep(
-            z_seq, c_seq, vendi_num_codes, vendi_min_group_size,
-            max_envs=vendi_max_envs,
-        )                                                          # (T, B)
-        log_vs_seq = jnp.nan_to_num(
-            log_vs_seq, nan=0.0, posinf=0.0, neginf=0.0,
-        )
-        diversity_reward = beta_seq * log_vs_seq                   # (T, B)
-        rewards = rewards + diversity_reward
-        vendi_metrics = {
-            "vendi_log_vs_mean": jnp.mean(log_vs_seq),
-            "vendi_log_vs_max": jnp.max(log_vs_seq),
-            "vendi_beta_mean": jnp.mean(beta_seq),
-            "vendi_diversity_reward_mean": jnp.mean(diversity_reward),
-            "vendi_active_frac": jnp.mean(
-                (log_vs_seq > 0).astype(jnp.float32)
-            ),
-        }
-    else:
-        vendi_metrics = {}
 
     target_log_probs = action_dist.log_prob(
         policy_logits, data.extras["policy_extras"]["raw_action"]
@@ -566,6 +527,5 @@ def compute_moseq_recurrent_ppo_loss(
         "prob_of_prev_code": jnp.array(0.0),
         "scaled_codebook_entropy_reg": jnp.array(0.0),
     }
-    metrics.update(vendi_metrics)
 
     return total_loss, metrics

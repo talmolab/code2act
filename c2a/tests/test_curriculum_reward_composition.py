@@ -17,9 +17,6 @@ DEFAULT_CFG = {
     "alpha_max": 0.75,
     "tau_mid": 0.30,
     "tau_scale": 0.05,
-    "beta_max": 0.10,
-    "tau_div_start": 0.55,
-    "tau_div_scale": 0.05,
 }
 
 
@@ -32,7 +29,7 @@ def _composed(alpha_fn, tau, r_track, r_c2c_raw):
 
 def test_curriculum_at_tau_zero_dominated_by_tracking():
     """At τ=0, α ≈ α_min so r_total ≈ r_track."""
-    alpha_fn, _ = make_curriculum_schedules(DEFAULT_CFG, int(5e9))
+    alpha_fn = make_curriculum_schedules(DEFAULT_CFG, int(5e9))
     r_total, alpha = _composed(alpha_fn, tau=0.0, r_track=2.0, r_c2c_raw=1.0)
     # α_min ≈ 0.05, so r_total ≈ 0.95 · 2 + 0.05 · 1 = 1.95
     assert alpha < 0.06
@@ -41,7 +38,7 @@ def test_curriculum_at_tau_zero_dominated_by_tracking():
 
 def test_curriculum_at_tau_one_capped_at_alpha_max():
     """At τ=1, α saturates at α_max (= 0.75), and r_total uses the floor."""
-    alpha_fn, _ = make_curriculum_schedules(DEFAULT_CFG, int(5e9))
+    alpha_fn = make_curriculum_schedules(DEFAULT_CFG, int(5e9))
     r_total, alpha = _composed(alpha_fn, tau=1.0, r_track=2.0, r_c2c_raw=1.0)
     assert alpha == pytest.approx(0.75, abs=0.01)
     # r_total = 0.25 · 2.0 + 0.75 · 1.0 = 1.25
@@ -50,7 +47,7 @@ def test_curriculum_at_tau_one_capped_at_alpha_max():
 
 def test_curriculum_at_tau_mid_is_average():
     """At τ = τ_mid, α = (α_min + α_max) / 2."""
-    alpha_fn, _ = make_curriculum_schedules(DEFAULT_CFG, int(5e9))
+    alpha_fn = make_curriculum_schedules(DEFAULT_CFG, int(5e9))
     _, alpha = _composed(
         alpha_fn, tau=DEFAULT_CFG["tau_mid"], r_track=1.0, r_c2c_raw=1.0
     )
@@ -60,7 +57,7 @@ def test_curriculum_at_tau_mid_is_average():
 
 def test_curriculum_tracking_floor_always_present():
     """For all τ ∈ [0, 1], (1 - α) ≥ 0.25 — tracking is never fully wiped."""
-    alpha_fn, _ = make_curriculum_schedules(DEFAULT_CFG, int(5e9))
+    alpha_fn = make_curriculum_schedules(DEFAULT_CFG, int(5e9))
     taus = jnp.linspace(0.0, 1.0, 50)
     for t in taus:
         alpha = float(alpha_fn(t))
@@ -68,20 +65,6 @@ def test_curriculum_tracking_floor_always_present():
         assert track_floor >= 0.24, (
             f"Track floor must be ≥ 0.24 for stability; "
             f"got {track_floor:.4f} at τ={float(t):.3f}"
-        )
-
-
-def test_beta_negligible_during_alpha_transition():
-    """Diversity bonus β is near zero through the α transition window."""
-    _, beta_fn = make_curriculum_schedules(DEFAULT_CFG, int(5e9))
-    # α transition is centered at 0.30 with scale 0.05; β starts at 0.55.
-    # During the α transition (say τ ∈ [0.2, 0.4]), β should be < 1e-2.
-    transition_taus = jnp.linspace(0.20, 0.40, 10)
-    for t in transition_taus:
-        b = float(beta_fn(t))
-        assert b < 1e-2, (
-            f"β should be negligible during α transition; "
-            f"got β({float(t):.3f}) = {b:.6f}"
         )
 
 

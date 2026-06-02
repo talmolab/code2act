@@ -12,9 +12,12 @@ This module exposes:
 
 * :func:`tanh_schedule` — generic tanh ramp factory.
 * :func:`make_curriculum_schedules` — validates curriculum-config dict
-  and returns ``(alpha_fn, beta_fn)``.  Validation rejects α_max > 0.75
-  and configs where bootstrap < 1e9 env steps (see retrospective
+  and returns ``alpha_fn`` for the tracking/c2c reward tradeoff.
+  Validation rejects α_max > 0.75 and configs where bootstrap < 1e9
+  env steps (see retrospective
   ``scratch/registry/2026-05-30-c2c-reward-is-root-invariant/``).
+* :func:`make_finetune_schedules` — same but for finetune mode (no
+  bootstrap requirement; linear warmup instead of tanh).
 """
 
 from __future__ import annotations
@@ -63,11 +66,11 @@ def tanh_schedule(
 def make_curriculum_schedules(
     cfg: Any,
     num_timesteps: int | None = None,
-) -> tuple[Callable[[jnp.ndarray], jnp.ndarray], Callable[[jnp.ndarray], jnp.ndarray]]:
-    """Build (alpha_fn, beta_fn) from a curriculum_config mapping.
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build ``alpha_fn`` from a curriculum_config mapping.
 
     The config must supply ``alpha_min``, ``alpha_max``, ``tau_mid``,
-    ``tau_scale``, ``beta_max``, ``tau_div_start``, ``tau_div_scale``.
+    ``tau_scale``.
 
     Validation:
 
@@ -87,8 +90,8 @@ def make_curriculum_schedules(
             validation).  Skip the check when None.
 
     Returns:
-        ``(alpha_fn, beta_fn)`` — each takes τ ∈ [0, 1] and returns the
-        scheduled weight.
+        ``alpha_fn`` — a callable that takes τ ∈ [0, 1] and returns the
+        scheduled tracking/c2c tradeoff weight.
 
     Raises:
         ValueError: on any validation failure.
@@ -102,9 +105,6 @@ def make_curriculum_schedules(
     alpha_max = float(_get("alpha_max", 0.75))
     tau_mid = float(_get("tau_mid", 0.30))
     tau_scale = float(_get("tau_scale", 0.05))
-    beta_max = float(_get("beta_max", 0.10))
-    tau_div_start = float(_get("tau_div_start", 0.55))
-    tau_div_scale = float(_get("tau_div_scale", 0.05))
 
     # ── Hard cap on alpha_max ─────────────────────────────────────────
     if alpha_max > ALPHA_MAX_HARD_CAP + 1e-9:
@@ -121,17 +121,13 @@ def make_curriculum_schedules(
             f"curriculum_config.alpha_min={alpha_min} must satisfy "
             f"0 ≤ alpha_min ≤ alpha_max={alpha_max}."
         )
-    if tau_scale <= 0.0 or tau_div_scale <= 0.0:
+    if tau_scale <= 0.0:
         raise ValueError(
-            "curriculum_config.tau_scale and tau_div_scale must be > 0."
+            "curriculum_config.tau_scale must be > 0."
         )
-    if not (0.0 <= tau_mid <= 1.0) or not (0.0 <= tau_div_start <= 1.0):
+    if not (0.0 <= tau_mid <= 1.0):
         raise ValueError(
-            "curriculum_config.tau_mid and tau_div_start must be in [0, 1]."
-        )
-    if beta_max < 0.0:
-        raise ValueError(
-            f"curriculum_config.beta_max={beta_max} must be ≥ 0."
+            "curriculum_config.tau_mid must be in [0, 1]."
         )
 
     # ── Bootstrap length check ────────────────────────────────────────
@@ -151,42 +147,40 @@ def make_curriculum_schedules(
                 f"tau_scale accordingly."
             )
 
-    alpha_fn = tanh_schedule(alpha_min, alpha_max, tau_mid, tau_scale)
-    beta_fn = tanh_schedule(0.0, beta_max, tau_div_start, tau_div_scale)
-    return alpha_fn, beta_fn
+    return tanh_schedule(alpha_min, alpha_max, tau_mid, tau_scale)
 
 
 def make_finetune_schedules(
     cfg: Any,
     num_timesteps: int | None = None,
-) -> tuple[Callable[[jnp.ndarray], jnp.ndarray], Callable[[jnp.ndarray], jnp.ndarray]]:
-    """Build (alpha_fn, beta_fn) for the ``finetune`` reward mode.
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build ``alpha_fn`` for the ``finetune`` reward mode.
 
     Unlike :func:`make_curriculum_schedules`, finetune mode does NOT need
     a bootstrap window — the policy is loaded pretrained from a
     pure-tracking checkpoint. Defaults:
 
-    * α and β each ramp linearly from 0 to their target over the first
-      ``warmup_fraction`` of training (default 5%), then hold constant.
-    * ``warmup_fraction = 0`` gives pure constants from τ = 0.
+    * α ramps linearly from 0 to its target over the first
+      ``warmup_fraction`` of training (default 5%), then holds constant.
+    * ``warmup_fraction = 0`` gives a pure constant from τ = 0.
 
     The α ≤ :data:`ALPHA_MAX_HARD_CAP` cap is still enforced — c2c is
     root-invariant regardless of training origin, so the tracking
     floor (1 − α) ≥ 0.25 stability argument applies.
 
     Args:
-        cfg: mapping-like with keys ``alpha`` (default 0.75), ``beta``
-            (default 0.10), ``warmup_fraction`` (default 0.05).
+        cfg: mapping-like with keys ``alpha`` (default 0.75),
+            ``warmup_fraction`` (default 0.05).
         num_timesteps: unused (kept for signature parity with
             :func:`make_curriculum_schedules`; finetune has no
             bootstrap-length validation to apply).
 
     Returns:
-        ``(alpha_fn, beta_fn)`` — each takes τ ∈ [0, 1] and returns the
-        scheduled weight.
+        ``alpha_fn`` — a callable that takes τ ∈ [0, 1] and returns the
+        scheduled tracking/c2c tradeoff weight.
 
     Raises:
-        ValueError: on validation failure (α > cap, α/β out of range,
+        ValueError: on validation failure (α > cap, α out of range,
         warmup_fraction not in [0, 1)).
     """
     del num_timesteps  # signature parity only
@@ -197,7 +191,6 @@ def make_finetune_schedules(
         return getattr(cfg, key, default)
 
     alpha = float(_get("alpha", 0.75))
-    beta = float(_get("beta", 0.10))
     warmup = float(_get("warmup_fraction", 0.05))
 
     if alpha > ALPHA_MAX_HARD_CAP + 1e-9:
@@ -213,22 +206,15 @@ def make_finetune_schedules(
         raise ValueError(
             f"finetune_config.alpha={alpha} must be in [0, 1]."
         )
-    if beta < 0.0:
-        raise ValueError(
-            f"finetune_config.beta={beta} must be ≥ 0."
-        )
     if not (0.0 <= warmup < 1.0):
         raise ValueError(
             f"finetune_config.warmup_fraction={warmup} must be in [0, 1)."
         )
 
     if warmup <= 0.0:
-        # Pure constants — return closures that ignore τ.
+        # Pure constant — return a closure that ignores τ.
         def alpha_fn(tau: jnp.ndarray) -> jnp.ndarray:
             return jnp.full_like(jnp.asarray(tau, dtype=jnp.float32), alpha)
-
-        def beta_fn(tau: jnp.ndarray) -> jnp.ndarray:
-            return jnp.full_like(jnp.asarray(tau, dtype=jnp.float32), beta)
     else:
         # Linear ramp 0 → target over first ``warmup`` fraction, then
         # hold at target.  jnp.minimum saturates the ramp at 1.0.
@@ -236,8 +222,4 @@ def make_finetune_schedules(
             ramp = jnp.minimum(tau / warmup, 1.0)
             return alpha * ramp
 
-        def beta_fn(tau: jnp.ndarray) -> jnp.ndarray:
-            ramp = jnp.minimum(tau / warmup, 1.0)
-            return beta * ramp
-
-    return alpha_fn, beta_fn
+    return alpha_fn

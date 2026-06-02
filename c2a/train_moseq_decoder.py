@@ -768,7 +768,6 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     # bootstrap ≥ 1e9 steps) lives in make_curriculum_schedules and
     # raises before we even instantiate the env.
     c2c_curriculum_alpha_fn = None
-    c2c_curriculum_beta_fn = None
     c2c_curriculum_target_total_steps = None
     if reward_mode == "curriculum":
         from c2a.code2code.schedules import make_curriculum_schedules
@@ -778,10 +777,10 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
             raise ValueError(
                 "code2code.reward_mode='curriculum' requires "
                 "code2code.curriculum_config block (alpha_min, alpha_max, "
-                "tau_mid, tau_scale, beta_max, tau_div_start, tau_div_scale)."
+                "tau_mid, tau_scale)."
             )
         target_total_steps = int(cfg.train_setup.train_config.num_timesteps)
-        c2c_curriculum_alpha_fn, c2c_curriculum_beta_fn = make_curriculum_schedules(
+        c2c_curriculum_alpha_fn = make_curriculum_schedules(
             cur_cfg, num_timesteps=target_total_steps,
         )
         c2c_curriculum_target_total_steps = target_total_steps
@@ -798,7 +797,7 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
         if ft_cfg is None:
             raise ValueError(
                 "code2code.reward_mode='finetune' requires "
-                "code2code.finetune_config block (alpha, beta, "
+                "code2code.finetune_config block (alpha, "
                 "warmup_fraction, default_checkpoint, expected_num_codes)."
             )
 
@@ -851,15 +850,14 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
             )
 
         target_total_steps = int(cfg.train_setup.train_config.num_timesteps)
-        c2c_curriculum_alpha_fn, c2c_curriculum_beta_fn = make_finetune_schedules(
+        c2c_curriculum_alpha_fn = make_finetune_schedules(
             ft_cfg, num_timesteps=target_total_steps,
         )
         c2c_curriculum_target_total_steps = target_total_steps
         logging.info(
-            "finetune mode: ckpt=%s, alpha=%.3f, beta=%.3f, warmup=%.2f, "
+            "finetune mode: ckpt=%s, alpha=%.3f, warmup=%.2f, "
             "target_total_steps=%d",
             ckpt_path, float(ft_cfg.get("alpha", 0.75)),
-            float(ft_cfg.get("beta", 0.10)),
             float(ft_cfg.get("warmup_fraction", 0.05)),
             target_total_steps,
         )
@@ -874,7 +872,6 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
         c2c_reward_mode=reward_mode,  # type: ignore[arg-type]
         c2c_replace_alive_bonus=float(c2c_cfg.get("replace_alive_bonus", 0.0)),
         c2c_curriculum_alpha_fn=c2c_curriculum_alpha_fn,
-        c2c_curriculum_beta_fn=c2c_curriculum_beta_fn,
         c2c_curriculum_target_total_steps=c2c_curriculum_target_total_steps,
     )
 
@@ -1244,41 +1241,6 @@ def main(cfg: DictConfig) -> None:
                 "_build_c2c_env_kwargs. This is a bug — please report."
             )
 
-    # Vendi diversity-bonus loss-side wiring.  Active in curriculum and
-    # finetune modes (the two modes where β(τ) > 0 in the env).  In other
-    # modes the env emits β = 0, so the loss-side computation would be a
-    # no-op anyway, but we still skip the trace for efficiency.
-    _reward_mode_for_vendi = cfg.code2code.get("reward_mode", "off")
-    _is_vendi_active = _reward_mode_for_vendi in ("curriculum", "finetune")
-    if _reward_mode_for_vendi == "curriculum":
-        _vendi_min_group_size = int(
-            cfg.code2code.curriculum_config.get("vendi_min_group_size", 4)
-        )
-        _vendi_max_envs = cfg.code2code.curriculum_config.get(
-            "vendi_max_envs", None
-        )
-    elif _reward_mode_for_vendi == "finetune":
-        _vendi_min_group_size = int(
-            cfg.code2code.finetune_config.get("vendi_min_group_size", 4)
-        )
-        _vendi_max_envs = cfg.code2code.finetune_config.get(
-            "vendi_max_envs", None
-        )
-    else:
-        _vendi_min_group_size = 4
-        _vendi_max_envs = None
-    _vendi_max_envs = (
-        int(_vendi_max_envs) if _vendi_max_envs is not None else None
-    )
-    if _is_vendi_active:
-        logging.info(
-            "vendi diversity bonus: enabled (mode=%s, num_codes=%d, "
-            "min_group_size=%d, max_envs=%s) — β(τ) · log(VS) added to "
-            "per-env rewards before GAE",
-            _reward_mode_for_vendi, num_codes, _vendi_min_group_size,
-            _vendi_max_envs if _vendi_max_envs is not None else "full",
-        )
-
     _post_init_params_fn = None
     if _is_finetune_mode:
         # Finetune branch: load full policy params from the finetune ckpt.
@@ -1560,15 +1522,6 @@ def main(cfg: DictConfig) -> None:
         kl_weight_fn=kl_weight_fn,
         distill_kl_weight=distill_kl_weight if use_distillation_head else 0.0,
         post_init_params_fn=_post_init_params_fn,
-        # Vendi diversity bonus — active only in curriculum/finetune modes,
-        # since these are the only ones that compute β(τ) > 0 in the env.
-        # The schedule writes β to state.info every step, the loss reads it
-        # via state_extras, computes grouped Vendi across the batch, and
-        # adds β · log(VS) to per-env rewards before GAE.
-        vendi_enabled=_is_vendi_active,
-        vendi_num_codes=num_codes,
-        vendi_min_group_size=_vendi_min_group_size,
-        vendi_max_envs=_vendi_max_envs,
     )
 
     # Rollout env for logging
@@ -1650,13 +1603,6 @@ def main(cfg: DictConfig) -> None:
                 "distill_mean_norm", "distill_logvar_mean",
             ):
                 grouped[f"distillation/{k}"] = v
-            elif k.startswith("vendi_"):
-                # Vendi diversity-bonus metrics from the PPO loss path
-                # (log_vs_mean/max, beta_mean, diversity_reward_mean,
-                # active_frac).  Route into the curriculum/ panel since
-                # the bonus is part of the curriculum/finetune reward
-                # composition.
-                grouped[f"curriculum/{k}"] = v
             elif (
                 k.startswith("c2c_curriculum_")
                 or "episode_c2c_curriculum_" in k

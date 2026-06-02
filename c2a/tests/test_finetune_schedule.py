@@ -1,7 +1,7 @@
 """Tests for c2a.code2code.schedules.make_finetune_schedules.
 
 The finetune schedule is simpler than curriculum's tanh ramp:
-* warmup_fraction = 0  →  pure constants α and β for all τ
+* warmup_fraction = 0  →  pure constant α for all τ
 * warmup_fraction > 0  →  linear ramp 0 → target over first
   ``warmup_fraction`` of training, then hold at target
 """
@@ -21,7 +21,6 @@ from c2a.code2code.schedules import (
 
 DEFAULT_CFG = {
     "alpha": 0.75,
-    "beta": 0.10,
     "warmup_fraction": 0.05,
 }
 
@@ -32,19 +31,11 @@ DEFAULT_CFG = {
 def test_warmup_zero_gives_constant_alpha():
     """warmup_fraction=0 → α(τ) = alpha for all τ ∈ [0, 1]."""
     cfg = dict(DEFAULT_CFG, warmup_fraction=0.0)
-    alpha_fn, _ = make_finetune_schedules(cfg, num_timesteps=int(1e9))
+    alpha_fn = make_finetune_schedules(cfg, num_timesteps=int(1e9))
     for t in jnp.linspace(0.0, 1.0, 21):
         assert float(alpha_fn(t)) == pytest.approx(DEFAULT_CFG["alpha"], abs=1e-6), (
             f"α({float(t):.3f}) should be {DEFAULT_CFG['alpha']}; got {float(alpha_fn(t)):.6f}"
         )
-
-
-def test_warmup_zero_gives_constant_beta():
-    """warmup_fraction=0 → β(τ) = beta for all τ ∈ [0, 1]."""
-    cfg = dict(DEFAULT_CFG, warmup_fraction=0.0)
-    _, beta_fn = make_finetune_schedules(cfg, num_timesteps=int(1e9))
-    for t in jnp.linspace(0.0, 1.0, 21):
-        assert float(beta_fn(t)) == pytest.approx(DEFAULT_CFG["beta"], abs=1e-6)
 
 
 # -------------------- warmup_fraction > 0 (linear ramp) --------------------
@@ -54,10 +45,9 @@ def test_warmup_ramps_to_target():
     """Linear ramp: α(0)=0, α(warmup/2)=alpha/2, α(warmup)=alpha,
     α(τ>warmup)=alpha."""
     cfg = DEFAULT_CFG.copy()
-    alpha_fn, beta_fn = make_finetune_schedules(cfg, num_timesteps=int(1e9))
+    alpha_fn = make_finetune_schedules(cfg, num_timesteps=int(1e9))
     w = DEFAULT_CFG["warmup_fraction"]
     alpha = DEFAULT_CFG["alpha"]
-    beta = DEFAULT_CFG["beta"]
 
     assert float(alpha_fn(jnp.array(0.0))) == pytest.approx(0.0, abs=1e-6)
     assert float(alpha_fn(jnp.array(w / 2))) == pytest.approx(alpha / 2, abs=1e-6)
@@ -67,17 +57,11 @@ def test_warmup_ramps_to_target():
     assert float(alpha_fn(jnp.array(0.5))) == pytest.approx(alpha, abs=1e-6)
     assert float(alpha_fn(jnp.array(1.0))) == pytest.approx(alpha, abs=1e-6)
 
-    # Same shape for β.
-    assert float(beta_fn(jnp.array(0.0))) == pytest.approx(0.0, abs=1e-6)
-    assert float(beta_fn(jnp.array(w / 2))) == pytest.approx(beta / 2, abs=1e-6)
-    assert float(beta_fn(jnp.array(w))) == pytest.approx(beta, abs=1e-6)
-    assert float(beta_fn(jnp.array(1.0))) == pytest.approx(beta, abs=1e-6)
-
 
 def test_warmup_monotone_nondecreasing():
     """Ramp is monotone-nondecreasing on [0, 1]."""
     cfg = DEFAULT_CFG.copy()
-    alpha_fn, _ = make_finetune_schedules(cfg, num_timesteps=int(1e9))
+    alpha_fn = make_finetune_schedules(cfg, num_timesteps=int(1e9))
     taus = jnp.linspace(0.0, 1.0, 100)
     values = np.asarray([float(alpha_fn(t)) for t in taus])
     assert (np.diff(values) >= -1e-7).all()
@@ -105,12 +89,6 @@ def test_alpha_out_of_range_rejected():
         make_finetune_schedules(dict(DEFAULT_CFG, alpha=-0.01))
 
 
-def test_negative_beta_rejected():
-    """beta < 0 rejected."""
-    with pytest.raises(ValueError, match="beta"):
-        make_finetune_schedules(dict(DEFAULT_CFG, beta=-0.1))
-
-
 def test_invalid_warmup_rejected():
     """warmup_fraction not in [0, 1) rejected."""
     with pytest.raises(ValueError, match="warmup_fraction"):
@@ -128,8 +106,7 @@ def test_no_bootstrap_validation():
     # Contrast: same num_timesteps would fail curriculum.
     with pytest.raises(ValueError, match="bootstrap"):
         make_curriculum_schedules(
-            {"alpha_min": 0.05, "alpha_max": 0.75, "tau_mid": 0.30, "tau_scale": 0.05,
-             "beta_max": 0.10, "tau_div_start": 0.55, "tau_div_scale": 0.05},
+            {"alpha_min": 0.05, "alpha_max": 0.75, "tau_mid": 0.30, "tau_scale": 0.05},
             num_timesteps=int(1e6),
         )
 

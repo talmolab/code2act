@@ -84,7 +84,6 @@ python3.12 bash_scripts/_pyrun.py c2a.train_moseq_decoder \
     code2code.vae_tokenizer_pkl="${VAE_PKL}" \
     code2code.alpha=1.0 \
     code2code.finetune_config.alpha=0.75 \
-    code2code.finetune_config.beta=0.10 \
     code2code.finetune_config.warmup_fraction=0.05 \
     code2code.finetune_config.expected_num_codes=50 \
     network_config.distill_kl_weight=1.0 \

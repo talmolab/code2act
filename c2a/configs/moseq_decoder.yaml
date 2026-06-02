@@ -322,17 +322,6 @@ code2code:
     alpha_max: 0.75          # c2c weight at τ = 1 (HARD CAP)
     tau_mid: 0.30            # α transition midpoint (τ at which α = (min+max)/2)
     tau_scale: 0.05          # α transition sharpness (~10% of training)
-    beta_max: 0.10           # diversity bonus weight at τ = 1
-    tau_div_start: 0.55      # diversity ramp midpoint (later than α midpoint)
-    tau_div_scale: 0.05      # diversity ramp sharpness
-    vendi_min_group_size: 5  # codes with fewer envs get diversity = 0
-    vendi_kernel: "cosine"   # cosine | gaussian
-    vendi_sigma: 1.0         # gaussian kernel bandwidth (ignored for cosine)
-    # Eigendecomp cost is O(vendi_max_envs^3) per code per step.  With B=2048
-    # the unsubsampled cost is unworkable; B_eig=64 is ~32 000× cheaper and
-    # produces a representative estimate of the same group-diversity quantity
-    # since envs are i.i.d.  Set to null to disable subsampling.
-    vendi_max_envs: 64
 
   # ---------------------------------------------------------------------------
   # Finetune-mode config (only consulted when reward_mode == 'finetune')
@@ -354,12 +343,9 @@ code2code:
   #     outputs/tokenizer/trained_kinematics_vae_ckpts/vae/.
   finetune_config:
     alpha: 0.75              # c2c weight (constant after warmup)
-    beta: 0.10               # diversity weight (constant after warmup)
     warmup_fraction: 0.05    # linear ramp 0→target over first 5%; 0 = pure constants
     default_checkpoint: ${oc.env:C2A_ROOT,.}/model_checkpoints/260513_062522_599062
     expected_num_codes: 50   # asserted at startup against network_config.num_codes
-    vendi_min_group_size: 5  # code groups with fewer envs contribute 0 diversity
-    vendi_max_envs: 64       # eigvalsh subset cap (O(N^3)); set null to disable subsample
     # Internal: resolved-absolute checkpoint path written by
     # _build_c2c_env_kwargs after path normalization; consumed by
     # _post_init_params_fn for the actual policy-params load.  Declared

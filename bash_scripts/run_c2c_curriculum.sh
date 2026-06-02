@@ -78,11 +78,6 @@ python3.12 bash_scripts/_pyrun.py c2a.train_moseq_decoder \
     code2code.curriculum_config.alpha_max=0.75 \
     code2code.curriculum_config.tau_mid=0.30 \
     code2code.curriculum_config.tau_scale=0.05 \
-    code2code.curriculum_config.beta_max=0.10 \
-    code2code.curriculum_config.tau_div_start=0.55 \
-    code2code.curriculum_config.tau_div_scale=0.05 \
-    code2code.curriculum_config.vendi_min_group_size=5 \
-    code2code.curriculum_config.vendi_kernel=cosine \
     network_config.distill_kl_weight=1.0 \
     train_setup.train_config.num_timesteps=5000000000 \
     train_setup.run_name=c2c_curriculum_k25_kl1 \

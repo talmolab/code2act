@@ -20,9 +20,6 @@ DEFAULT_CFG = {
     "alpha_max": 0.75,
     "tau_mid": 0.30,
     "tau_scale": 0.05,
-    "beta_max": 0.10,
-    "tau_div_start": 0.55,
-    "tau_div_scale": 0.05,
 }
 DEFAULT_TIMESTEPS = int(5e9)   # ≥ 1e9 bootstrap @ tau_mid=0.3 ⇒ 1.25e9 ✓
 
@@ -69,22 +66,21 @@ def test_tanh_bounded():
 
 
 def test_make_curriculum_default_cfg():
-    """Default config builds valid alpha_fn, beta_fn."""
-    alpha_fn, beta_fn = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
+    """Default config builds a valid alpha_fn."""
+    alpha_fn = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
     assert callable(alpha_fn)
-    assert callable(beta_fn)
 
 
 def test_alpha_endpoint_values():
     """alpha(0) ≈ alpha_min, alpha(1) ≈ alpha_max."""
-    alpha_fn, _ = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
+    alpha_fn = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
     assert float(alpha_fn(jnp.array(0.0))) == pytest.approx(DEFAULT_CFG["alpha_min"], abs=0.01)
     assert float(alpha_fn(jnp.array(1.0))) == pytest.approx(DEFAULT_CFG["alpha_max"], abs=0.01)
 
 
 def test_alpha_at_midpoint():
     """alpha(τ_mid) = (alpha_min + alpha_max) / 2."""
-    alpha_fn, _ = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
+    alpha_fn = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
     expected = (DEFAULT_CFG["alpha_min"] + DEFAULT_CFG["alpha_max"]) / 2.0
     assert float(alpha_fn(jnp.array(DEFAULT_CFG["tau_mid"]))) == pytest.approx(
         expected, abs=1e-5
@@ -93,7 +89,7 @@ def test_alpha_at_midpoint():
 
 def test_alpha_monotone_nondecreasing():
     """alpha is monotone-nondecreasing on [0, 1]."""
-    alpha_fn, _ = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
+    alpha_fn = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
     taus = jnp.linspace(0.0, 1.0, 50)
     values = np.asarray([float(alpha_fn(t)) for t in taus])
     assert (np.diff(values) >= -1e-7).all()
@@ -101,29 +97,11 @@ def test_alpha_monotone_nondecreasing():
 
 def test_alpha_bounded_within_min_max():
     """alpha(τ) ∈ [alpha_min, alpha_max] for τ ∈ [0, 1]."""
-    alpha_fn, _ = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
+    alpha_fn = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
     taus = jnp.linspace(0.0, 1.0, 50)
     for t in taus:
         v = float(alpha_fn(t))
         assert DEFAULT_CFG["alpha_min"] - 1e-3 <= v <= DEFAULT_CFG["alpha_max"] + 1e-3
-
-
-def test_beta_starts_at_zero_ends_at_beta_max():
-    """beta(0) ≈ 0, beta(1) ≈ beta_max."""
-    _, beta_fn = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
-    assert float(beta_fn(jnp.array(0.0))) == pytest.approx(0.0, abs=0.01)
-    assert float(beta_fn(jnp.array(1.0))) == pytest.approx(DEFAULT_CFG["beta_max"], abs=0.01)
-
-
-def test_beta_starts_later_than_alpha():
-    """At alpha's midpoint, beta should still be near zero (diversity ramps later)."""
-    alpha_fn, beta_fn = make_curriculum_schedules(DEFAULT_CFG, DEFAULT_TIMESTEPS)
-    at_alpha_mid = float(beta_fn(jnp.array(DEFAULT_CFG["tau_mid"])))
-    # tau_mid = 0.30, tau_div_start = 0.55, so at 0.30 we're (0.55-0.30)/0.05
-    # = 5 scales before div midpoint → tanh ≈ -1 → beta ≈ 0.
-    assert at_alpha_mid < 0.001, (
-        f"beta should be near zero at alpha midpoint; got {at_alpha_mid}"
-    )
 
 
 # -------------------- make_curriculum_schedules: validation --------------------
@@ -175,9 +153,3 @@ def test_invalid_tau_mid_rejected():
     """tau_mid outside [0, 1] rejected."""
     with pytest.raises(ValueError, match="tau_mid"):
         make_curriculum_schedules(dict(DEFAULT_CFG, tau_mid=1.5), DEFAULT_TIMESTEPS)
-
-
-def test_negative_beta_max_rejected():
-    """beta_max < 0 rejected."""
-    with pytest.raises(ValueError, match="beta_max"):
-        make_curriculum_schedules(dict(DEFAULT_CFG, beta_max=-0.1), DEFAULT_TIMESTEPS)
