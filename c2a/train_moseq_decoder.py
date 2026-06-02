@@ -1654,8 +1654,19 @@ def main(cfg: DictConfig) -> None:
         kl_weight_fn=kl_weight_fn,
         distill_kl_weight=distill_kl_weight if use_distillation_head else 0.0,
         distill_kl_weight_fn=_distill_kl_weight_fn,
+        # The `step` parameter passed to the loss by track-mjx is the
+        # ITERATION INDEX (see ppo.py:570 `step = ones_like(env_steps) * it`),
+        # NOT env steps. Total iters ≈ num_timesteps / env_step_per_training_step
+        # where env_step_per_training_step = num_envs × unroll_length ×
+        # num_minibatches × max(num_resets_per_eval, 1).
+        # num_resets_per_eval defaults to max(1, ...) so use 1 in this calc.
         num_timesteps_for_schedule=int(
             cfg.train_setup.train_config.num_timesteps
+            // (
+                int(cfg.train_setup.train_config.num_envs)
+                * int(cfg.train_setup.train_config.unroll_length)
+                * int(cfg.train_setup.train_config.num_minibatches)
+            )
         ),
         distinguish_enabled=_distinguish_enabled,
         distinguish_weight_fn=_distinguish_weight_fn,
