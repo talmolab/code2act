@@ -1751,38 +1751,48 @@ def main(cfg: DictConfig) -> None:
     def _grouped_wandb_progress(num_steps: int, metrics: dict) -> None:
         grouped = {}
         for k, v in metrics.items():
-            if k in ("total_loss", "policy_loss", "v_loss", "entropy_loss"):
-                grouped[f"losses/{k}"] = v
+            # track-mjx's ppo.train emits loss-side metrics with a
+            # `training/` prefix (e.g. `training/entropy_loss`).  Strip it
+            # for matching so the grouping branches below actually fire —
+            # without this, every loss metric falls through to `training/*`
+            # and the `losses/`, `distillation/`, `distinguish/`, `z_e/`,
+            # `codes/`, `rnn/` panels are never created.  The original
+            # `training/*` key is still preserved at the bottom of the loop
+            # (`grouped[k] = v`) for backward compat with other consumers.
+            leaf = k.split("/", 1)[1] if k.startswith("training/") else k
+
+            if leaf in ("total_loss", "policy_loss", "v_loss", "entropy_loss"):
+                grouped[f"losses/{leaf}"] = v
                 # Mirror exploration health onto the active mode panel.
-                if k == "entropy_loss":
+                if leaf == "entropy_loss":
                     grouped[f"{_active_panel}/entropy_loss"] = v
-            elif k in ("kl_loss", "scaled_kl_loss", "z_e_norm", "z_e_std", "z_e_scale"):
-                grouped[f"z_e/{k}"] = v
-            elif k in ("transition_rate", "perplexity", "codebook_utilization", "codes_used"):
-                grouped[f"codes/{k}"] = v
-            elif k in ("hidden_state_norm",):
-                grouped[f"rnn/{k}"] = v
-            elif k in (
+            elif leaf in ("kl_loss", "scaled_kl_loss", "z_e_norm", "z_e_std", "z_e_scale"):
+                grouped[f"z_e/{leaf}"] = v
+            elif leaf in ("transition_rate", "perplexity", "codebook_utilization", "codes_used"):
+                grouped[f"codes/{leaf}"] = v
+            elif leaf in ("hidden_state_norm",):
+                grouped[f"rnn/{leaf}"] = v
+            elif leaf in (
                 "distill_kl_loss", "scaled_distill_kl_loss",
                 "distill_mean_norm", "distill_logvar_mean",
                 "distill_kl_weight_now",
             ):
-                grouped[f"distillation/{k}"] = v
+                grouped[f"distillation/{leaf}"] = v
                 # Mirror the fade tracker + raw KL onto the active mode panel.
-                if k in ("distill_kl_weight_now", "distill_kl_loss"):
-                    grouped[f"{_active_panel}/{k}"] = v
-            elif k.startswith("distinguish_"):
+                if leaf in ("distill_kl_weight_now", "distill_kl_loss"):
+                    grouped[f"{_active_panel}/{leaf}"] = v
+            elif leaf.startswith("distinguish_"):
                 # Distinguishability term metrics (Term 3 of skill-diversity
                 # objective): per-step KL, λ_A weight, reward bonus mean.
-                grouped[f"distinguish/{k}"] = v
+                grouped[f"distinguish/{leaf}"] = v
                 # Mirror the headline distinguishability metrics onto the
                 # active mode panel.
-                if k in (
+                if leaf in (
                     "distinguish_kl_mean",
                     "distinguish_weight_now",
                     "distinguish_reward_bonus_mean",
                 ):
-                    grouped[f"{_active_panel}/{k}"] = v
+                    grouped[f"{_active_panel}/{leaf}"] = v
             elif (
                 k.startswith("c2c_curriculum_")
                 or "episode_c2c_curriculum_" in k
