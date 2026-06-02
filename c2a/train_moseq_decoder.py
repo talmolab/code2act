@@ -1737,12 +1737,25 @@ def main(cfg: DictConfig) -> None:
             num_codes=int(num_codes),
         )
 
-    # Wrap wandb_progress to add `/`-prefixed metric groups for WandB panels
+    # Wrap wandb_progress to add `/`-prefixed metric groups for WandB panels.
+    # The active mode panel is `curriculum/*` in curriculum mode and
+    # `finetune/*` in finetune (or any other non-curriculum) mode.  Skill-
+    # diversity metrics — α, r_track, r_c2c, distillation fade, λ_A ramp,
+    # distinguishability KL, entropy — are mirrored into the active panel.
+    # The c2c_curriculum_* env keys (shared by both modes) route only to the
+    # active panel: no `curriculum/*` panel in finetune mode, no
+    # `finetune/*` panel in curriculum mode.
+    _reward_mode = str(cfg.code2code.get("reward_mode", "off"))
+    _active_panel = "finetune" if _reward_mode == "finetune" else "curriculum"
+
     def _grouped_wandb_progress(num_steps: int, metrics: dict) -> None:
         grouped = {}
         for k, v in metrics.items():
             if k in ("total_loss", "policy_loss", "v_loss", "entropy_loss"):
                 grouped[f"losses/{k}"] = v
+                # Mirror exploration health onto the active mode panel.
+                if k == "entropy_loss":
+                    grouped[f"{_active_panel}/entropy_loss"] = v
             elif k in ("kl_loss", "scaled_kl_loss", "z_e_norm", "z_e_std", "z_e_scale"):
                 grouped[f"z_e/{k}"] = v
             elif k in ("transition_rate", "perplexity", "codebook_utilization", "codes_used"):
@@ -1755,28 +1768,41 @@ def main(cfg: DictConfig) -> None:
                 "distill_kl_weight_now",
             ):
                 grouped[f"distillation/{k}"] = v
+                # Mirror the fade tracker + raw KL onto the active mode panel.
+                if k in ("distill_kl_weight_now", "distill_kl_loss"):
+                    grouped[f"{_active_panel}/{k}"] = v
             elif k.startswith("distinguish_"):
                 # Distinguishability term metrics (Term 3 of skill-diversity
                 # objective): per-step KL, λ_A weight, reward bonus mean.
                 grouped[f"distinguish/{k}"] = v
+                # Mirror the headline distinguishability metrics onto the
+                # active mode panel.
+                if k in (
+                    "distinguish_kl_mean",
+                    "distinguish_weight_now",
+                    "distinguish_reward_bonus_mean",
+                ):
+                    grouped[f"{_active_panel}/{k}"] = v
             elif (
                 k.startswith("c2c_curriculum_")
                 or "episode_c2c_curriculum_" in k
             ):
-                # Curriculum-mode reward components — α, raw track
-                # reward, raw c2c reward — surfaced as eval/episode_c2c_curriculum_*
-                # by EpisodeWrapper.  Route into the curriculum/ panel.
+                # c2c reward composition components — α, raw track reward,
+                # raw c2c reward — surfaced as (eval/)episode_c2c_curriculum_*
+                # by EpisodeWrapper.  Both reward modes share this env-side
+                # plumbing but the panel routes to the ACTIVE mode only:
+                # finetune mode → finetune/*, curriculum mode → curriculum/*.
                 if "episode_c2c_curriculum_" in k:
                     short = k.split("episode_c2c_curriculum_", 1)[1]
                     if k.startswith("eval/test_set/"):
-                        key = f"curriculum/eval_test/{short}"
+                        key = f"{_active_panel}/eval_test/{short}"
                     elif k.startswith("eval/"):
-                        key = f"curriculum/eval/{short}"
+                        key = f"{_active_panel}/eval/{short}"
                     else:
-                        key = f"curriculum/{short}"
+                        key = f"{_active_panel}/{short}"
                 else:
-                    # c2c_curriculum_alpha → curriculum/alpha
-                    key = f"curriculum/{k[len('c2c_curriculum_'):]}"
+                    # c2c_curriculum_alpha → {active}/alpha
+                    key = f"{_active_panel}/{k[len('c2c_curriculum_'):]}"
                 grouped[key] = v
             elif (
                 k.startswith("c2c_")
