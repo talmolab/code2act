@@ -223,3 +223,118 @@ def make_finetune_schedules(
             return alpha * ramp
 
     return alpha_fn
+
+
+def make_distillation_schedule(
+    cfg: Any,
+    mode: str,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build the ``λ_distill(τ)`` fade schedule for the distillation
+    regularizer.
+
+    The distillation regularizer holds at ``init`` early in training to
+    anchor the policy near the demo encoder's training basin, then fades
+    toward ``final`` as α(τ) ramps and the new diversity-reward terms
+    start carrying the load (per the design doc at
+    ``scratch/2026-06-01-skill-diversity-objective-design/README.md``).
+
+    Two shapes by mode:
+
+    * **curriculum**: tanh fade with midpoint ``tau_mid`` (after α's
+      tanh midpoint), scale ``tau_scale``.  Smooth handover during the
+      α transition.
+
+    * **finetune**: hold at ``init`` for the first ``tau_hold`` of
+      training (to respect the loaded ckpt's full-distillation
+      expectation), then linear decay from ``init`` to ``final`` over
+      ``[tau_hold, tau_fade_end]``, then hold at ``final``.
+
+    Args:
+        cfg: mapping with keys ``init``, ``final``, plus mode-specific
+            ramp parameters (``tau_mid``/``tau_scale`` for curriculum;
+            ``tau_hold``/``tau_fade_end`` for finetune).
+        mode: ``"curriculum"`` or ``"finetune"``.
+
+    Returns:
+        A callable ``λ_distill(τ)`` that takes ``τ ∈ [0, 1]`` and
+        returns the distillation regularizer weight.
+
+    Raises:
+        ValueError: on invalid mode, init < final, or out-of-range
+        ramp parameters.
+    """
+    def _get(key, default=None):
+        if hasattr(cfg, "get"):
+            return cfg.get(key, default)
+        return getattr(cfg, key, default)
+
+    init = float(_get("init", 1.0))
+    final = float(_get("final", 0.0))
+
+    if init < final:
+        raise ValueError(
+            f"distillation_schedule: init={init} must be >= final={final} "
+            f"(distillation fades from init down to final)."
+        )
+    if init < 0 or final < 0:
+        raise ValueError(
+            f"distillation_schedule: init and final must be ≥ 0; "
+            f"got init={init}, final={final}."
+        )
+
+    if mode == "curriculum":
+        tau_mid = float(_get("tau_mid", 0.28))
+        tau_scale = float(_get("tau_scale", 0.04))
+        if tau_scale <= 0.0:
+            raise ValueError(
+                f"distillation_schedule (curriculum): tau_scale must be > 0; "
+                f"got {tau_scale}."
+            )
+        if not (0.0 <= tau_mid <= 1.0):
+            raise ValueError(
+                f"distillation_schedule (curriculum): tau_mid must be in "
+                f"[0, 1]; got {tau_mid}."
+            )
+
+        # Inverted tanh: fades from init to final around tau_mid.
+        # Using 0.5 · (1 - tanh((τ - mid) / scale)) gives 1 at τ=0,
+        # 0.5 at τ=mid, 0 at τ=1.
+        def lambda_fn(tau: jnp.ndarray) -> jnp.ndarray:
+            t = jnp.asarray(tau, dtype=jnp.float32)
+            shape = 0.5 * (1.0 - jnp.tanh((t - tau_mid) / tau_scale))
+            return final + (init - final) * shape
+
+        return lambda_fn
+
+    elif mode == "finetune":
+        tau_hold = float(_get("tau_hold", 0.02))
+        tau_fade_end = float(_get("tau_fade_end", 0.15))
+        if tau_hold < 0 or tau_fade_end < 0:
+            raise ValueError(
+                f"distillation_schedule (finetune): tau_hold and "
+                f"tau_fade_end must be ≥ 0; got tau_hold={tau_hold}, "
+                f"tau_fade_end={tau_fade_end}."
+            )
+        if tau_fade_end <= tau_hold:
+            raise ValueError(
+                f"distillation_schedule (finetune): tau_fade_end="
+                f"{tau_fade_end} must be > tau_hold={tau_hold} (need a "
+                f"non-trivial decay window)."
+            )
+
+        fade_width = tau_fade_end - tau_hold
+
+        def lambda_fn(tau: jnp.ndarray) -> jnp.ndarray:
+            t = jnp.asarray(tau, dtype=jnp.float32)
+            # Linear ramp 0 → 1 over [tau_hold, tau_fade_end], clamped to
+            # [0, 1]; lambda = init - (init - final) · ramp.
+            ramp = jnp.clip((t - tau_hold) / fade_width, 0.0, 1.0)
+            return init - (init - final) * ramp
+
+        return lambda_fn
+
+    else:
+        raise ValueError(
+            f"distillation_schedule mode must be 'curriculum' or "
+            f"'finetune'; got {mode!r}."
+        )

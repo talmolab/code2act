@@ -160,6 +160,8 @@ def train(
     z_e_scale_fn: Callable[[int], float] | None = None,
     kl_weight_fn: Callable[[int], float] | None = None,
     distill_kl_weight: float = 0.0,
+    distill_kl_weight_fn: Callable[[float], float] | None = None,
+    num_timesteps_for_schedule: int | None = None,
     post_init_params_fn: Callable | None = None,
 ):
     """Train a MoSeq decoder PPO agent.
@@ -185,6 +187,15 @@ def train(
     _z_e_scale_fn = z_e_scale_fn
     _kl_weight_fn = kl_weight_fn
     _distill_kl_weight = distill_kl_weight
+    _distill_kl_weight_fn = distill_kl_weight_fn
+    # Normalize the integer step counter against the total training horizon
+    # so callers schedule on τ = step / num_timesteps_for_schedule.
+    # When None, fall back to num_timesteps (always present in this train()).
+    _schedule_total = (
+        float(num_timesteps_for_schedule)
+        if num_timesteps_for_schedule is not None
+        else float(num_timesteps)
+    )
 
     if use_rnn_decoder:
         # --- RNN mode: carry-aware loss + inference ---
@@ -215,6 +226,13 @@ def train(
             effective_kl = _kl_weight
             if _kl_weight_fn is not None:
                 effective_kl = _kl_weight_fn(step)
+            # Distillation fade: τ-indexed schedule evaluated from
+            # global PPO step (lesson from the Vendi schedule bug —
+            # don't tie schedules to per-env counters that reset).
+            distill_kl_weight_now = None
+            if _distill_kl_weight_fn is not None:
+                tau_now = step / _schedule_total
+                distill_kl_weight_now = _distill_kl_weight_fn(tau_now)
             return compute_moseq_recurrent_ppo_loss(
                 params=params,
                 normalizer_params=normalizer_params,
@@ -232,6 +250,7 @@ def train(
                 kl_weight=effective_kl,
                 z_e_scale=z_e_scale,
                 distill_kl_weight=_distill_kl_weight,
+                distill_kl_weight_now=distill_kl_weight_now,
             )
 
         original_losses.compute_ppo_loss = moseq_rnn_loss_wrapper

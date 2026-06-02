@@ -294,6 +294,7 @@ def compute_moseq_recurrent_ppo_loss(
     kl_weight: float = 0.0,
     z_e_scale: float = 1.0,
     distill_kl_weight: float = 0.0,
+    distill_kl_weight_now: float | None = None,
 ) -> tuple[jnp.ndarray, types.Metrics]:
     """Compute PPO loss for the recurrent MoSeq decoder.
 
@@ -436,12 +437,20 @@ def compute_moseq_recurrent_ppo_loss(
         kl_loss = jnp.array(0.0)
         scaled_kl_loss = jnp.array(0.0)
 
-    # Distillation KL loss (distill head predicts frozen encoder distribution)
-    if distill_means is not None and distill_kl_weight > 0:
+    # Distillation KL loss (distill head predicts frozen encoder distribution).
+    # When distill_kl_weight_now is provided, it overrides the static
+    # distill_kl_weight — this is how the loss-side fade schedule
+    # (make_distillation_schedule) is plumbed in.
+    effective_distill_kl_weight = (
+        distill_kl_weight_now
+        if distill_kl_weight_now is not None
+        else distill_kl_weight
+    )
+    if distill_means is not None and effective_distill_kl_weight > 0:
         distill_kl_loss = compute_distill_kl_loss(
             cont_mean, cont_logvar, distill_means, distill_logvars,
         )
-        scaled_distill_kl_loss = distill_kl_weight * distill_kl_loss
+        scaled_distill_kl_loss = effective_distill_kl_weight * distill_kl_loss
     else:
         distill_kl_loss = jnp.array(0.0)
         scaled_distill_kl_loss = jnp.array(0.0)
@@ -514,6 +523,7 @@ def compute_moseq_recurrent_ppo_loss(
         "hidden_state_norm": hidden_state_norm,
         "distill_kl_loss": distill_kl_loss,
         "scaled_distill_kl_loss": scaled_distill_kl_loss,
+        "distill_kl_weight_now": jnp.array(effective_distill_kl_weight),
         "distill_mean_norm": distill_mean_norm,
         "distill_logvar_mean": distill_logvar_mean,
         # Placeholders for VQ metrics (shared logging code)

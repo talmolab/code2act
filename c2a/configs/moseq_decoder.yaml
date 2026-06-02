@@ -228,7 +228,7 @@ train_setup:
     clipping_epsilon: 0.2
     discounting: 0.95
     action_repeat: 1
-    entropy_cost: 1e-2
+    entropy_cost: 0.05      # Phase 3 bump (was 1e-2): strengthens H[π|S,Z] for within-code action variation
     reward_scaling: 1
     normalize_observations: true
     unroll_length: 40
@@ -274,7 +274,7 @@ code2code:
   # calibrate_temperature(tokenizer, ref_clips) at startup to set τ
   # such that the initial reward ≈ 0.3 (mid-saturation). Override
   # with a float for manual control.
-  temperature: auto
+  temperature: 0.6      # Phase 3 bump (was "auto", ≈0.25): softens c2c basin so distinguishability has room to act
   calibrate_target_reward: 0.3
   calibrate_n_clips: 50
   calibrate_n_windows_per_clip: 8
@@ -351,6 +351,33 @@ code2code:
     # _post_init_params_fn for the actual policy-params load.  Declared
     # here so OmegaConf struct mode allows the runtime update.
     _resolved_checkpoint: null
+
+  # ---------------------------------------------------------------------------
+  # Distillation fade schedule (Phase 2 of the skill-diversity redesign).
+  # ---------------------------------------------------------------------------
+  # Promotes network_config.distill_kl_weight from a constant to a function
+  # of training progress τ.  Distillation holds at `init` early (anchors the
+  # policy to the demo manifold) and fades toward `final` as α(τ) rises and
+  # the new diversity-reward terms take over.
+  #
+  # Mode-specific shapes:
+  #   - curriculum: tanh fade centered at tau_mid, scale tau_scale.  Midpoint
+  #     comes AFTER α's tanh midpoint (0.30) so distillation still anchors
+  #     during the high-risk α transition.
+  #   - finetune: hold at `init` for tau_hold (so loaded ckpt isn't pulled
+  #     out from under on iter 0), then linear decay from init to final
+  #     over [tau_hold, tau_fade_end], then hold at final.
+  #
+  # Aggressive defaults (zero floor; fast finetune fade):
+  distillation_schedule:
+    init: 1.0
+    final: 0.0
+    # curriculum tanh:
+    tau_mid: 0.28
+    tau_scale: 0.04
+    # finetune linear:
+    tau_hold: 0.02
+    tau_fade_end: 0.15
 
 # =============================================================================
 # Logging Configuration

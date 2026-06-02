@@ -1241,6 +1241,32 @@ def main(cfg: DictConfig) -> None:
                 "_build_c2c_env_kwargs. This is a bug — please report."
             )
 
+    # Distillation fade schedule.  When use_distillation_head and a
+    # code2code.distillation_schedule block is present, build λ_distill(τ)
+    # and let the loss evaluate it per minibatch from the global PPO step.
+    # Otherwise pass None and the loss falls back to the constant
+    # network_config.distill_kl_weight.
+    _distill_kl_weight_fn = None
+    if use_distillation_head:
+        _distill_sched_cfg = cfg.code2code.get("distillation_schedule", None)
+        if _distill_sched_cfg is not None:
+            from c2a.code2code.schedules import make_distillation_schedule
+
+            _distill_mode_for_schedule = (
+                "curriculum"
+                if cfg.code2code.get("reward_mode", "off") == "curriculum"
+                else "finetune"
+            )
+            _distill_kl_weight_fn = make_distillation_schedule(
+                _distill_sched_cfg, _distill_mode_for_schedule,
+            )
+            logging.info(
+                "distillation fade schedule: mode=%s, init=%.3f, final=%.3f",
+                _distill_mode_for_schedule,
+                float(_distill_sched_cfg.get("init", 1.0)),
+                float(_distill_sched_cfg.get("final", 0.0)),
+            )
+
     _post_init_params_fn = None
     if _is_finetune_mode:
         # Finetune branch: load full policy params from the finetune ckpt.
@@ -1521,6 +1547,10 @@ def main(cfg: DictConfig) -> None:
         z_e_scale_fn=z_e_scale_fn,
         kl_weight_fn=kl_weight_fn,
         distill_kl_weight=distill_kl_weight if use_distillation_head else 0.0,
+        distill_kl_weight_fn=_distill_kl_weight_fn,
+        num_timesteps_for_schedule=int(
+            cfg.train_setup.train_config.num_timesteps
+        ),
         post_init_params_fn=_post_init_params_fn,
     )
 
@@ -1601,6 +1631,7 @@ def main(cfg: DictConfig) -> None:
             elif k in (
                 "distill_kl_loss", "scaled_distill_kl_loss",
                 "distill_mean_norm", "distill_logvar_mean",
+                "distill_kl_weight_now",
             ):
                 grouped[f"distillation/{k}"] = v
             elif (
