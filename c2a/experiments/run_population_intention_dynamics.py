@@ -594,7 +594,7 @@ def main(cfg: DictConfig) -> None:
         render_grid_behavior_video(
             cell_data=cell_data,
             highlights_per_cell=highlights_per_cell,
-            ckpt=ckpt,
+            ckpt=None,
             env_cfg_ml=env_cfg_ml_train,
             clips=clips_train,
             cfg=cfg,
@@ -612,7 +612,7 @@ def main(cfg: DictConfig) -> None:
                 highlights=highlights_per_cell[name],
                 pca_hidden=pca_hidden,
                 pca_intention=pca_intention,
-                ckpt=ckpt,
+                ckpt=None,
                 env_cfg_ml=env_cfg_ml_train,
                 clips=clips_train,
                 cfg=cfg,
