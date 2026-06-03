@@ -71,18 +71,6 @@ def generate_unroll_rnn_moseq(
         actions, policy_extras, new_hidden = policy(state.obs, hidden, current_key)
         nstate = env.step(state, actions)
         state_extras = {x: nstate.info[x] for x in extra_fields}
-        # MoSeq-specific extras: always present in nstate.info (seeded in
-        # env reset and written every env step — see
-        # MoSeqImitation.reset/step), so the scan pytree shape is
-        # uniform across all modes.  Consumed by the loss for downstream
-        # c2c bookkeeping and the distinguishability term.
-        for _c2c_key in (
-            "c2c_z_rollout",
-            "c2c_target_code",
-            "c2c_curriculum_alpha",
-        ):
-            if _c2c_key in nstate.info:
-                state_extras[_c2c_key] = nstate.info[_c2c_key]
 
         transition = types.Transition(
             observation=state.obs,
@@ -160,12 +148,6 @@ def train(
     z_e_scale_fn: Callable[[int], float] | None = None,
     kl_weight_fn: Callable[[int], float] | None = None,
     distill_kl_weight: float = 0.0,
-    distill_kl_weight_fn: Callable[[float], float] | None = None,
-    num_timesteps_for_schedule: int | None = None,
-    distinguish_enabled: bool = False,
-    distinguish_weight_fn: Callable[[float], float] | None = None,
-    distinguish_sampling_probs: Any | None = None,
-    distinguish_num_alt_codes: int = 3,
     post_init_params_fn: Callable | None = None,
 ):
     """Train a MoSeq decoder PPO agent.
@@ -191,19 +173,6 @@ def train(
     _z_e_scale_fn = z_e_scale_fn
     _kl_weight_fn = kl_weight_fn
     _distill_kl_weight = distill_kl_weight
-    _distill_kl_weight_fn = distill_kl_weight_fn
-    _distinguish_enabled = distinguish_enabled
-    _distinguish_weight_fn = distinguish_weight_fn
-    _distinguish_sampling_probs = distinguish_sampling_probs
-    _distinguish_num_alt_codes = distinguish_num_alt_codes
-    # Normalize the integer step counter against the total training horizon
-    # so callers schedule on τ = step / num_timesteps_for_schedule.
-    # When None, fall back to num_timesteps (always present in this train()).
-    _schedule_total = (
-        float(num_timesteps_for_schedule)
-        if num_timesteps_for_schedule is not None
-        else float(num_timesteps)
-    )
 
     if use_rnn_decoder:
         # --- RNN mode: carry-aware loss + inference ---
@@ -234,18 +203,6 @@ def train(
             effective_kl = _kl_weight
             if _kl_weight_fn is not None:
                 effective_kl = _kl_weight_fn(step)
-            # Distillation fade: τ-indexed schedule evaluated from
-            # global PPO step (lesson from the Vendi schedule bug —
-            # don't tie schedules to per-env counters that reset).
-            distill_kl_weight_now = None
-            if _distill_kl_weight_fn is not None:
-                tau_now = step / _schedule_total
-                distill_kl_weight_now = _distill_kl_weight_fn(tau_now)
-            # Distinguishability λ_A ramp: same τ source as distillation fade.
-            distinguish_weight_now = 0.0
-            if _distinguish_enabled and _distinguish_weight_fn is not None:
-                tau_now = step / _schedule_total
-                distinguish_weight_now = _distinguish_weight_fn(tau_now)
             return compute_moseq_recurrent_ppo_loss(
                 params=params,
                 normalizer_params=normalizer_params,
@@ -263,11 +220,6 @@ def train(
                 kl_weight=effective_kl,
                 z_e_scale=z_e_scale,
                 distill_kl_weight=_distill_kl_weight,
-                distill_kl_weight_now=distill_kl_weight_now,
-                distinguish_enabled=_distinguish_enabled,
-                distinguish_weight_now=distinguish_weight_now,
-                distinguish_sampling_probs=_distinguish_sampling_probs,
-                distinguish_num_alt_codes=_distinguish_num_alt_codes,
             )
 
         original_losses.compute_ppo_loss = moseq_rnn_loss_wrapper

@@ -216,12 +216,7 @@ train_setup:
 
   eval_every: 20_000_000
   episode_length: 200
-  # reset_every controls how often brax PPO fully resets env state.
-  # Set to > num_timesteps so c2c_env_step (per-env counter used by the α
-  # schedule) is NOT periodically zeroed mid-training.  Without this, α
-  # cycles in a tiny range and never reaches its target value (the same
-  # mechanism that broke the Vendi β schedule).
-  reset_every: 2_000_000_000
+  reset_every: 20_000_000
 
   train_config:
     num_envs: 2048
@@ -233,7 +228,7 @@ train_setup:
     clipping_epsilon: 0.2
     discounting: 0.95
     action_repeat: 1
-    entropy_cost: 0.05      # Phase 3 bump (was 1e-2): strengthens H[π|S,Z] for within-code action variation
+    entropy_cost: 1e-2
     reward_scaling: 1
     normalize_observations: true
     unroll_length: 40
@@ -259,7 +254,7 @@ train_setup:
 #
 # See scratch/2026-05-26-code2code-mode/design-A-reward-shaping.md.
 code2code:
-  reward_mode: off              # off | additive | replace
+  reward_mode: "off"            # "off" | "additive"  (additive: r = r_track + α·match)
   tokenizer_kind: null          # vae | vqvae | ps_vqvae
   tokenizer_ckpt: null          # path to the tokenizer step_NNNNN dir
 
@@ -267,9 +262,6 @@ code2code:
   # this conservative default keeps tracking dominant)
   alpha: 0.5                    # weight on the code-match term
   track_weight: 1.0             # weight on the existing tracking reward
-                                # in additive mode (ignored in replace)
-  replace_alive_bonus: 0.0      # constant per-step bonus in replace
-                                # mode (suggest 0.1 for a soft floor)
 
   # Reward shape — see literature.md §"Design implications"
   reward_form: exp_neg_distance # exp_neg_distance | neg_distance
@@ -279,7 +271,7 @@ code2code:
   # calibrate_temperature(tokenizer, ref_clips) at startup to set τ
   # such that the initial reward ≈ 0.3 (mid-saturation). Override
   # with a float for manual control.
-  temperature: 0.6      # Phase 3 bump (was "auto", ≈0.25): softens c2c basin so distinguishability has room to act
+  temperature: auto
   calibrate_target_reward: 0.3
   calibrate_n_clips: 50
   calibrate_n_windows_per_clip: 8
@@ -307,102 +299,6 @@ code2code:
   ps_group_codebook_sizes: null
 
   log_diagnostics: true         # emit c2c/* WandB metrics every step
-
-  # ---------------------------------------------------------------------------
-  # Curriculum-mode schedule (only consulted when reward_mode == 'curriculum')
-  # ---------------------------------------------------------------------------
-  # Total env reward per step:
-  #   (1 - α(τ)) · r_track + α(τ) · (alpha · match) + β(τ) · log(VS)
-  # where τ = current_env_step / num_timesteps ∈ [0, 1] and the diversity
-  # bonus log(VS) is computed in the PPO loss (see c2a/code2code/diversity.py).
-  #
-  # Hard validation in c2a/code2code/schedules.py:
-  #   - alpha_max > 0.75 is REJECTED — c2c reward is root-invariant; tracking
-  #     at weight ≥ 0.25 must remain primary forever to keep the policy stable.
-  #     See scratch/registry/2026-05-30-c2c-reward-is-root-invariant/.
-  #   - bootstrap (= num_timesteps × max(tau_mid - tau_scale, 0)) < 1e9 env
-  #     steps is REJECTED — tracking needs that long to converge from scratch.
-  curriculum_config:
-    alpha_min: 0.05          # c2c weight at τ = 0 (tracking nearly pure)
-    alpha_max: 0.75          # c2c weight at τ = 1 (HARD CAP)
-    tau_mid: 0.30            # α transition midpoint (τ at which α = (min+max)/2)
-    tau_scale: 0.05          # α transition sharpness (~10% of training)
-
-  # ---------------------------------------------------------------------------
-  # Finetune-mode config (only consulted when reward_mode == 'finetune')
-  # ---------------------------------------------------------------------------
-  # Loads a pretrained pure-tracking checkpoint (specified via
-  # train_setup.checkpoint_to_restore — defaults to the path below) and
-  # adds c2c + diversity on top with constant (or briefly-warmed-up) α
-  # and β. Bootstrap-length validation is skipped (no bootstrap needed —
-  # policy is loaded). α ≤ 0.75 hard cap still applies.
-  #
-  # Requirements:
-  #   - Checkpoint MUST be pure-tracking (trained pre-2026-05-26, or
-  #     with code2code.reward_mode == 'off'). Loading a c2c-trained ckpt
-  #     here logs a warning but proceeds.
-  #   - Tokenizer MUST match the K that the original checkpoint was
-  #     trained with — the policy's code-embedding table is sized to
-  #     that K. The default ckpt (260513_062522_599062) was trained
-  #     with num_codes=50 and the K=30 default vae tokenizer at
-  #     outputs/tokenizer/trained_kinematics_vae_ckpts/vae/.
-  finetune_config:
-    alpha: 0.75              # c2c weight (constant after warmup)
-    warmup_fraction: 0.05    # linear ramp 0→target over first 5%; 0 = pure constants
-    default_checkpoint: ${oc.env:C2A_ROOT,.}/model_checkpoints/260513_062522_599062
-    expected_num_codes: 50   # asserted at startup against network_config.num_codes
-    # Internal: resolved-absolute checkpoint path written by
-    # _build_c2c_env_kwargs after path normalization; consumed by
-    # _post_init_params_fn for the actual policy-params load.  Declared
-    # here so OmegaConf struct mode allows the runtime update.
-    _resolved_checkpoint: null
-
-  # ---------------------------------------------------------------------------
-  # Distillation fade schedule (Phase 2 of the skill-diversity redesign).
-  # ---------------------------------------------------------------------------
-  # Promotes network_config.distill_kl_weight from a constant to a function
-  # of training progress τ.  Distillation holds at `init` early (anchors the
-  # policy to the demo manifold) and fades toward `final` as α(τ) rises and
-  # the new diversity-reward terms take over.
-  #
-  # Mode-specific shapes:
-  #   - curriculum: tanh fade centered at tau_mid, scale tau_scale.  Midpoint
-  #     comes AFTER α's tanh midpoint (0.30) so distillation still anchors
-  #     during the high-risk α transition.
-  #   - finetune: hold at `init` for tau_hold (so loaded ckpt isn't pulled
-  #     out from under on iter 0), then linear decay from init to final
-  #     over [tau_hold, tau_fade_end], then hold at final.
-  #
-  # Aggressive defaults (zero floor; fast finetune fade):
-  distillation_schedule:
-    init: 1.0
-    final: 0.0
-    # curriculum tanh:
-    tau_mid: 0.28
-    tau_scale: 0.04
-    # finetune linear:
-    tau_hold: 0.02
-    tau_fade_end: 0.15
-
-  # ---------------------------------------------------------------------------
-  # Distinguishability term (Phase 4 / Term 3 of the skill-diversity objective)
-  # ---------------------------------------------------------------------------
-  # Per-step KL between π(·|s, z) and the code-marginalized π̄(·|s),
-  # estimated by re-running the policy with K distance-weighted alt codes.
-  # Reward is added to per-step rewards BEFORE GAE so it flows through
-  # advantages.  Cost: K extra apply_sequence calls per loss invocation.
-  distinguish_config:
-    enabled: true
-    weight: 0.01              # λ_A target (KL bonus weight at saturation)
-    num_alt_codes: 3          # K — extra forward passes per loss call
-    sampling: distance_weighted   # alternative: "uniform" (not implemented yet)
-    sampling_distance: cosine     # matches c2c reward distance metric
-    # lambda_A ramp shape (re-uses make_distillation_schedule under the hood
-    # by passing init=weight, final=0 and inverting):
-    lambda_A_schedule:
-      # finetune mode:
-      tau_hold: 0.02         # λ_A=0 for τ < tau_hold (while loaded ckpt warms up)
-      tau_fade_end: 0.10     # λ_A reaches `weight` at this τ
 
 # =============================================================================
 # Logging Configuration

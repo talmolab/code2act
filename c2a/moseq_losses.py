@@ -100,6 +100,13 @@ def compute_moseq_ppo_loss(
     normalize_advantage: bool = True,
     vf_coefficient: float = 0.5,
     kl_weight: float = 0.0,
+    # Upstream-parity kwargs: track-mjx ff_ppo.compute_ppo_loss passes
+    # these unconditionally; we accept-and-ignore. MoSeq has its own KL
+    # on (μ, log σ) via `kl_weight` above, not the latent_* ones.
+    latent_kl_weight: float = 0.0,
+    latent_ar1_weight: float = 0.0,
+    latent_kl_schedule: Any = None,
+    latent_ar1_schedule: Any = None,
 ) -> tuple[jnp.ndarray, types.Metrics]:
     """Compute standard PPO loss for the MoSeq decoder policy.
 
@@ -294,11 +301,11 @@ def compute_moseq_recurrent_ppo_loss(
     kl_weight: float = 0.0,
     z_e_scale: float = 1.0,
     distill_kl_weight: float = 0.0,
-    distill_kl_weight_now: float | None = None,
-    distinguish_enabled: bool = False,
-    distinguish_weight_now: float = 0.0,
-    distinguish_sampling_probs: jnp.ndarray | None = None,
-    distinguish_num_alt_codes: int = 3,
+    # Upstream-parity kwargs (same rationale as compute_moseq_ppo_loss above).
+    latent_kl_weight: float = 0.0,
+    latent_ar1_weight: float = 0.0,
+    latent_kl_schedule: Any = None,
+    latent_ar1_schedule: Any = None,
 ) -> tuple[jnp.ndarray, types.Metrics]:
     """Compute PPO loss for the recurrent MoSeq decoder.
 
@@ -401,64 +408,6 @@ def compute_moseq_recurrent_ppo_loss(
     truncation = data.extras["state_extras"]["truncation"]
     termination = (1 - data.discount) * (1 - truncation)
 
-    # ---- Term 3: per-step action distinguishability reward ----
-    # D_KL( π(·|s, z) || π̄(·|s) ) where π̄ is approximated by moment-
-    # matching the policy outputs under K distance-weighted alt codes.
-    # Re-runs the same RNN forward pass K times with substituted codes.
-    # Cost: K extra apply_sequence calls per loss invocation (default K=3).
-    # See c2a/code2code/distinguishability.py and the design doc.
-    if distinguish_enabled and distinguish_sampling_probs is not None:
-        from c2a.code2code.distinguishability import (
-            compute_action_distinguishability,
-        )
-
-        # Split the policy_logits tensor (mean ++ logstd along last axis).
-        _action_dim = policy_logits.shape[-1] // 2
-        actual_mean = policy_logits[..., :_action_dim]
-        actual_logstd = policy_logits[..., _action_dim:]
-
-        def _policy_apply(obs_in, carry, done_in, key):
-            alt_logits, *_ = policy_network.apply_sequence(
-                normalizer_params,
-                params.policy,
-                obs_in,
-                carry,
-                done_in,
-                key,
-                deterministic=False,
-                stored_keys=stored_keys,
-                z_e_scale=z_e_scale,
-            )
-            return alt_logits
-
-        def _split_logits(logits):
-            d = logits.shape[-1] // 2
-            return logits[..., :d], logits[..., d:]
-
-        rng, sub = jax.random.split(rng)
-        distinguish_kl = compute_action_distinguishability(
-            actual_mean=actual_mean,
-            actual_logstd=actual_logstd,
-            policy_apply_fn=_policy_apply,
-            split_logits_fn=_split_logits,
-            obs=data.observation,
-            initial_carry=initial_carry,
-            done=done,
-            rng=sub,
-            sampling_probs=distinguish_sampling_probs,
-            num_alt_codes=distinguish_num_alt_codes,
-        )                                              # (T, B)
-        distinguish_reward = distinguish_weight_now * distinguish_kl
-        rewards = rewards + distinguish_reward
-        distinguish_metrics = {
-            "distinguish_kl_mean":     jnp.mean(distinguish_kl),
-            "distinguish_kl_max":      jnp.max(distinguish_kl),
-            "distinguish_reward_mean": jnp.mean(distinguish_reward),
-            "distinguish_weight_now":  jnp.array(distinguish_weight_now),
-        }
-    else:
-        distinguish_metrics = {}
-
     target_log_probs = action_dist.log_prob(
         policy_logits, data.extras["policy_extras"]["raw_action"]
     )
@@ -500,22 +449,11 @@ def compute_moseq_recurrent_ppo_loss(
         scaled_kl_loss = jnp.array(0.0)
 
     # Distillation KL loss (distill head predicts frozen encoder distribution).
-    # When distill_kl_weight_now is provided (loss-side fade schedule from
-    # make_distillation_schedule), it overrides the static distill_kl_weight.
-    # The weight is a traced JAX value when schedules are active, so we can't
-    # use it in a Python `if`; we always compute distill_kl when distill_means
-    # is structurally available (compile-time) and multiply by the (possibly
-    # traced) weight — the weight is 0 outside the active distillation window.
-    effective_distill_kl_weight = (
-        distill_kl_weight_now
-        if distill_kl_weight_now is not None
-        else distill_kl_weight
-    )
-    if distill_means is not None:
+    if distill_means is not None and distill_kl_weight > 0:
         distill_kl_loss = compute_distill_kl_loss(
             cont_mean, cont_logvar, distill_means, distill_logvars,
         )
-        scaled_distill_kl_loss = effective_distill_kl_weight * distill_kl_loss
+        scaled_distill_kl_loss = distill_kl_weight * distill_kl_loss
     else:
         distill_kl_loss = jnp.array(0.0)
         scaled_distill_kl_loss = jnp.array(0.0)
@@ -588,7 +526,6 @@ def compute_moseq_recurrent_ppo_loss(
         "hidden_state_norm": hidden_state_norm,
         "distill_kl_loss": distill_kl_loss,
         "scaled_distill_kl_loss": scaled_distill_kl_loss,
-        "distill_kl_weight_now": jnp.array(effective_distill_kl_weight),
         "distill_mean_norm": distill_mean_norm,
         "distill_logvar_mean": distill_logvar_mean,
         # Placeholders for VQ metrics (shared logging code)
@@ -602,6 +539,5 @@ def compute_moseq_recurrent_ppo_loss(
         "prob_of_prev_code": jnp.array(0.0),
         "scaled_codebook_entropy_reg": jnp.array(0.0),
     }
-    metrics.update(distinguish_metrics)
 
     return total_loss, metrics

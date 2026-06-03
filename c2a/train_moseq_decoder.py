@@ -463,77 +463,6 @@ def moseq_rollout_logging_fn(
 # ---------------------------------------------------------------------------
 
 
-def _warn_if_ckpt_had_c2c_enabled(ckpt_path: Path) -> None:
-    """Best-effort check: warn if a fine-tune checkpoint was originally
-    trained with c2c reward turned on.
-
-    The user's stated intent for ``finetune`` mode is to load a pure-
-    tracking checkpoint and stack c2c + diversity on top.  Loading a
-    ckpt that itself was c2c-trained would violate that intent —
-    warn loudly (not fatally; the user may have a good reason).
-
-    Strategy: find the Hydra config saved alongside the original
-    training run (under ``outputs/YYYY-MM-DD/HH-MM-SS/.hydra/config.yaml``)
-    by searching for the ckpt's run-id in saved configs.  If we find
-    one, parse and inspect ``code2code.reward_mode``.
-    """
-    ckpt_p = Path(ckpt_path).resolve()
-    run_id = ckpt_p.name           # e.g., "260513_062522_599062"
-    outputs_root = get_repo_root() / "outputs"
-    if not outputs_root.exists():
-        logging.warning(
-            "finetune: outputs/ dir not found — cannot verify ckpt %s "
-            "was trained without c2c.", run_id,
-        )
-        return
-
-    saved_config_path = None
-    for candidate in outputs_root.rglob(".hydra/config.yaml"):
-        try:
-            if run_id in candidate.read_text():
-                saved_config_path = candidate
-                break
-        except OSError:
-            continue
-
-    if saved_config_path is None:
-        logging.warning(
-            "finetune: could not locate the saved Hydra config for ckpt "
-            "%s. Cannot verify it was trained without c2c. (Searched %s.)",
-            run_id, outputs_root,
-        )
-        return
-
-    try:
-        saved = OmegaConf.load(saved_config_path)
-    except Exception as e:
-        logging.warning(
-            "finetune: failed to parse saved config %s: %s. "
-            "Cannot verify c2c-off provenance.",
-            saved_config_path, e,
-        )
-        return
-
-    saved_c2c = saved.get("code2code", None) if hasattr(saved, "get") else None
-    saved_mode = "off"
-    if saved_c2c is not None:
-        saved_mode = str(saved_c2c.get("reward_mode", "off"))
-    if saved_mode != "off":
-        logging.warning(
-            "finetune: loaded checkpoint at %s was trained with "
-            "code2code.reward_mode=%r (not 'off'). The user's stated "
-            "intent for finetune mode is to load a PURE-TRACKING ckpt. "
-            "Proceeding anyway, but downstream behavior may differ from "
-            "expectation.", ckpt_path, saved_mode,
-        )
-    else:
-        logging.info(
-            "finetune: verified ckpt %s was trained pure-tracking "
-            "(saved config %s: code2code.reward_mode='off').",
-            run_id, saved_config_path,
-        )
-
-
 def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     """Build the c2c_* kwargs for :class:`MoSeqImitation`.
 
@@ -562,6 +491,17 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     if c2c_cfg is None:
         return {}
     reward_mode = str(c2c_cfg.get("reward_mode", "off"))
+    if reward_mode not in ("off", "additive"):
+        # Common pitfall: YAML/Hydra parses unquoted `on`/`true` as the
+        # boolean True; str(True) -> "True" silently passes through.  Reject
+        # at the config-load site rather than letting the env constructor
+        # raise a less-informative error.
+        raise ValueError(
+            f"code2code.reward_mode must be 'off' or 'additive'; "
+            f"got {reward_mode!r}. If you wrote `reward_mode=on` on the "
+            f"CLI, quote it: `code2code.reward_mode=additive` or "
+            f"`code2code.reward_mode='\"off\"'`."
+        )
     if reward_mode == "off":
         return {}
 
@@ -771,129 +711,14 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     logging.info(
         "code2code reward mode: %s, tokenizer_kind=%s, ckpt=%s, "
         "K=%d, code_dim=%d, distance=%s, reward_form=%s, tau=%.4f, "
-        "alpha=%.3f, track_weight=%.3f, replace_alive_bonus=%.3f",
+        "alpha=%.3f, track_weight=%.3f",
         reward_mode, tokenizer_kind, ckpt_p,
         adapter.codebook_size, adapter.code_dim,
         distance_form, str(c2c_cfg.get("reward_form", "exp_neg_distance")),
         temperature,
         float(c2c_cfg.get("alpha", 0.5)),
         float(c2c_cfg.get("track_weight", 1.0)),
-        float(c2c_cfg.get("replace_alive_bonus", 0.0)),
     )
-
-    # ─── Curriculum-mode plumbing ───────────────────────────────────────
-    # Build the α(τ) schedule and pass it + the total-step target into
-    # the env so step() can compute τ.  Validation (α_max ≤ 0.75 and
-    # bootstrap ≥ 1e9 steps) lives in make_curriculum_schedules and
-    # raises before we even instantiate the env.
-    c2c_curriculum_alpha_fn = None
-    c2c_curriculum_target_total_steps = None
-    if reward_mode == "curriculum":
-        from c2a.code2code.schedules import make_curriculum_schedules
-
-        cur_cfg = c2c_cfg.get("curriculum_config", None)
-        if cur_cfg is None:
-            raise ValueError(
-                "code2code.reward_mode='curriculum' requires "
-                "code2code.curriculum_config block (alpha_min, alpha_max, "
-                "tau_mid, tau_scale)."
-            )
-        target_total_steps = int(cfg.train_setup.train_config.num_timesteps)
-        c2c_curriculum_alpha_fn = make_curriculum_schedules(
-            cur_cfg, num_timesteps=target_total_steps,
-        )
-        # The env wrapper's c2c_env_step is PER-ENV (it grows by 1 per call
-        # to step() for a single env).  To make tau = c2c_env_step /
-        # target_total_steps yield correct global training progress, the
-        # target must be in per-env units: total / num_envs.  See the
-        # 2026-05-31 Vendi-schedule-bug retrospective for the same issue.
-        _num_envs_for_schedule = int(cfg.train_setup.train_config.num_envs)
-        c2c_curriculum_target_total_steps = (
-            target_total_steps // max(_num_envs_for_schedule, 1)
-        )
-        logging.info(
-            "curriculum mode: alpha schedule built, "
-            "target_total_steps=%d global, %d per-env "
-            "(α validation passed: α_max ≤ 0.75 and bootstrap ≥ 1e9 steps)",
-            target_total_steps, c2c_curriculum_target_total_steps,
-        )
-
-    elif reward_mode == "finetune":
-        from c2a.code2code.schedules import make_finetune_schedules
-
-        ft_cfg = c2c_cfg.get("finetune_config", None)
-        if ft_cfg is None:
-            raise ValueError(
-                "code2code.reward_mode='finetune' requires "
-                "code2code.finetune_config block (alpha, "
-                "warmup_fraction, default_checkpoint, expected_num_codes)."
-            )
-
-        # Resolve checkpoint path from finetune_config.default_checkpoint.
-        # NOTE: we deliberately do NOT use train_setup.checkpoint_to_restore
-        # — that field triggers track-mjx's resume-from-crash path which
-        # expects a different ckpt layout.  Override the finetune ckpt
-        # via `code2code.finetune_config.default_checkpoint=...` instead.
-        ckpt_path_str = str(ft_cfg.get("default_checkpoint", ""))
-        if not ckpt_path_str:
-            raise ValueError(
-                "finetune mode requires a checkpoint: set "
-                "code2code.finetune_config.default_checkpoint."
-            )
-        ckpt_path = Path(ckpt_path_str)
-        if not ckpt_path.is_absolute():
-            ckpt_path = get_repo_root() / ckpt_path
-        if not ckpt_path.exists():
-            raise FileNotFoundError(
-                f"finetune checkpoint does not exist: {ckpt_path}. "
-                f"Default is {ft_cfg.get('default_checkpoint')}."
-            )
-        # Stash the resolved finetune ckpt path on the code2code config so
-        # _post_init_params_fn (later in main()) can find it.  We do NOT
-        # set train_setup.checkpoint_to_restore — that field triggers
-        # track-mjx's resume-from-crash path (load_from_run_state), which
-        # expects a different ckpt layout.  Instead we load the full
-        # policy params via _post_init_params_fn, the proper hook for
-        # "load specific subtrees from a different ckpt".
-        OmegaConf.update(
-            cfg, "code2code.finetune_config._resolved_checkpoint",
-            str(ckpt_path.resolve()), merge=False,
-        )
-
-        _warn_if_ckpt_had_c2c_enabled(ckpt_path)
-
-        # Sanity: num_codes from current config must match the
-        # tokenizer the ckpt was trained with (the policy's code-
-        # embedding table has shape [num_codes, code_embed_dim] and
-        # must align with the K of the runtime tokenizer).
-        _expected_K = int(ft_cfg.get("expected_num_codes", 50))
-        _actual_K = int(cfg.network_config.num_codes)
-        if _actual_K != _expected_K:
-            raise ValueError(
-                f"finetune mode: network_config.num_codes={_actual_K} "
-                f"but the loaded checkpoint expects num_codes={_expected_K} "
-                f"(per code2code.finetune_config.expected_num_codes). "
-                f"Either configure the matching tokenizer or update "
-                f"expected_num_codes."
-            )
-
-        target_total_steps = int(cfg.train_setup.train_config.num_timesteps)
-        c2c_curriculum_alpha_fn = make_finetune_schedules(
-            ft_cfg, num_timesteps=target_total_steps,
-        )
-        # See curriculum branch above for rationale.  Per-env target so
-        # tau = c2c_env_step (per-env) / target yields correct global progress.
-        _num_envs_for_schedule = int(cfg.train_setup.train_config.num_envs)
-        c2c_curriculum_target_total_steps = (
-            target_total_steps // max(_num_envs_for_schedule, 1)
-        )
-        logging.info(
-            "finetune mode: ckpt=%s, alpha=%.3f, warmup=%.2f, "
-            "target_total_steps=%d global, %d per-env",
-            ckpt_path, float(ft_cfg.get("alpha", 0.75)),
-            float(ft_cfg.get("warmup_fraction", 0.05)),
-            target_total_steps, c2c_curriculum_target_total_steps,
-        )
 
     return dict(
         c2c_adapter=adapter,
@@ -903,9 +728,6 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
         c2c_distance_form=distance_form,  # type: ignore[arg-type]
         c2c_reward_form=str(c2c_cfg.get("reward_form", "exp_neg_distance")),  # type: ignore[arg-type]
         c2c_reward_mode=reward_mode,  # type: ignore[arg-type]
-        c2c_replace_alive_bonus=float(c2c_cfg.get("replace_alive_bonus", 0.0)),
-        c2c_curriculum_alpha_fn=c2c_curriculum_alpha_fn,
-        c2c_curriculum_target_total_steps=c2c_curriculum_target_total_steps,
     )
 
 
@@ -1252,206 +1074,8 @@ def main(cfg: DictConfig) -> None:
     # checkpoint already carries the correct current values for both).
     _resume_in_progress = cfg.train_setup.get("checkpoint_to_restore", None) is not None
 
-    # Finetune mode: load the FULL policy params (not just a subtree)
-    # from the finetune checkpoint via _post_init_params_fn.  This is
-    # mutually exclusive with the MIMIC encoder/decoder re-loading
-    # below — the finetune ckpt was trained with the same distillation
-    # backbone, so its policy already has the right encoder/decoder
-    # subtrees baked in.  Resolved ckpt path was stashed in
-    # code2code.finetune_config._resolved_checkpoint by _build_c2c_env_kwargs.
-    _finetune_ckpt_path = None
-    _is_finetune_mode = (
-        cfg.code2code.get("reward_mode", "off") == "finetune"
-    )
-    if _is_finetune_mode:
-        _finetune_ckpt_path = cfg.code2code.finetune_config.get(
-            "_resolved_checkpoint", None
-        )
-        if _finetune_ckpt_path is None:
-            raise RuntimeError(
-                "finetune mode reached _post_init_params_fn setup but no "
-                "resolved checkpoint path was stashed by "
-                "_build_c2c_env_kwargs. This is a bug — please report."
-            )
-
-    # Distillation fade schedule.  When use_distillation_head and a
-    # code2code.distillation_schedule block is present, build λ_distill(τ)
-    # and let the loss evaluate it per minibatch from the global PPO step.
-    # Otherwise pass None and the loss falls back to the constant
-    # network_config.distill_kl_weight.
-    _distill_kl_weight_fn = None
-    if use_distillation_head:
-        _distill_sched_cfg = cfg.code2code.get("distillation_schedule", None)
-        if _distill_sched_cfg is not None:
-            from c2a.code2code.schedules import make_distillation_schedule
-
-            _distill_mode_for_schedule = (
-                "curriculum"
-                if cfg.code2code.get("reward_mode", "off") == "curriculum"
-                else "finetune"
-            )
-            _distill_kl_weight_fn = make_distillation_schedule(
-                _distill_sched_cfg, _distill_mode_for_schedule,
-            )
-            logging.info(
-                "distillation fade schedule: mode=%s, init=%.3f, final=%.3f",
-                _distill_mode_for_schedule,
-                float(_distill_sched_cfg.get("init", 1.0)),
-                float(_distill_sched_cfg.get("final", 0.0)),
-            )
-
-    # Distinguishability term (Phase 4 / Term 3).  When enabled, precompute
-    # the (num_codes, num_codes) distance-weighted alt-code sampling table
-    # from the adapter's frozen codebook, and build the λ_A(τ) ramp.
-    _distinguish_enabled = False
-    _distinguish_weight_fn = None
-    _distinguish_sampling_probs = None
-    _distinguish_num_alt_codes = 3
-    _dist_cfg = cfg.code2code.get("distinguish_config", None)
-    if _dist_cfg is not None and bool(_dist_cfg.get("enabled", False)):
-        _dist_adapter = c2c_kwargs.get("c2c_adapter", None)
-        if _dist_adapter is None:
-            raise ValueError(
-                "code2code.distinguish_config.enabled=True requires a VAE "
-                "adapter (which provides the codebook for distance-weighted "
-                "alt-code sampling).  Ensure code2code.tokenizer_kind=vae "
-                "and the adapter loads successfully."
-            )
-        from c2a.code2code.distinguishability import (
-            precompute_alt_code_sampling_probs,
-        )
-
-        _distinguish_enabled = True
-        _distinguish_num_alt_codes = int(_dist_cfg.get("num_alt_codes", 3))
-        _distinguish_sampling_probs = precompute_alt_code_sampling_probs(
-            _dist_adapter.all_codebook_entries()
-        )
-
-        # λ_A(τ) ramp.  Reused make_distillation_schedule with init/final
-        # swapped for an ascending ramp (init=0 at τ=0, final=weight at τ=1).
-        # For finetune mode we hold at 0 until tau_start, then linearly
-        # ramp up to `weight`.  For curriculum we use a tanh starting later
-        # to match α's transition.
-        from c2a.code2code.schedules import make_distillation_schedule
-
-        _weight_target = float(_dist_cfg.get("weight", 0.01))
-        _mode_for_ramp = (
-            "curriculum"
-            if cfg.code2code.get("reward_mode", "off") == "curriculum"
-            else "finetune"
-        )
-        _ramp_cfg = _dist_cfg.get(
-            "lambda_A_schedule",
-            None,
-        )
-        # Build a config that make_distillation_schedule can re-use: we
-        # reverse init/final so the "fade" becomes a "ramp up".  We then
-        # post-process the returned function to invert the start/end values.
-        if _ramp_cfg is None:
-            # Aggressive defaults: ramp starts almost immediately, reaches
-            # full at τ=0.10 (finetune) or τ=0.32 (curriculum).
-            _ramp_cfg = (
-                {"tau_hold": 0.02, "tau_fade_end": 0.10}
-                if _mode_for_ramp == "finetune"
-                else {"tau_mid": 0.25, "tau_scale": 0.04}
-            )
-        # Compose a schedule that goes 0 → weight as τ → 1.  We get this
-        # for free by passing init=weight, final=0 to make_distillation_schedule
-        # (which produces a *decay* from weight to 0) and then re-inverting.
-        _fade_fn = make_distillation_schedule(
-            {"init": _weight_target, "final": 0.0, **_ramp_cfg},
-            mode=_mode_for_ramp,
-        )
-
-        def _distinguish_weight_fn(tau, _fade=_fade_fn, _w=_weight_target):
-            # _fade(τ) ranges from _w down to 0; we want 0 up to _w.
-            return _w - _fade(tau)
-
-        logging.info(
-            "distinguishability term: enabled (mode=%s, weight=%.4f, "
-            "num_alt_codes=%d, sampling=distance_weighted)",
-            _mode_for_ramp, _weight_target, _distinguish_num_alt_codes,
-        )
-
     _post_init_params_fn = None
-    if _is_finetune_mode:
-        # Finetune branch: load full policy params from the finetune ckpt.
-        # Takes precedence over the MIMIC encoder/decoder loading below.
-        _ft_ckpt_path = str(_finetune_ckpt_path)
-
-        def _post_init_params_fn(training_state):
-            """Finetune mode: load full policy params from the finetune ckpt.
-
-            Reads the latest MoSeqPPONetwork_N step from the ckpt manager
-            (using step_prefix="MoSeqPPONetwork", matching how moseq_ppo.py
-            saves) and assigns the entire policy params tree.  Does NOT
-            restore optimizer state (we want fresh Adam moments for the
-            new reward landscape) or value-network params (re-learned
-            from scratch in early iters; minor cost).  Normalizer state
-            is restored alongside the policy via the standard Composite
-            tuple unpacking.
-            """
-            if _resume_in_progress:
-                logging.info(
-                    "finetune: checkpoint_to_restore is also set "
-                    "(resume-from-crash). Skipping finetune ckpt load "
-                    "in favor of the resumed training_state."
-                )
-                return training_state
-
-            mgr_options = ocp.CheckpointManagerOptions(
-                create=False, step_prefix="MoSeqPPONetwork",
-            )
-            with ocp.CheckpointManager(_ft_ckpt_path, options=mgr_options) as mgr:
-                latest = mgr.latest_step()
-                if latest is None:
-                    raise FileNotFoundError(
-                        f"finetune: no MoSeqPPONetwork_* steps found in "
-                        f"{_ft_ckpt_path}"
-                    )
-                # Use the in-process training_state as the restore template
-                # so Orbax fills leaves while preserving the typed structure
-                # (DictRunningStatisticsState for the normalizer, etc.).  An
-                # untyped restore would return both subtrees as plain dicts;
-                # PPO requires DictRunningStatisticsState for the normalizer
-                # to compute (obs - mean) / std at inference time.
-                template = (
-                    training_state.normalizer_params,
-                    training_state.params.policy,
-                )
-                restored = mgr.restore(
-                    latest,
-                    args=ocp.args.Composite(
-                        policy=ocp.args.StandardRestore(template),
-                    ),
-                )
-            loaded_normalizer, loaded_policy_params = restored["policy"]
-
-            # Full subtree assignment.  The finetune ckpt was trained
-            # with the same network_config (verified via
-            # expected_num_codes assertion in _build_c2c_env_kwargs),
-            # so the param tree shapes line up.
-            training_state.params.policy["params"] = loaded_policy_params["params"]
-
-            # CRITICAL: restore the normalizer too.  The loaded policy was
-            # trained on (obs - μ) / σ; if we leave the normalizer at its
-            # fresh-init zeros, iter 0 feeds raw obs through the policy,
-            # outputs become garbage, and 64 gradient updates at lr=3e-5
-            # destroy the loaded weights.  Observed in the prior smoke +
-            # the 260531_051550 launch as root_too_far=0.945 after iter 0.
-            # See scratch/2026-05-31-c2c-finetune-curriculum-audit/.
-            training_state = training_state.replace(
-                normalizer_params=loaded_normalizer,
-            )
-
-            logging.info(
-                "finetune: loaded FULL policy params + DictRunningStatisticsState "
-                "normalizer from %s/MoSeqPPONetwork_%d",
-                _ft_ckpt_path, latest,
-            )
-            return training_state
-
-    elif use_distillation_head and distillation_encoder_checkpoint is not None:
+    if use_distillation_head and distillation_encoder_checkpoint is not None:
         # Orbax requires absolute paths. Resolve relatives against the repo
         # root (same rule as codes_path / balanced_split_path above). Without
         # this, a config like `${oc.env:C2A_ROOT,.}/trained_mimic_ckpts/...`
@@ -1653,25 +1277,6 @@ def main(cfg: DictConfig) -> None:
         z_e_scale_fn=z_e_scale_fn,
         kl_weight_fn=kl_weight_fn,
         distill_kl_weight=distill_kl_weight if use_distillation_head else 0.0,
-        distill_kl_weight_fn=_distill_kl_weight_fn,
-        # The `step` parameter passed to the loss by track-mjx is the
-        # ITERATION INDEX (see ppo.py:570 `step = ones_like(env_steps) * it`),
-        # NOT env steps. Total iters ≈ num_timesteps / env_step_per_training_step
-        # where env_step_per_training_step = num_envs × unroll_length ×
-        # num_minibatches × max(num_resets_per_eval, 1).
-        # num_resets_per_eval defaults to max(1, ...) so use 1 in this calc.
-        num_timesteps_for_schedule=int(
-            cfg.train_setup.train_config.num_timesteps
-            // (
-                int(cfg.train_setup.train_config.num_envs)
-                * int(cfg.train_setup.train_config.unroll_length)
-                * int(cfg.train_setup.train_config.num_minibatches)
-            )
-        ),
-        distinguish_enabled=_distinguish_enabled,
-        distinguish_weight_fn=_distinguish_weight_fn,
-        distinguish_sampling_probs=_distinguish_sampling_probs,
-        distinguish_num_alt_codes=_distinguish_num_alt_codes,
         post_init_params_fn=_post_init_params_fn,
     )
 
@@ -1738,34 +1343,23 @@ def main(cfg: DictConfig) -> None:
         )
 
     # Wrap wandb_progress to add `/`-prefixed metric groups for WandB panels.
-    # The active mode panel is `curriculum/*` in curriculum mode and
-    # `finetune/*` in finetune (or any other non-curriculum) mode.  Skill-
-    # diversity metrics — α, r_track, r_c2c, distillation fade, λ_A ramp,
-    # distinguishability KL, entropy — are mirrored into the active panel.
-    # The c2c_curriculum_* env keys (shared by both modes) route only to the
-    # active panel: no `curriculum/*` panel in finetune mode, no
-    # `finetune/*` panel in curriculum mode.
-    _reward_mode = str(cfg.code2code.get("reward_mode", "off"))
-    _active_panel = "finetune" if _reward_mode == "finetune" else "curriculum"
-
+    # Six grouping panels:
+    #   losses/         PPO scalar losses
+    #   z_e/            encoder (μ, log σ) magnitudes + KL
+    #   codes/          codebook utilization / perplexity / transition rate
+    #   rnn/            RNN-decoder hidden state norm
+    #   distillation/   distillation head KL
+    #   c2c/            code2code reward composition + diagnostics
+    # The `training/` prefix from track-mjx's ppo.train is stripped before
+    # branch matching; the original `training/*` key is preserved at the
+    # end of the loop for any consumer that reads it directly.
     def _grouped_wandb_progress(num_steps: int, metrics: dict) -> None:
         grouped = {}
         for k, v in metrics.items():
-            # track-mjx's ppo.train emits loss-side metrics with a
-            # `training/` prefix (e.g. `training/entropy_loss`).  Strip it
-            # for matching so the grouping branches below actually fire —
-            # without this, every loss metric falls through to `training/*`
-            # and the `losses/`, `distillation/`, `distinguish/`, `z_e/`,
-            # `codes/`, `rnn/` panels are never created.  The original
-            # `training/*` key is still preserved at the bottom of the loop
-            # (`grouped[k] = v`) for backward compat with other consumers.
             leaf = k.split("/", 1)[1] if k.startswith("training/") else k
 
             if leaf in ("total_loss", "policy_loss", "v_loss", "entropy_loss"):
                 grouped[f"losses/{leaf}"] = v
-                # Mirror exploration health onto the active mode panel.
-                if leaf == "entropy_loss":
-                    grouped[f"{_active_panel}/entropy_loss"] = v
             elif leaf in ("kl_loss", "scaled_kl_loss", "z_e_norm", "z_e_std", "z_e_scale"):
                 grouped[f"z_e/{leaf}"] = v
             elif leaf in ("transition_rate", "perplexity", "codebook_utilization", "codes_used"):
@@ -1775,58 +1369,18 @@ def main(cfg: DictConfig) -> None:
             elif leaf in (
                 "distill_kl_loss", "scaled_distill_kl_loss",
                 "distill_mean_norm", "distill_logvar_mean",
-                "distill_kl_weight_now",
             ):
                 grouped[f"distillation/{leaf}"] = v
-                # Mirror the fade tracker + raw KL onto the active mode panel.
-                if leaf in ("distill_kl_weight_now", "distill_kl_loss"):
-                    grouped[f"{_active_panel}/{leaf}"] = v
-            elif leaf.startswith("distinguish_"):
-                # Distinguishability term metrics (Term 3 of skill-diversity
-                # objective): per-step KL, λ_A weight, reward bonus mean.
-                grouped[f"distinguish/{leaf}"] = v
-                # Mirror the headline distinguishability metrics onto the
-                # active mode panel.
-                if leaf in (
-                    "distinguish_kl_mean",
-                    "distinguish_weight_now",
-                    "distinguish_reward_bonus_mean",
-                ):
-                    grouped[f"{_active_panel}/{leaf}"] = v
-            elif (
-                k.startswith("c2c_curriculum_")
-                or "episode_c2c_curriculum_" in k
-            ):
-                # c2c reward composition components — α, raw track reward,
-                # raw c2c reward — surfaced as (eval/)episode_c2c_curriculum_*
-                # by EpisodeWrapper.  Both reward modes share this env-side
-                # plumbing but the panel routes to the ACTIVE mode only:
-                # finetune mode → finetune/*, curriculum mode → curriculum/*.
-                if "episode_c2c_curriculum_" in k:
-                    short = k.split("episode_c2c_curriculum_", 1)[1]
-                    if k.startswith("eval/test_set/"):
-                        key = f"{_active_panel}/eval_test/{short}"
-                    elif k.startswith("eval/"):
-                        key = f"{_active_panel}/eval/{short}"
-                    else:
-                        key = f"{_active_panel}/{short}"
-                else:
-                    # c2c_curriculum_alpha → {active}/alpha
-                    key = f"{_active_panel}/{k[len('c2c_curriculum_'):]}"
-                grouped[key] = v
             elif (
                 k.startswith("c2c_")
                 or k.startswith("c2c/")
                 or "episode_c2c_" in k
             ):
-                # code2code reward-mode diagnostics. The env writes
-                # c2c_* into state.metrics so track-mjx accumulates
-                # them and the eval aggregator surfaces them as
-                # eval/episode_c2c_*  (train rollouts) and
-                # eval/test_set/episode_c2c_*  (test rollouts).
-                # We also accept training/episode_c2c_*  and raw
-                # c2c_* (from the loss path, if any future addition).
-                # All of them route into the c2c/ WandB panel group.
+                # code2code reward diagnostics: the env writes c2c_* into
+                # state.metrics and the eval aggregator surfaces them as
+                # eval/episode_c2c_* (train rollouts) and
+                # eval/test_set/episode_c2c_* (test rollouts).  All route
+                # into the single c2c/ panel.
                 if "episode_c2c_" in k:
                     short = k.split("episode_c2c_", 1)[1]
                     if k.startswith("eval/test_set/"):
