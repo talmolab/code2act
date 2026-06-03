@@ -165,6 +165,50 @@ def _sample_init_clip_pool(
 # ---------------------------------------------------------------------------
 
 
+def _make_vae_mean_inference_fn(
+    ppo_networks: Any, normalizer_params: Any,
+    z_e_scale: float = 1.0,
+):
+    """Custom inference fn that exposes ``vae_mean`` (a.k.a. distill_mean
+    when ``use_pretrained_decoder=True``) in extras.
+
+    The trained policy's actual *intention* — the value sampled into z and
+    passed to the frozen MIMIC decoder — is ``vae_mean``.  The standard
+    factory `make_inference_fn` exposes ``cont_mean`` (the encoder
+    posterior) but ignores ``vae_mean``.  This patch unpacks the apply
+    tuple's position 5 (``distill_mean`` when distillation+pretrained
+    decoder are on, which equals ``vae_mean``) and returns it.
+    """
+    policy_network = ppo_networks.policy_network
+
+    def policy(params, obs, hidden, key):
+        # apply returns: (action_params, code_idx, mean, logvar,
+        #                 new_hidden, distill_mean, distill_logvar)
+        # With use_distillation_head=True AND use_pretrained_decoder=True
+        # (the case for this ckpt), distill_mean == vae_mean.
+        (
+            action_params, code_idx, cont_mean, cont_logvar,
+            new_hidden, distill_mean, distill_logvar,
+        ) = policy_network.apply(
+            *params, obs, hidden, key,
+            deterministic=False,
+            z_e_scale=z_e_scale,
+        )
+        # Sample action (stochastic).
+        action_dist = ppo_networks.parametric_action_distribution
+        raw = action_dist.sample_no_postprocessing(action_params, key)
+        action = jnp.array(action_dist.postprocess(raw))
+        extras = {
+            "code_idx": code_idx,
+            "vae_mean": distill_mean,    # the true intention
+        }
+        if cont_mean is not None:
+            extras["cont_mean"] = cont_mean
+        return action, extras, new_hidden
+
+    return jax.jit(policy)
+
+
 def _batched_rollout_for_sequence(
     env, inf_fn, params, ppo_networks,
     code_sequence: jnp.ndarray,        # (T_full, code_stack_size)
@@ -178,8 +222,9 @@ def _batched_rollout_for_sequence(
     Same pattern as ``c2a/experiments/run_code_grid_rollouts.py::
     _batched_rollout_for_code`` but with a per-frame code lookup instead
     of a held constant code.  The recorded scan output includes the
-    encoder's ``cont_mean`` per step (when the network's continuous
-    encoder is active) for intention-space visualization.
+    policy's ``vae_mean`` (intention to the frozen MIMIC decoder) per
+    step — exposed via ``_make_vae_mean_inference_fn`` (vae_mean is
+    ``distill_mean`` in the apply return tuple).
 
     Returns a dict of ``(N, T, ...)`` arrays.
     """
@@ -202,12 +247,12 @@ def _batched_rollout_for_sequence(
             action, extras, hidden = inf_fn(params, batched_obs, hidden, subkey)
             action = jax.tree.map(lambda x: x[0], action)
 
-            cont_mean = extras.get("cont_mean", jnp.zeros((1,)))
-            cont_mean = jnp.asarray(cont_mean).reshape(-1)
+            vae_mean = extras.get("vae_mean", jnp.zeros((1,)))
+            vae_mean = jnp.asarray(vae_mean).reshape(-1)
 
             out = {
                 "hidden":    hidden[-1][0],
-                "intention": cont_mean,
+                "intention": vae_mean,           # vae_mean = the actual intent to frozen decoder
                 "qpos":      state.data.qpos,
                 "proprio":   state.obs["proprioception"],
                 "code":      jnp.asarray(extras["code_idx"]).reshape(-1)[0].astype(jnp.int32),
@@ -381,11 +426,12 @@ def main(cfg: DictConfig) -> None:
         c2c_reward_mode="off",
     )
 
-    # Make the inference function (decoder-only / z_e_scale=0).
-    inf_fn = make_inference_fn(
-        ppo_networks,
-        use_rnn=use_rnn,
-        deterministic=False,
+    # Custom inference fn that exposes ``vae_mean`` (the policy's actual
+    # intention to the frozen MIMIC decoder).  When the network has
+    # use_distillation_head + use_pretrained_decoder both on (this ckpt's
+    # case), distill_mean == vae_mean in the apply return tuple.
+    inf_fn = _make_vae_mean_inference_fn(
+        ppo_networks, normalizer_state,
         z_e_scale=float(cfg.rollout.z_e_scale),
     )
 
@@ -428,25 +474,20 @@ def main(cfg: DictConfig) -> None:
         name: csv_to_train_pos[csv_idx] for name, csv_idx in picks_csv.items()
     }
 
-    # --- 3. Sample the shared init pool ----------------------------------
-    init_clips_np = _sample_init_clip_pool(
-        n_walkers=int(cfg.population.num_walkers),
-        n_clips=n_clips_train,
-        seed=int(cfg.population.init_seed),
-    )
-    init_clips = jnp.asarray(init_clips_np, dtype=jnp.int32)
-    log.info(
-        "  init pool: %d walkers, seeded with %d; first 5 init clips = %s",
-        cfg.population.num_walkers, cfg.population.init_seed,
-        init_clips_np[:5].tolist(),
-    )
+    # --- 3. Per-cell init: ALL 100 walkers reset to the SOURCE clip's
+    # frame 0 so the env's reference matches the code sequence being
+    # fed.  Domain randomization + per-env qpos jitter give the spread
+    # across the population.  This is the "source-clip-reference" fix
+    # for the previous experiment where each walker tracked a random
+    # clip whose reference disagreed with the codes.
+    n_walkers = int(cfg.population.num_walkers)
 
     # --- 4. Vmap rollouts per cell ---------------------------------------
     max_steps = int(cfg.rollout.max_steps)
 
-    # JIT once; reuse across cells (signature: code_sequence (T, K), base_keys).
+    # JIT once; reuse across cells (signature: code_sequence, init_clips, base_keys).
     @jax.jit
-    def _run_one_cell(code_sequence, base_keys):
+    def _run_one_cell(code_sequence, init_clips, base_keys):
         return _batched_rollout_for_sequence(
             env, inf_fn, params, ppo_networks,
             code_sequence, init_clips, base_keys,
@@ -472,11 +513,13 @@ def main(cfg: DictConfig) -> None:
             "  [%d/%d] %s  (clip %d, codes head=%s)",
             ci + 1, len(picks), name, clip_idx, codes_clip[:5].tolist(),
         )
+        # All 100 walkers reset to the source clip's train-pos index.
+        init_clips = jnp.full((n_walkers,), int(clip_idx), dtype=jnp.int32)
         base_keys = jnp.stack([
             jax.random.PRNGKey(int(cfg.rollout.policy_seed) + 1_000_003 * (ci + 1) + k)
-            for k in range(int(cfg.population.num_walkers))
+            for k in range(n_walkers)
         ])
-        outs = _run_one_cell(jnp.asarray(code_seq_window), base_keys)
+        outs = _run_one_cell(jnp.asarray(code_seq_window), init_clips, base_keys)
         agg = {
             "hidden":    np.asarray(outs["hidden"]),
             "intention": np.asarray(outs["intention"]),
@@ -485,7 +528,7 @@ def main(cfg: DictConfig) -> None:
             "codes":     np.asarray(outs["code"]),
             "rewards":   np.asarray(outs["reward"]),
             "done":      np.asarray(outs["done"]),
-            "init_clips": init_clips_np,
+            "init_clips": np.asarray(init_clips),
             "source_clip": np.int32(clip_idx),
             "source_code_seq": np.asarray(codes_clip[:max_steps]),
             "combination_name": np.array(name),
