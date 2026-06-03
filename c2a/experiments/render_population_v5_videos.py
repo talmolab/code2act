@@ -142,6 +142,14 @@ def render_pca_panel_frames(
         return (lo - span * pad, hi + span * pad)
     xlim = _lim(pca_traj[:, :, 0]); ylim = _lim(pca_traj[:, :, 1]); zlim = _lim(pca_traj[:, :, 2])
 
+    # STATIC structural cloud: all non-highlighted walkers × all time
+    # frames, flattened to (N_bg × T, 3).  Drawn once per frame as the
+    # population manifold — shows the PCA structure that the population
+    # traces out across the full rollout, not just where they happen to
+    # be at frame t.  The 3 highlighted walkers' trajectories evolve on
+    # top of this static backdrop.
+    bg_cloud = pca_traj[bg_mask, :, :].reshape(-1, 3)
+
     dpi = 100
     fig = plt.figure(figsize=(width / dpi, height / dpi), dpi=dpi)
     ax = fig.add_subplot(111, projection="3d")
@@ -149,9 +157,11 @@ def render_pca_panel_frames(
     for t in range(T):
         ax.clear()
         azim = float(t) / max(T - 1, 1) * rotation_degrees
+        # Static structural cloud — low alpha because there are many
+        # points (~24k for 97 walkers × 250 frames).
         ax.scatter(
-            pca_traj[bg_mask, t, 0], pca_traj[bg_mask, t, 1], pca_traj[bg_mask, t, 2],
-            c=[[0.6, 0.6, 0.6, 0.25]], s=8, edgecolors="none",
+            bg_cloud[:, 0], bg_cloud[:, 1], bg_cloud[:, 2],
+            c=[[0.6, 0.6, 0.6, 0.05]], s=4, edgecolors="none",
         )
         for hi, color in zip(highlights[:len(highlight_colors)], highlight_colors):
             traj = pca_traj[int(hi), :t + 1, :]

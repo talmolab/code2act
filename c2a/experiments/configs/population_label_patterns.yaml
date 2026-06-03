@@ -94,11 +94,14 @@ video:
   code_bar_h: 36
   banner_h: 36
   pca_rotation_degrees: 360.0
-  # Frontal camera for the motion panel — matches run_single_code.
+  # Frontal-ish camera, but pulled back so walkers can locomote without
+  # leaving the frame. Originally distance=0.45 was too tight for Walk
+  # cells; bumped to 0.75 with slight off-frontal azimuth to also catch
+  # lateral movement.
   camera:
-    distance: 0.45
-    elevation: -20.0
-    azimuth: 180.0
+    distance: 0.75
+    elevation: -25.0
+    azimuth: 160.0
     fovy: 45.0
   data_only: false
 
