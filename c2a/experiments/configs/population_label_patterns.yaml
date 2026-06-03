@@ -1,0 +1,107 @@
+# =============================================================================
+# Population label patterns — Format A (held dominant) + Format B (pattern)
+# =============================================================================
+# 12 cells × 2 formats × 100 walkers, all decoder-only (z_e_scale=0).
+#
+# - Format A: hold the dominant code per phase for the full phase duration.
+# - Format B: recreate the in-label code dynamics per phase (Walk's 12↔0
+#   oscillation, Rear sustained 16, Turn sustained 19, Immobile cycle).
+# =============================================================================
+
+defaults:
+  - _self_
+
+paths:
+  c2a_root: ${oc.env:C2A_ROOT,.}
+  labels_csv: ${.c2a_root}/data/rodent/rodent_labels.csv
+  balanced_splits: ${.c2a_root}/data/rodent/rodent_balanced_splits.json
+
+checkpoint:
+  # 260521 — K=20 VAE, 184 steps, distill=True, c2c=None
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260521_163957_196292/
+  step: null
+
+# 12 cells.  Walk-centric: Row 1 = singles, Row 2 = Walk-dyads, Row 3 =
+# Walk-triads + one comparison triad.
+combinations:
+  - { name: "Immobile",                    labels: ["Immobile"] }
+  - { name: "Rear",                        labels: ["Rear"] }
+  - { name: "Walk",                        labels: ["Walk"] }
+  - { name: "Turn",                        labels: ["Turn"] }
+  - { name: "Immobile → Walk",             labels: ["Immobile", "Walk"] }
+  - { name: "Walk → Immobile",             labels: ["Walk", "Immobile"] }
+  - { name: "Walk → Rear",                 labels: ["Walk", "Rear"] }
+  - { name: "Rear → Walk",                 labels: ["Rear", "Walk"] }
+  - { name: "Immobile → Walk → Immobile",  labels: ["Immobile", "Walk", "Immobile"] }
+  - { name: "Walk → Rear → Walk",          labels: ["Walk", "Rear", "Walk"] }
+  - { name: "Walk → Turn → Walk",          labels: ["Walk", "Turn", "Walk"] }
+  - { name: "Rear → Immobile → Rear",      labels: ["Rear", "Immobile", "Rear"] }
+
+grid:
+  rows: 3
+  cols: 4
+
+# Hand-coded from /tmp/seganalysis output on legacy K=20 (ckpt 260521 tokenizer).
+# Mode codes (top-1 per label) — used by Format A.
+label_to_mode_code:
+  Immobile: 1
+  Rear:     16
+  Walk:     12
+  Turn:     19
+
+# Top-5 codes per label (mode-ranked) — useful for Format B's Immobile cycle.
+label_to_top5:
+  Immobile: [1, 8, 13, 10, 2]
+  Rear:     [16, 6, 5, 3, 7]
+  Walk:     [12, 0, 13, 1, 15]
+  Turn:     [19, 12, 0, 14, 1]
+
+# Format-B pattern spec.  Each entry tells the experiment HOW to fill the
+# phase block for that label.
+#   - mode: "hold" (constant), "oscillate" (cycle two codes with given
+#     block size), or "cycle" (cycle a list with given block size).
+#   - codes: relevant code list
+#   - block_frames: how many frames per code block (only used by
+#     oscillate/cycle)
+pattern_per_label:
+  Walk:     { mode: "oscillate", codes: [12, 0],     block_frames: 7 }
+  Rear:     { mode: "hold",      codes: [16] }
+  Turn:     { mode: "hold",      codes: [19] }
+  Immobile: { mode: "cycle",     codes: [1, 8, 13, 10, 2], block_frames: 30 }
+
+population:
+  num_walkers: 100
+  init_seed: 0
+
+rollout:
+  z_e_scale: 0.0
+  max_steps: 250
+  policy_seed: 12345
+
+highlight:
+  n_highlight: 3
+  # tab10 first 3 (RGB 0-1)
+  highlight_colors: [[0.1216, 0.4667, 0.7059],   # tab10[0] blue
+                     [1.0000, 0.4980, 0.0549],   # tab10[1] orange
+                     [0.1725, 0.6275, 0.1725]]   # tab10[2] green
+  background_color: [0.6, 0.6, 0.6, 0.4]
+  strategy: spread_by_final_pca
+
+video:
+  fps: 50
+  panel_w: 480
+  panel_h: 480
+  code_bar_h: 36
+  banner_h: 36
+  pca_rotation_degrees: 360.0
+  # Frontal camera for the motion panel — matches run_single_code.
+  camera:
+    distance: 0.45
+    elevation: -20.0
+    azimuth: 180.0
+    fovy: 45.0
+  data_only: false
+
+output:
+  base_dir: ${paths.c2a_root}/outputs/population_label_patterns_v5
+  reuse_rollouts: true
