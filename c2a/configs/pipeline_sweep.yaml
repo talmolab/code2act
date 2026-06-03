@@ -49,7 +49,7 @@ decoder:
   use_rnn_decoder: true
   rnn_hidden_sizes: [256]
   rnn_cell_type: gru
-  use_continuous_encoder: true
+  use_continuous_encoder: false
 
   # z_e annealing (gradually reduce encoder contribution)
   z_e_anneal: false

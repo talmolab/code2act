@@ -146,7 +146,7 @@ network_config:
   critic_layer_sizes: [512, 512, 256, 256]
 
   # Continuous encoder (reference trajectory -> continuous latent)
-  use_continuous_encoder: true
+  use_continuous_encoder: false   # clean c2c architecture: GRU sees only [code_embed, proprio], no reference-shortcut z_e
   encoder_layer_sizes: [512, 512, 256]
   continuous_latent_dim: 16
   encoder_uses_proprio: true        # concat [task_obs, proprio] as encoder input (matches mimic encoder)

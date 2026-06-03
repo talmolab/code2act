@@ -225,7 +225,7 @@ for kl_w in $KL_WEIGHTS; do
                 network_config.z_e_dropout_rate="$dropout" \
                 network_config.code_stack_size="$CODE_STACK_SIZE" \
                 network_config.continuous_latent_dim="$LATENT_DIM" \
-                network_config.use_continuous_encoder=true \
+                network_config.use_continuous_encoder=false \
                 network_config.use_rnn_decoder="$USE_RNN" \
                 "network_config.rnn_hidden_sizes=[$RNN_HIDDEN]" \
                 network_config.rnn_cell_type="$RNN_CELL" \
