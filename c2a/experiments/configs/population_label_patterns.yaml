@@ -72,10 +72,23 @@ pattern_per_label:
 population:
   num_walkers: 100
   init_seed: 0
+  # init_mode: "same_pos" → all walkers reset to source-clip frame 0
+  #            "walking_pose" → each walker resets to a different train clip
+  #            at the earliest frame where ≥num_walkers train clips have a
+  #            "Walk" behavior label (mines rodent_labels.csv).  Both
+  #            variants run when the script is invoked twice with different
+  #            output dirs.
+  init_mode: same_pos
+  # Used when init_mode == "walking_pose": probe-frame search window.
+  walking_probe_frame: 20
+  walking_probe_frame_max: 200
 
 rollout:
   z_e_scale: 0.0
-  max_steps: 250
+  # 750 frames at 50 fps = 15 seconds — gives each phase ~5s of hold time
+  # for triads, 7.5s for dyads, 15s for singles.  Plenty of room to see
+  # sustained behavior + transitions.
+  max_steps: 750
   policy_seed: 12345
 
 highlight:
@@ -94,17 +107,16 @@ video:
   code_bar_h: 36
   banner_h: 36
   pca_rotation_degrees: 360.0
-  # Frontal-ish camera, but pulled back so walkers can locomote without
-  # leaving the frame. Originally distance=0.45 was too tight for Walk
-  # cells; bumped to 0.75 with slight off-frontal azimuth to also catch
-  # lateral movement.
+  # Wider field of view + further distance so the full rodent body stays
+  # in frame even when locomoting.  Slight off-frontal azimuth so lateral
+  # gait motion is visible.
   camera:
-    distance: 0.75
-    elevation: -25.0
-    azimuth: 160.0
-    fovy: 45.0
+    distance: 1.2
+    elevation: -30.0
+    azimuth: 135.0
+    fovy: 55.0
   data_only: false
 
 output:
-  base_dir: ${paths.c2a_root}/outputs/population_label_patterns_v5
+  base_dir: ${paths.c2a_root}/outputs/population_label_patterns_v6_same_pos
   reuse_rollouts: true

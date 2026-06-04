@@ -272,6 +272,11 @@ def main(cfg: DictConfig) -> None:
             cell_name = str(d["combination_name"])
             fmt = str(d["format"])
         key = f"{cell_name.replace(' ', '_').replace('→', 'arrow')}_fmt{fmt}"
+        # Skip if already rendered — allows clean resume after a crash.
+        out_path_check = video_dir / f"{key}.mp4"
+        if out_path_check.exists() and out_path_check.stat().st_size > 0:
+            log.info("  skip %s (already exists)", out_path_check.name)
+            continue
         highlights = (
             np.asarray(highlights_npz[key])
             if key in highlights_npz.files

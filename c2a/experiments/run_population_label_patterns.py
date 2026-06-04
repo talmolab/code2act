@@ -51,6 +51,9 @@ from track_mjx.config import utils
 from vnl_playground.tasks.rodent.imitation import ReferenceClips
 
 from c2a.codegen.code_sources import load_codes
+from c2a.codegen.shared.label_alignment import (
+    BEHAVIORS, BEHAVIOR_TO_INT, UNLABELED, load_label_frames,
+)
 from c2a.experiments.shared.checkpoint_utils import load_moseq_checkpoint
 from c2a.experiments.shared.clip_selection import load_balanced_splits
 from c2a.moseq_env_wrapper import MoSeqImitation
@@ -76,6 +79,68 @@ def _clip_to_index(name: str) -> int:
 # ---------------------------------------------------------------------------
 # Per-cell init clip selection (first-phase-match)
 # ---------------------------------------------------------------------------
+
+
+def pick_walking_pose_init_pool(
+    labels_csv: Path,
+    train_indices: np.ndarray,
+    n_walkers: int,
+    probe_frame: int,
+    probe_frame_max: int,
+    n_frames: int,
+    seed: int,
+) -> tuple[np.ndarray, int]:
+    """Sample n_walkers (train_pos, frame) pairs where each pose is 'Walk'.
+
+    Mirrors ``_pick_start_clips`` from
+    ``run_labeled_hidden_dynamics_controlled``: scans probe_frame..max for
+    the earliest frame at which ≥``n_walkers`` train clips have label
+    ``Walk`` at that frame, then returns those clip indices (as train_pos)
+    and the chosen frame.
+    """
+    arrays = load_label_frames(
+        labels_csv, clip_range=(0, 841), n_frames=n_frames,
+    )
+    behavior_array = arrays.behavior   # (N_clips_in_range, T) ints
+    target = BEHAVIOR_TO_INT["Walk"]
+    in_range = np.asarray(
+        [int(c) for c in train_indices if int(c) < behavior_array.shape[0]],
+        dtype=np.int64,
+    )
+    matches = (
+        behavior_array[in_range, probe_frame:probe_frame_max + 1] == target
+    )                                                   # (n_in_range, n_scan)
+    counts = matches.sum(axis=0)
+    # Walk is rare in this corpus (~100-200 frames per clip total).  Pick
+    # the frame with the largest pool of Walking train clips, then
+    # bootstrap-sample n_walkers with REPLACEMENT.  Without replacement
+    # would cap us at the pool size (often <100).
+    best_idx = int(counts.argmax())
+    chosen_frame = probe_frame + best_idx
+    pool = in_range[matches[:, best_idx]]
+    if len(pool) == 0:
+        raise RuntimeError(
+            f"No train clip in [{probe_frame}, {probe_frame_max}] has "
+            f"Walk pose at any frame.  Widen the probe range."
+        )
+    rng = np.random.RandomState(seed)
+    # Sample with replacement if pool is smaller than n_walkers, else
+    # without (for diversity).
+    replace = len(pool) < n_walkers
+    sampled = rng.choice(pool, size=n_walkers, replace=replace)
+    if replace:
+        import logging as _l
+        _l.getLogger(__name__).info(
+            "walking-pose pool size %d < n_walkers %d → sampling with "
+            "replacement (chosen frame %d had max count %d in the corpus)",
+            len(pool), n_walkers, chosen_frame, int(counts[best_idx]),
+        )
+    # Map original-clip-id → train-position index
+    csv_to_train_pos = {int(orig): pos for pos, orig in enumerate(train_indices)}
+    train_pos = np.asarray(
+        [csv_to_train_pos[int(c)] for c in sampled], dtype=np.int32,
+    )
+    return train_pos, int(chosen_frame)
 
 
 def pick_init_clip_per_label(
@@ -310,8 +375,37 @@ def main(cfg: DictConfig) -> None:
         keep_clips_idx=train_indices,
     )
 
+    # --- Init mode handling ---------------------------------------------
+    init_mode = str(cfg.population.get("init_mode", "same_pos"))
+    log.info("init_mode=%s", init_mode)
+
+    if init_mode == "walking_pose":
+        # All walkers start at the same frame F (=probe frame) but on
+        # DIFFERENT train clips that each have a "Walk" pose at F.
+        # Frame F is shared so env can be built with start_frame_range=[F, F].
+        walking_train_pos, walking_frame = pick_walking_pose_init_pool(
+            labels_csv=Path(_abs(cfg.paths.labels_csv)),
+            train_indices=train_indices,
+            n_walkers=int(cfg.population.num_walkers),
+            probe_frame=int(cfg.population.walking_probe_frame),
+            probe_frame_max=int(cfg.population.walking_probe_frame_max),
+            n_frames=int(cfg_local.env_config.clip_length),
+            seed=int(cfg.population.init_seed),
+        )
+        log.info(
+            "walking-pose init: frame=%d, %d train clips selected",
+            walking_frame, len(walking_train_pos),
+        )
+        env_start_frame = walking_frame
+        # Per-cell init_clips will be FIXED at these walking_train_pos
+        # regardless of cell name.  The pool is the same across cells.
+    else:
+        walking_train_pos = None
+        walking_frame = 0
+        env_start_frame = 0
+
     env_cfg_ml_train = env_cfg_ml.copy_and_resolve_references()
-    env_cfg_ml_train.start_frame_range = [0, 0]
+    env_cfg_ml_train.start_frame_range = [env_start_frame, env_start_frame]
     env = MoSeqImitation(
         config=env_cfg_ml_train,
         clips=clips_train,
@@ -321,13 +415,14 @@ def main(cfg: DictConfig) -> None:
         c2c_reward_mode="off",
     )
 
-    # --- Per-label init clip --------------------------------------------
+    # --- Per-label init clip (only consulted in same_pos mode) ----------
     label_to_init_clip = pick_init_clip_per_label(
         Path(_abs(cfg.paths.labels_csv)), train_indices,
     )
-    log.info("Per-label init clip (train pos):")
-    for label, pos in label_to_init_clip.items():
-        log.info("  %-10s  train_pos=%d", label, pos)
+    if init_mode == "same_pos":
+        log.info("Per-label init clip (train pos):")
+        for label, pos in label_to_init_clip.items():
+            log.info("  %-10s  train_pos=%d", label, pos)
 
     # --- Inference fn ----------------------------------------------------
     inf_fn = _make_vae_mean_inference_fn(
@@ -363,12 +458,25 @@ def main(cfg: DictConfig) -> None:
         name = str(combo.name)
         labels = [str(l) for l in combo.labels]
         first_label = labels[0]
-        if first_label not in label_to_init_clip:
-            log.warning("  cell %r: no init clip for first label %r; skipping",
-                        name, first_label)
-            continue
-        init_pos = label_to_init_clip[first_label]
-        init_clips = jnp.full((n_walkers,), int(init_pos), dtype=jnp.int32)
+
+        # Init clips: in same_pos mode, all 100 walkers reset to source-clip
+        # frame 0 (varies per cell).  In walking_pose mode, the 100 walkers
+        # are pre-sampled (same across all cells) at frame F where each clip
+        # has a Walk pose at that frame.
+        if init_mode == "walking_pose":
+            assert walking_train_pos is not None
+            init_clips = jnp.asarray(walking_train_pos, dtype=jnp.int32)
+            init_pos_for_record = int(walking_train_pos[0])  # representative
+        else:
+            if first_label not in label_to_init_clip:
+                log.warning(
+                    "  cell %r: no init clip for first label %r; skipping",
+                    name, first_label,
+                )
+                continue
+            init_pos = label_to_init_clip[first_label]
+            init_clips = jnp.full((n_walkers,), int(init_pos), dtype=jnp.int32)
+            init_pos_for_record = int(init_pos)
 
         for fi, (fmt, seq_builder) in enumerate([
             ("A", lambda labs: build_format_A_sequence(labs, label_to_mode, total_frames)),
@@ -412,7 +520,9 @@ def main(cfg: DictConfig) -> None:
                 "codes":     np.asarray(outs["code"]),
                 "rewards":   np.asarray(outs["reward"]),
                 "done":      np.asarray(outs["done"]),
-                "init_clip_train_pos": np.int32(init_pos),
+                "init_clip_train_pos": np.int32(init_pos_for_record),
+                "init_clips_all": np.asarray(init_clips),
+                "init_mode": np.array(init_mode),
                 "fed_code_seq": flat.astype(np.int32),
                 "combination_name": np.array(name),
                 "format": np.array(fmt),
