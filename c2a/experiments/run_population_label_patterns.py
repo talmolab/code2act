@@ -255,7 +255,17 @@ def build_code_window(
 # ---------------------------------------------------------------------------
 
 
-def _make_vae_mean_inference_fn(ppo_networks: Any, z_e_scale: float = 0.0):
+def _make_vae_mean_inference_fn(
+    ppo_networks: Any, z_e_scale: float = 0.0, deterministic: bool = True,
+):
+    """Build inference fn that returns vae_mean as `extras["vae_mean"]`.
+
+    ``deterministic=True`` (default) takes the action distribution's MODE
+    instead of sampling — this matches the original eval-quality
+    inference path used by ``run_labeled_hidden_dynamics_controlled``.
+    Sampling on top of a converged policy adds permanent un-corrected
+    Gaussian noise that destabilizes precision motor control.
+    """
     policy_network = ppo_networks.policy_network
 
     def policy(params, obs, hidden, key):
@@ -264,10 +274,13 @@ def _make_vae_mean_inference_fn(ppo_networks: Any, z_e_scale: float = 0.0):
             new_hidden, distill_mean, distill_logvar,
         ) = policy_network.apply(
             *params, obs, hidden, key,
-            deterministic=False, z_e_scale=z_e_scale,
+            deterministic=deterministic, z_e_scale=z_e_scale,
         )
         action_dist = ppo_networks.parametric_action_distribution
-        raw = action_dist.sample_no_postprocessing(action_params, key)
+        if deterministic:
+            raw = action_dist.mode(action_params)
+        else:
+            raw = action_dist.sample_no_postprocessing(action_params, key)
         action = jnp.array(action_dist.postprocess(raw))
         extras = {"code_idx": code_idx, "vae_mean": distill_mean}
         if cont_mean is not None:
@@ -425,8 +438,12 @@ def main(cfg: DictConfig) -> None:
             log.info("  %-10s  train_pos=%d", label, pos)
 
     # --- Inference fn ----------------------------------------------------
+    deterministic = bool(cfg.rollout.get("deterministic", True))
+    log.info("Inference: deterministic=%s, z_e_scale=%.3f",
+             deterministic, float(cfg.rollout.z_e_scale))
     inf_fn = _make_vae_mean_inference_fn(
         ppo_networks, z_e_scale=float(cfg.rollout.z_e_scale),
+        deterministic=deterministic,
     )
 
     n_walkers = int(cfg.population.num_walkers)
