@@ -178,6 +178,28 @@ def load_moseq_checkpoint(
     )
     cfg = OmegaConf.create(cfg) if not isinstance(cfg, DictConfig) else cfg
 
+    # 1a. Auto-correct legacy combo: training with use_distillation_head=True
+    # forces the encoder to be instantiated (frozen teacher) regardless of
+    # use_continuous_encoder.  Some training runs save the user's pre-override
+    # use_continuous_encoder=False, but the on-disk params still contain
+    # encoder_module.  When we rebuild the network with
+    # use_continuous_encoder=False, orbax restore mismatches the structure.
+    # Detect this case and flip the flag so the abstract template includes
+    # encoder_module again.
+    _net = cfg.network_config
+    if (
+        bool(_net.get("use_distillation_head", False))
+        and not bool(_net.get("use_continuous_encoder", False))
+    ):
+        logging.info(
+            "load_moseq_checkpoint: ckpt has use_distillation_head=True with "
+            "use_continuous_encoder=False — overriding to True to match the "
+            "on-disk encoder_module params (encoder will still be effectively "
+            "bypassed at inference via z_e_scale=0)."
+        )
+        OmegaConf.update(cfg, "network_config.use_continuous_encoder", True,
+                         merge=False)
+
     # 2. Build network architecture (needed for abstract template)
     net_cfg = cfg.network_config
     ppo_networks, use_rnn, common_kwargs = _build_ppo_networks(net_cfg)
