@@ -124,6 +124,45 @@ def load_codebook(yaml_path: str | Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Tier color / name maps for the multi-scale renderer
+# ---------------------------------------------------------------------------
+
+
+def load_tier_color_map(
+    pattern_yaml: str | Path,
+) -> np.ndarray:
+    """Return an (K, 3) uint8 RGB array, one row per code id.
+
+    Each code's color is its tier color from the YAML (`color` field).
+    Used as the per-frame color in the training-time code bar so that
+    the bar visually encodes WHICH TIER is currently active (fine = pale
+    gray, p3/d3 = green/cyan, n4 = blue, n5 = purple, long = orange,
+    UNL = dark gray).
+    """
+    cb = load_codebook(pattern_yaml)
+    K = cb["_num_codes"]
+    out = np.full((K, 3), 128, dtype=np.uint8)
+    for e in cb["codebook"]:
+        rgb = e.get("color", [0.5, 0.5, 0.5])
+        out[int(e["id"])] = (np.clip(np.asarray(rgb), 0.0, 1.0) * 255).astype(
+            np.uint8
+        )
+    return out
+
+
+def load_code_name_map(
+    pattern_yaml: str | Path,
+) -> list[str]:
+    """Return list of human-readable names indexed by code id."""
+    cb = load_codebook(pattern_yaml)
+    K = cb["_num_codes"]
+    out: list[str] = [f"code_{i}" for i in range(K)]
+    for e in cb["codebook"]:
+        out[int(e["id"])] = str(e["name"])
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Per-clip segment list construction
 # ---------------------------------------------------------------------------
 

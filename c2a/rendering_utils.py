@@ -630,6 +630,8 @@ def render_rollout_to_video(
     d0_label: str | None = None,
     bar_row_labels: tuple[str, ...] | None = None,
     bar_label_width: int = 90,
+    code_colors_override: np.ndarray | None = None,
+    code_names: list[str] | None = None,
 ) -> str:
     """Render rollout states to video with Nature-style overlays.
 
@@ -681,7 +683,22 @@ def render_rollout_to_video(
                 num_codes = int(max(np.max(a) for a in indices_per_depth)) + 1
             else:
                 num_codes = int(np.max(indices)) + 1
-        code_colors = get_nature_colormap(num_codes)
+        if code_colors_override is not None:
+            # Designed-segmenter mode: use tier-derived colors so the
+            # bar visually encodes which scale/granularity is currently
+            # active (fine = pale gray, p3/d3 = green/cyan, n4 = blue,
+            # n5 = purple, long = orange, UNL = dark gray).
+            code_colors = np.asarray(code_colors_override, dtype=np.uint8)
+            if code_colors.shape[0] < int(num_codes):
+                # Pad with mid-gray if codes outnumber the override (shouldn't
+                # happen but defensive).
+                pad = np.full(
+                    (int(num_codes) - code_colors.shape[0], 3), 128,
+                    dtype=np.uint8,
+                )
+                code_colors = np.concatenate([code_colors, pad], axis=0)
+        else:
+            code_colors = get_nature_colormap(num_codes)
 
     logging.info("  Adding overlays...")
     processed_frames = []
@@ -736,6 +753,19 @@ def render_rollout_to_video(
         lines = []
         if show_clip_idx and clip_idx is not None:
             lines.append(f"Clip {clip_idx}")
+
+        # Designed-segmenter mode: show the CURRENT code's human-readable
+        # name (e.g. "n5.Imm_Turn_Imm_Turn_Imm" or "fine.Walk") so the
+        # viewer can read which scale/granularity the policy is currently
+        # being driven at.  This is a no-op for other code sources.
+        if (
+            code_names is not None
+            and indices is not None
+            and i < len(indices)
+        ):
+            cur_code = int(indices[i])
+            if 0 <= cur_code < len(code_names):
+                lines.append(f"code[{cur_code}]: {code_names[cur_code]}")
 
         if rewards is not None and i < len(rewards):
             lines.append(f"Reward: {float(rewards[i]):.3f}")

@@ -258,6 +258,25 @@ def _log_eval_metrics(
                 n_rollouts,
             )
 
+            # Designed-segmenter override: tier-colored bar + code-name
+            # text overlay so the viewer can read which scale/granularity
+            # is currently active.  No-op for other code sources.
+            _code_colors_override = None
+            _code_names = None
+            if str(cfg.kpms_config.get("code_source", "")) == "designed":
+                pattern_yaml = cfg.kpms_config.get("pattern_yaml", None)
+                if pattern_yaml is not None:
+                    try:
+                        from c2a.codegen.designed_segmenter import (
+                            load_tier_color_map, load_code_name_map,
+                        )
+                        _code_colors_override = load_tier_color_map(pattern_yaml)
+                        _code_names = load_code_name_map(pattern_yaml)
+                    except Exception as e:
+                        logging.warning(
+                            "designed-segmenter overlay disabled: %s", e,
+                        )
+
             for vid_i in range(num_videos):
                 vid_states = all_rollout_states[vid_i]
                 vid_indices = (
@@ -335,6 +354,8 @@ def _log_eval_metrics(
                         indices=vid_indices,
                         num_codes=num_codes,
                         code_bar_height=30,
+                        code_colors_override=_code_colors_override,
+                        code_names=_code_names,
                     )
 
                 wandb.log(

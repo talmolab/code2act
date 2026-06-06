@@ -22,6 +22,12 @@ defaults:
 kpms_config:
   code_source: designed
   codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/designed_v1/best_codes.npz
+  # Pattern YAML used by both the segmenter (to BUILD the codes) and the
+  # training-time renderer (to derive the per-code tier color + name for
+  # the overlay).  Without this, training videos use the default
+  # single-row golden-ratio colorbar and the viewer can't tell which
+  # scale/granularity is currently active.
+  pattern_yaml: ${oc.env:C2A_ROOT,.}/c2a/codegen/patterns/multi_scale_v1.yaml
 
 network_config:
   # K=26 = 25 hand-designed codes + UNL sentinel.  The embedding table
