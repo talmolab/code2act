@@ -315,10 +315,16 @@ def main(cfg: DictConfig) -> None:
         T_common = min(motion_frames.shape[0], hidden_frames.shape[0], intention_frames.shape[0])
         bar_w = 3 * panel_w  # full row width
 
-        # 4) per-frame code timeline bar
+        # 4) per-frame code timeline bar.  num_codes coming from the
+        # base config may be smaller than max(fed_codes)+1 when the data
+        # was produced with a tokenizer that has more codes than the
+        # default ckpt (e.g. K=25 VAE data rendered against the K=20
+        # default config).  Bump it locally to fit so the color-map
+        # lookup doesn't IndexError.
+        bar_num_codes = max(int(num_codes), int(np.max(fed_codes)) + 1)
         code_bars = np.stack([
             render_code_bar(
-                fed_codes, total_frames=T_common, num_codes=num_codes,
+                fed_codes, total_frames=T_common, num_codes=bar_num_codes,
                 bar_w=bar_w, bar_h=code_bar_h, cursor_frame=t,
             )
             for t in range(T_common)
