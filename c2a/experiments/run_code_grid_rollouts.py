@@ -556,6 +556,11 @@ def main(cfg: DictConfig) -> None:
             f"Overriding ckpt codes_path → {ckpt_cfg.kpms_config.codes_path}"
         )
     z_e_scale = float(cfg.get("z_e_scale", 0.0))
+    from c2a.experiments.shared.decoder_only import (
+        assert_decoder_only_settings, describe_decoder_only_mode,
+    )
+    assert_decoder_only_settings(z_e_scale, deterministic=True)
+    log.info(describe_decoder_only_mode(ckpt_cfg.network_config))
     inf_fn = make_inference_fn(
         ppo_networks, use_rnn=True,
         deterministic=True, z_e_scale=z_e_scale,

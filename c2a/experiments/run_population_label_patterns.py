@@ -439,6 +439,11 @@ def main(cfg: DictConfig) -> None:
 
     # --- Inference fn ----------------------------------------------------
     deterministic = bool(cfg.rollout.get("deterministic", True))
+    from c2a.experiments.shared.decoder_only import (
+        assert_decoder_only_settings, describe_decoder_only_mode,
+    )
+    assert_decoder_only_settings(float(cfg.rollout.z_e_scale), deterministic)
+    log.info(describe_decoder_only_mode(ckpt_cfg.network_config))
     log.info("Inference: deterministic=%s, z_e_scale=%.3f",
              deterministic, float(cfg.rollout.z_e_scale))
     inf_fn = _make_vae_mean_inference_fn(

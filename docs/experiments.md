@@ -24,8 +24,34 @@ venv active.
 | 16 | `run_code_grid_rollouts` | `code_grid_rollouts_exp.yaml` | Per-code 5x5 grid videos from controlled poses + MMD merge + label merge + per-code majority-label tagging. See "Code-grid pipeline" below. |
 | 17 | `run_code_grid_dynamics` | `code_grid_rollouts_exp.yaml` | DSA + rSLDS over the merged-cluster hidden trajectories from experiment 16. Runs both MMD-merge and label-merge strategies in one pass; cluster tick labels and regime-trace bands carry the majority-label string. |
 | 18 | `run_code_grid_behavior_mmd` | `code_grid_behavior_mmd.yaml` | Per-cluster MMD² (RBF) + KID (poly) between each merged cluster's pooled rollout qpos and each canonical labeled GT behavior class (the 12-cell behavior×direction grid). Runs for **both** MMD-merged and label-merged clusters — the labels now come from the TopoMimic auto-labeler over the rollouts (a separate signal from qpos-MMD), so MMD-merge clusters carry a meaningful label hypothesis and the comparison is no longer tautological. Mirrors the TopoVNL `feature_analysis/mmd_kid` flow. |
-| 19 | `run_population_intention_dynamics` | `population_intention_dynamics.yaml` | **Population dynamics in (hidden, intention) space** per pure-behavior-label clip combination. For each of 12 combinations whose collapsed-behavior sequence is exactly a target (e.g. ``Walk``, ``Walk→Rear``, ``Imm→Walk→Imm``), pick a qualifying training clip and extract its per-frame code sequence from the segmenter. Run **n=100 walkers** (random frame-0 inits, same pool reused across all 12 combinations) all fed the same code sequence in **decoder-only mode** (``z_e_scale=0``). Collect ``hidden`` (GRU state) and ``intention`` (encoder posterior mean ``cont_mean``, diagnostic-only when ``z_e_scale=0``). Joint PCA-3D across all 12 cells for shared axes. Saves per-cell npz of shape ``(100, T, ...)``. The video pass (separate helper) renders a 3×4 behavior grid (3 walkers per cell) and per-cell 3-column composites (motion ghost / hidden-PCA / intention-PCA) with 3 highlighted trajectories on top of 97 grey background points. |
+| 19 | `run_population_intention_dynamics` | `population_intention_dynamics.yaml` | **Population dynamics in (hidden, intention) space** per pure-behavior-label clip combination. For each of 12 combinations whose collapsed-behavior sequence is exactly a target (e.g. ``Walk``, ``Walk→Rear``, ``Imm→Walk→Imm``), pick a qualifying training clip and extract its per-frame code sequence from the segmenter. Run **n=100 walkers** (random frame-0 inits, same pool reused across all 12 combinations) all fed the same code sequence in **decoder-only mode** (``z_e_scale=0``, **deterministic action mode** — previously used sampled actions, fixed 2026-06-07). Collect ``hidden`` (GRU state) and ``intention`` (encoder posterior mean ``cont_mean``, diagnostic-only when ``z_e_scale=0``). Joint PCA-3D across all 12 cells for shared axes. Saves per-cell npz of shape ``(100, T, ...)``. The video pass (separate helper) renders a 3×4 behavior grid (3 walkers per cell) and per-cell 3-column composites (motion ghost / hidden-PCA / intention-PCA) with 3 highlighted trajectories on top of 97 grey background points. |
 | 20 | `run_population_label_patterns` | `population_label_patterns.yaml` | **Format-A (held mode code) + Format-B (per-label code pattern) population rollouts** for the v6/v7/v8 multi-init protocol. 12 cells × 2 formats × N walkers, decoder-only (``z_e_scale=0``), deterministic action mode. Init mode is ``same_pos`` (all walkers reset to source-clip frame 0) or ``walking_pose`` (walkers sampled from train clips with a Walk pose at a shared frame). Saves per-(cell, format) npz of qpos / hidden / intention (vae_mean) / fed_code_seq. Companion renderer `render_population_v5_videos` produces a 4-panel composite (motion ghost + hidden PCA-3D + intention PCA-3D + per-frame code timeline). |
+## Decoder-only invariants (enforced)
+
+Experiments that drive the policy purely from the discrete code stream
+(`run_labeled_hidden_dynamics_controlled`, `run_code_grid_rollouts`,
+`run_population_label_patterns`, `run_population_held_codes`,
+`run_population_intention_dynamics`, `run_roundtrip` stage 2) MUST satisfy two
+invariants, now centralized in **`c2a/experiments/shared/decoder_only.py`**:
+
+1. **`deterministic=True`** — action = distribution **mode**, not a sample.
+   Sampled actions inject per-step noise that contaminates dynamics analysis.
+   *(`run_population_held_codes` and `run_population_intention_dynamics` used
+   `deterministic=False` + `sample_no_postprocessing`; fixed to mode 2026-06-07.)*
+2. **Encoder severed** — the frozen MIMIC encoder must contribute nothing to the
+   action or GRU. The mechanism is checkpoint-dependent
+   (`use_continuous_encoder=False`, `use_distillation_head=True`, or
+   `z_e_scale=0`), so a flag check is unreliable.
+
+Helpers (call right after building the inference fn):
+- `assert_decoder_only_settings(z_e_scale, deterministic)` — static guard.
+- `describe_decoder_only_mode(network_config)` — logs *why* the encoder is severed.
+- `verify_encoder_severed_from_env(inf_fn, params, ppo_networks, env, key)` —
+  **behavioural** check: perturbs the encoder's only private input
+  (`obs["task_obs"]`) and asserts the action + hidden are bit-identical.
+
+Contract test: `c2a/tests/test_decoder_only_check.py`.
+
 ## Prerequisites
 
 - A trained decoder checkpoint. The repo ships two:

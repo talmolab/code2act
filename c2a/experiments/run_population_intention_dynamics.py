@@ -167,7 +167,7 @@ def _sample_init_clip_pool(
 
 def _make_vae_mean_inference_fn(
     ppo_networks: Any, normalizer_params: Any,
-    z_e_scale: float = 1.0,
+    z_e_scale: float = 0.0,
 ):
     """Custom inference fn that exposes ``vae_mean`` (a.k.a. distill_mean
     when ``use_pretrained_decoder=True``) in extras.
@@ -191,12 +191,14 @@ def _make_vae_mean_inference_fn(
             new_hidden, distill_mean, distill_logvar,
         ) = policy_network.apply(
             *params, obs, hidden, key,
-            deterministic=False,
+            deterministic=True,
             z_e_scale=z_e_scale,
         )
-        # Sample action (stochastic).
+        # Deterministic action = distribution MODE (no sampling). Decoder-only
+        # dynamics analysis requires this; stochastic actions inject per-step
+        # noise. See c2a.experiments.shared.decoder_only.
         action_dist = ppo_networks.parametric_action_distribution
-        raw = action_dist.sample_no_postprocessing(action_params, key)
+        raw = action_dist.mode(action_params)
         action = jnp.array(action_dist.postprocess(raw))
         extras = {
             "code_idx": code_idx,
@@ -430,9 +432,21 @@ def main(cfg: DictConfig) -> None:
     # intention to the frozen MIMIC decoder).  When the network has
     # use_distillation_head + use_pretrained_decoder both on (this ckpt's
     # case), distill_mean == vae_mean in the apply return tuple.
+    from c2a.experiments.shared.decoder_only import (
+        assert_decoder_only_settings, describe_decoder_only_mode,
+        verify_encoder_severed_from_env,
+    )
+    _z_e_scale = float(cfg.rollout.z_e_scale)
+    assert_decoder_only_settings(_z_e_scale, deterministic=True)
+    log.info(describe_decoder_only_mode(ckpt_cfg.network_config))
     inf_fn = _make_vae_mean_inference_fn(
         ppo_networks, normalizer_state,
-        z_e_scale=float(cfg.rollout.z_e_scale),
+        z_e_scale=_z_e_scale,
+    )
+    # Behavioural guarantee: perturbing the encoder's private input (task_obs)
+    # must not change the policy output. Confirms decoder-only end to end.
+    verify_encoder_severed_from_env(
+        inf_fn, params, ppo_networks, env, jax.random.PRNGKey(0),
     )
 
     # --- 2. Mine pure-label clips ----------------------------------------

@@ -590,11 +590,20 @@ def _run_stage2(cfg: DictConfig, output_dir: Path, segmenters: dict,
             log.warning("    decoder %s is not RNN — skipping pair.", dec_name)
             continue
         params = (norm_state, policy_params)
+        from c2a.experiments.shared.decoder_only import (
+            assert_decoder_only_settings, describe_decoder_only_mode,
+            verify_encoder_severed_from_env,
+        )
+        assert_decoder_only_settings(z_e_scale, deterministic=True)
+        log.info(describe_decoder_only_mode(ckpt_cfg.network_config))
         inf_fn = make_inference_fn(
             ppo_networks, use_rnn=True, deterministic=True, z_e_scale=z_e_scale,
         )
         env, clip_len = _build_decoder_env(
             ckpt_cfg, cfg.paths.reference_h5, split_test_idx, test_codes,
+        )
+        verify_encoder_severed_from_env(
+            inf_fn, params, ppo_networks, env, jax.random.PRNGKey(0),
         )
         jit_reset = jax.jit(env.reset)
         jit_step = jax.jit(env.step)

@@ -409,6 +409,12 @@ def main(cfg: DictConfig) -> None:
             "This experiment requires an RNN decoder checkpoint."
         )
     z_e_scale = float(cfg.get("z_e_scale", 0.0))
+    from c2a.experiments.shared.decoder_only import (
+        assert_decoder_only_settings, describe_decoder_only_mode,
+        verify_encoder_severed_from_env,
+    )
+    assert_decoder_only_settings(z_e_scale, deterministic=True)
+    log.info(describe_decoder_only_mode(ckpt_cfg.network_config))
     log.info(
         f"Inference fn: deterministic=True, z_e_scale={z_e_scale}. "
         f"z_e_scale=0 ⇒ decoder-only (encoder bypassed)."
@@ -563,6 +569,14 @@ def main(cfg: DictConfig) -> None:
     # ------------------------------------------------------------------
     # Resolve sequences
     # ------------------------------------------------------------------
+    # Behavioural guarantee (once, on a real reset obs): the frozen MIMIC
+    # encoder cannot influence the policy. Only runs when envs are live.
+    if not can_reuse_rollouts:
+        verify_encoder_severed_from_env(
+            inf_fn, params, ppo_networks, env_walking,
+            jax.random.PRNGKey(seed),
+        )
+
     sequences: dict[str, list[str]] = dict(cfg.sequences)
     if not sequences:
         raise ValueError("cfg.sequences is empty.")
