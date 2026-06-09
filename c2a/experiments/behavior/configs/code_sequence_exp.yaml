@@ -20,7 +20,7 @@ data:
   codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/best_codes.npz
   balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
   reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
-  inference_output: ./outputs/moseq_inference  # from Experiment 1
+  inference_output: ./outputs/behavior/moseq_inference  # from Experiment 1
 
 # Claim 3: Temporal Order
 temporal_order:
@@ -54,7 +54,7 @@ wandb:
   entity: null
 
 output:
-  base_dir: ./outputs/moseq_code_sequence
+  base_dir: ./outputs/behavior/moseq_code_sequence
 
 # Environment (same as inference, DR off)
 env_config:

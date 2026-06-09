@@ -12,7 +12,7 @@ were already rendered.
 Run::
 
     cd code2act
-    python -m c2a.experiments.render_population_grid_behavior
+    python -m c2a.experiments.population.render_population_grid_behavior
 """
 
 from __future__ import annotations

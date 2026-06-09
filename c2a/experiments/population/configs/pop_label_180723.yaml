@@ -36,4 +36,4 @@ pattern_per_label:
   Immobile: { mode: "oscillate", codes: [4, 3],     block_frames: 50 }
 
 output:
-  base_dir: ${paths.c2a_root}/outputs/pop_label_180723_same_pos
+  base_dir: ${paths.c2a_root}/outputs/population/pop_label_180723_same_pos

@@ -70,7 +70,7 @@ Outputs
 Usage::
 
     cd code2act
-    python -m c2a.experiments.run_labeled_hidden_dynamics
+    python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics
 """
 
 import os
@@ -115,7 +115,7 @@ from c2a.codegen.shared.label_alignment import (
     directional_turn_array,
     load_label_frames,
 )
-from c2a.experiments.run_hidden_dynamics import run_rollout_with_hidden
+from c2a.experiments.dynamics.run_hidden_dynamics import run_rollout_with_hidden
 
 log = logging.getLogger(__name__)
 

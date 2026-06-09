@@ -11,7 +11,7 @@ The inline ``hmm_dynamax`` branch moved to
 ``c2a.ar_codegen.models.hmm.HMMGenerator``.
 
 Usage:
-    python -m c2a.experiments.run_code_generation \\
+    python -m c2a.experiments.tokenizer.run_code_generation \\
         generation.methods=[transition_matrix,arhmm_level2,gpt2] \\
         ar_checkpoints.gpt2=outputs/ar_codegen/gpt2/<dir>
 """

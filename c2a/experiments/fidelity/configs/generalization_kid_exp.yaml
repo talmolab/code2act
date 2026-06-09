@@ -44,7 +44,7 @@ n_render: 10              # Number of bodies to render (customizable)
 # KID evaluation — inline VAE training on training data
 kid_eval:
   # VAE cache directory (shared across experiments)
-  vae_cache_dir: ${oc.env:C2A_ROOT,.}/c2a/outputs/moseq_generalization_kid_vae_cache
+  vae_cache_dir: ${oc.env:C2A_ROOT,.}/c2a/outputs/fidelity/moseq_generalization_kid_vae_cache
 
   # Training data for VAE (mimic-MJX oracle rollouts on reference clips)
   reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
@@ -88,4 +88,4 @@ kid_eval:
     split_seed: 42
 
 output:
-  base_dir: ./outputs/moseq_generalization_kid
+  base_dir: ./outputs/fidelity/moseq_generalization_kid

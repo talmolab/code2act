@@ -26,7 +26,7 @@ cross-cell differences to the code sequence and not to init-pose noise.
 Run::
 
     cd code2act
-    python -m c2a.experiments.run_population_intention_dynamics
+    python -m c2a.experiments.population.run_population_intention_dynamics
 
 The output base directory and combination list are configured in
 ``c2a/experiments/configs/population_intention_dynamics.yaml``.

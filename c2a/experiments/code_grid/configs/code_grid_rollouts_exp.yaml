@@ -8,10 +8,10 @@
 # video.
 #
 # Two phases share this config:
-#   1. python -m c2a.experiments.run_code_grid_rollouts
+#   1. python -m c2a.experiments.code_grid.run_code_grid_rollouts
 #        -> rollouts + raw 6x6 grids (walk, rear, walk+rear combined)
 #           + MMD merge + merged grids
-#   2. python -m c2a.experiments.run_code_grid_dynamics
+#   2. python -m c2a.experiments.code_grid.run_code_grid_dynamics
 #        -> DSA + rSLDS on the merged-cluster hidden trajectories
 # =============================================================================
 
@@ -119,5 +119,5 @@ camera_elevation: -30.0
 camera_azimuth: 135.0
 
 output:
-  base_dir: ./outputs/code_grid_rollouts
+  base_dir: ./outputs/code_grid/code_grid_rollouts
   run_name: default

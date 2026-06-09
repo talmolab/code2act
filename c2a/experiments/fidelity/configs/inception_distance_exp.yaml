@@ -104,7 +104,7 @@ ar_checkpoints:
   hmm: null
 
 output:
-  base_dir: ./outputs/moseq_inception_distance
+  base_dir: ./outputs/fidelity/moseq_inception_distance
 
 # --- Environment config (deterministic evaluation, no DR) ---
 env_config:

@@ -72,7 +72,7 @@ wandb:
 # Output Configuration
 # =============================================================================
 output:
-  base_dir: ./outputs/moseq_inference
+  base_dir: ./outputs/behavior/moseq_inference
 
 # =============================================================================
 # Environment Configuration (DR disabled for deterministic inference)

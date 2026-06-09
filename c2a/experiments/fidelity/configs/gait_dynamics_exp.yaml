@@ -34,7 +34,7 @@ gait_dynamics:
   seed: 42
 
 output:
-  base_dir: ./outputs/moseq_gait_dynamics
+  base_dir: ./outputs/fidelity/moseq_gait_dynamics
 
 env_config:
   mujoco_impl: "jax"

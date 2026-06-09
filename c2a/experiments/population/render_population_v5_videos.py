@@ -10,7 +10,7 @@ camera close-up (matches run_single_code's framing).
 
 Run::
 
-    python -m c2a.experiments.render_population_v5_videos
+    python -m c2a.experiments.population.render_population_v5_videos
 """
 
 from __future__ import annotations

@@ -11,7 +11,7 @@ fitted by ``run_population_intention_dynamics``.
 Run::
 
     cd code2act
-    python -m c2a.experiments.render_population_per_cell_3col
+    python -m c2a.experiments.population.render_population_per_cell_3col
 """
 
 from __future__ import annotations

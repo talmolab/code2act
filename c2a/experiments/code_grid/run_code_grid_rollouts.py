@@ -19,7 +19,7 @@ merged-cluster hidden state trajectories. See its module docstring.
 
 Usage:
     cd code2act
-    python -m c2a.experiments.run_code_grid_rollouts
+    python -m c2a.experiments.code_grid.run_code_grid_rollouts
 """
 
 import os
@@ -57,8 +57,8 @@ from c2a.codegen.code_sources import load_codes
 from c2a.codegen.shared.label_alignment import (
     BEHAVIORS, BEHAVIOR_TO_INT, UNLABELED, load_label_frames,
 )
-from c2a.experiments.run_hidden_dynamics import run_rollout_with_hidden
-from c2a.experiments.run_labeled_hidden_dynamics_controlled import (
+from c2a.experiments.dynamics.run_hidden_dynamics import run_rollout_with_hidden
+from c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled import (
     _pick_start_clips, _build_pose_env,
 )
 from c2a.experiments.shared.checkpoint_utils import (

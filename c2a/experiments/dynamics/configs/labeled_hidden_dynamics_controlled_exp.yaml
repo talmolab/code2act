@@ -11,7 +11,7 @@
 # with synchronized rotating-PCA panel.
 #
 # Usage:
-#   python -m c2a.experiments.run_labeled_hidden_dynamics_controlled
+#   python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled
 # =============================================================================
 
 checkpoint:
@@ -122,10 +122,10 @@ azim_end: 260.0
 # expected `hidden_<pose>_<seq>.npz` already exists under
 # output.base_dir/data/ (useful for iterating on the rendering /
 # PCA pass without redoing the ~hour of rollouts). Override on the CLI:
-#     python -m c2a.experiments.run_labeled_hidden_dynamics_controlled \
+#     python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled \
 #         reuse_rollouts=true
 # -----------------------------------------------------------------------------
 reuse_rollouts: false
 
 output:
-  base_dir: ./outputs/labeled_hidden_dynamics_controlled
+  base_dir: ./outputs/dynamics/labeled_hidden_dynamics_controlled

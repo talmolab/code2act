@@ -102,6 +102,6 @@ video:
   data_only: false
 
 output:
-  base_dir: ${paths.c2a_root}/outputs/population_intention_dynamics
+  base_dir: ${paths.c2a_root}/outputs/population/population_intention_dynamics
   # Cache + reuse rollout npz across re-runs.
   reuse_rollouts: true

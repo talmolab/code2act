@@ -73,7 +73,7 @@ Outputs (under ``output.base_dir``)
 Usage::
 
     cd code2act
-    python -m c2a.experiments.run_labeled_hidden_dynamics_controlled
+    python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled
 """
 
 import os
@@ -104,7 +104,7 @@ from c2a.codegen.code_sources import (
     SOURCE_GT_DIRECTIONAL_TURN,
     load_codes,
 )
-from c2a.experiments.run_hidden_dynamics import run_rollout_with_hidden
+from c2a.experiments.dynamics.run_hidden_dynamics import run_rollout_with_hidden
 from c2a.experiments.shared.checkpoint_utils import (
     load_moseq_checkpoint,
     make_inference_fn,

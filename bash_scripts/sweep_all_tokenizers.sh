@@ -58,7 +58,7 @@ screen -dmS sweep_watcher bash -c "
   done
   echo '=== watcher: both sweeps complete at \$(date), running diagnostics ==='
   cd '$C2A_ROOT'
-  python3.12 -m c2a.experiments.run_tokenizer_diagnostics 2>&1 | tee '$LOG_DIR/diagnostics.log'
+  python3.12 -m c2a.experiments.tokenizer.run_tokenizer_diagnostics 2>&1 | tee '$LOG_DIR/diagnostics.log'
   touch '$C2A_ROOT/outputs/tokenizer/.all_done'
   echo '=== watcher: ALL DONE at \$(date) ==='
   sleep 86400

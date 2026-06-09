@@ -51,7 +51,7 @@ from c2a.experiments.shared.ghost_rendering import (
 from c2a.experiments.shared.plotting import get_trajectory_colors
 
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = get_repo_root() / "outputs" / "hidden_dynamics"
+OUTPUT_DIR = get_repo_root() / "outputs" / "dynamics" / "hidden_dynamics"
 
 # Same config as run_hidden_dynamics
 CKPT_PATH = str(get_repo_root() / "model_checkpoints" / "260407_031233_484020") + "/"

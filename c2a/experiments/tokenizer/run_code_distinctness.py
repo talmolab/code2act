@@ -26,8 +26,8 @@ Video features (``render_videos=true`` only; need a MuJoCo env):
 
 Usage:
     cd code2act
-    python -m c2a.experiments.run_code_distinctness                # numeric
-    python -m c2a.experiments.run_code_distinctness render_videos=true
+    python -m c2a.experiments.tokenizer.run_code_distinctness                # numeric
+    python -m c2a.experiments.tokenizer.run_code_distinctness render_videos=true
 """
 
 import json
@@ -364,7 +364,7 @@ def _p3(cfg: DictConfig, out_dir: Path, rng) -> tuple[dict, np.ndarray, np.ndarr
 
 def _build_render_env(cfg: DictConfig):
     """Build a MoSeqImitation env (arbitrary clips) for ghost-model rendering."""
-    from c2a.experiments.run_labeled_hidden_dynamics_controlled import (
+    from c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled import (
         _build_pose_env,
     )
     from c2a.experiments.shared.checkpoint_utils import load_moseq_checkpoint

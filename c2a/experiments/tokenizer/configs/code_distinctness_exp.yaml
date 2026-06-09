@@ -10,12 +10,12 @@
 #   P2  behavioral-phylogeny dendrogram + reordered MMD heatmap w/ noise floor
 #   P3  NMI(code ; ethogram) + effective code count + behavior->code spread
 #
-#   python -m c2a.experiments.run_code_distinctness
+#   python -m c2a.experiments.tokenizer.run_code_distinctness
 # =============================================================================
 
 # run_code_grid_rollouts output directory to read (rollout npzs + distance).
 output:
-  base_dir: ./outputs/code_grid_rollouts
+  base_dir: ./outputs/code_grid/code_grid_rollouts
   run_name: default
 
 # Tokenizer codes npz (train_codes / test_codes / *_indices / num_states).

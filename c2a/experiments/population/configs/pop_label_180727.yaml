@@ -38,4 +38,4 @@ pattern_per_label:
   Immobile: { mode: "cycle",     codes: [0, 4, 7], block_frames: 40 }
 
 output:
-  base_dir: ${paths.c2a_root}/outputs/pop_label_180727_same_pos
+  base_dir: ${paths.c2a_root}/outputs/population/pop_label_180727_same_pos

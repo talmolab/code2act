@@ -16,7 +16,7 @@ z_e_scale = 0.0 (decoder-only).
 
 Run::
 
-    python -m c2a.experiments.run_population_label_patterns
+    python -m c2a.experiments.population.run_population_label_patterns
 """
 
 from __future__ import annotations

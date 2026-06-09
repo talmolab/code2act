@@ -21,4 +21,4 @@ min_bouts: 3
 seed: 42
 
 output:
-  base_dir: ./outputs/moseq_hidden_dynamics
+  base_dir: ./outputs/dynamics/moseq_hidden_dynamics

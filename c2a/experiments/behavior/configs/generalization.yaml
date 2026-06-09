@@ -69,7 +69,7 @@ rendering:
 # Output Configuration
 # =============================================================================
 output:
-  base_dir: ./outputs/moseq_generalization
+  base_dir: ./outputs/behavior/moseq_generalization
 
 wandb:
   enabled: false

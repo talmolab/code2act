@@ -114,7 +114,10 @@ c2a/
 │   └── pipeline_best_kpms.yaml
 │
 ├── ar_codegen/                # AR sequence-model code generators (HMM/GPT2-xs/Mamba)
-├── experiments/               # 18 evaluation scripts + experiments/configs/
+├── experiments/               # evaluation scripts in 6 theme subfolders:
+│                              #   tokenizer/ behavior/ fidelity/ dynamics/
+│                              #   code_grid/ population/ — each with its own
+│                              #   configs/. Invoke c2a.experiments.<theme>.<script>
 │                              #   experiments/shared/: code_labels.py
 │                              #   (per-code majority-label helpers) +
 │                              #   behavior_mmd.py (MMD/KID + GT-segment
@@ -170,7 +173,7 @@ c2a/
 | MIMIC encoder | `trained_mimic_ckpts/` | `c2a.train_mimic_encoder` |
 | Decoder RL | `model_checkpoints/` | `c2a.train_moseq_decoder` |
 | Figures | `outputs/<figure_name>/` | every `c2a.figures.*` script (one subdir per script) |
-| Experiments | `outputs/<exp_name>/` | every `c2a.experiments.*` script |
+| Experiments | `outputs/<theme>/<exp_name>/` | every `c2a.experiments.<theme>.*` script |
 | WandB | `wandb/` (or `c2a/wandb/`) | every training script |
 
 Every `c2a.figures.*` script resolves its output dir via

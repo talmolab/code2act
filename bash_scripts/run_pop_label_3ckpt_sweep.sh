@@ -9,12 +9,12 @@
 #   c2a/experiments/configs/pop_label_180852.yaml  (VAE k=25 kl=0.001)
 #
 # Each ckpt × init_mode gets its own folder:
-#   outputs/pop_label_180723_same_pos/
-#   outputs/pop_label_180723_walking_pose/
-#   outputs/pop_label_180727_same_pos/
-#   outputs/pop_label_180727_walking_pose/
-#   outputs/pop_label_180852_same_pos/
-#   outputs/pop_label_180852_walking_pose/
+#   outputs/population/pop_label_180723_same_pos/
+#   outputs/population/pop_label_180723_walking_pose/
+#   outputs/population/pop_label_180727_same_pos/
+#   outputs/population/pop_label_180727_walking_pose/
+#   outputs/population/pop_label_180852_same_pos/
+#   outputs/population/pop_label_180852_walking_pose/
 #
 # Each folder = 24 videos (12 cells × 2 formats), 750 frames @ 50 fps.
 # Total budget: ~3h data + ~18h render = ~21h sequential.
@@ -32,12 +32,12 @@ INIT_MODES=("same_pos" "walking_pose")
 # --- Stage 1: data generation, all 6 jobs serial -----------------------------
 for CKPT in "${CKPTS[@]}"; do
   for MODE in "${INIT_MODES[@]}"; do
-    OUT="outputs/pop_label_${CKPT}_${MODE}"
+    OUT="outputs/population/pop_label_${CKPT}_${MODE}"
     mkdir -p "$OUT"
     echo "============================================================"
     echo " DATA   ckpt=$CKPT init=$MODE  →  $OUT"
     echo "============================================================"
-    python3.12 bash_scripts/_pyrun.py c2a.experiments.run_population_label_patterns \
+    python3.12 bash_scripts/_pyrun.py c2a.experiments.population.run_population_label_patterns \
         --config-name="pop_label_${CKPT}" \
         output.base_dir="$OUT" \
         population.init_mode="$MODE" \
@@ -48,11 +48,11 @@ done
 # --- Stage 2: video renders, all 6 jobs serial -------------------------------
 for CKPT in "${CKPTS[@]}"; do
   for MODE in "${INIT_MODES[@]}"; do
-    OUT="outputs/pop_label_${CKPT}_${MODE}"
+    OUT="outputs/population/pop_label_${CKPT}_${MODE}"
     echo "============================================================"
     echo " RENDER ckpt=$CKPT init=$MODE  →  $OUT"
     echo "============================================================"
-    python3.12 bash_scripts/_pyrun.py c2a.experiments.render_population_v5_videos \
+    python3.12 bash_scripts/_pyrun.py c2a.experiments.population.render_population_v5_videos \
         output.base_dir="$OUT" \
         2>&1 | tee "$OUT/run_render.log"
   done

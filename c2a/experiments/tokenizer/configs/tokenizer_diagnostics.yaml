@@ -3,7 +3,7 @@
 #
 # Run::
 #
-#     python -m c2a.experiments.run_tokenizer_diagnostics
+#     python -m c2a.experiments.tokenizer.run_tokenizer_diagnostics
 #
 defaults:
   - _self_
@@ -89,7 +89,7 @@ purity:
 # Output dir
 # ---------------------------------------------------------------------------
 output:
-  base_dir: ${paths.c2a_root}/outputs/tokenizer_diagnostics
+  base_dir: ${paths.c2a_root}/outputs/tokenizer/tokenizer_diagnostics
 
 hydra:
   run:

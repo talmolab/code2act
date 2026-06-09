@@ -18,7 +18,7 @@ problems with the natural-code-sequence version:
 Run::
 
     cd code2act
-    python -m c2a.experiments.run_population_held_codes \\
+    python -m c2a.experiments.population.run_population_held_codes \\
         checkpoint.path=model_checkpoints/260407_031233_484020/
 """
 

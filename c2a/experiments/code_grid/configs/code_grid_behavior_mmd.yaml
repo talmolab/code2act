@@ -10,14 +10,14 @@
 # rollouts.base_dir/<run_name>/.
 #
 # Usage:
-#   python -m c2a.experiments.run_code_grid_behavior_mmd \
+#   python -m c2a.experiments.code_grid.run_code_grid_behavior_mmd \
 #     rollouts.run_name=ckpt_260513_062522_599062 \
 #     output.run_name=ckpt_260513_062522_599062
 # =============================================================================
 
 rollouts:
   # Where run_code_grid_rollouts wrote its cached outputs.
-  base_dir: ${oc.env:C2A_ROOT,.}/outputs/code_grid_rollouts
+  base_dir: ${oc.env:C2A_ROOT,.}/outputs/code_grid/code_grid_rollouts
   run_name: default
 
 data:
@@ -47,5 +47,5 @@ gt:
 seed: 42
 
 output:
-  base_dir: ./outputs/code_grid_behavior_mmd
+  base_dir: ./outputs/code_grid/code_grid_behavior_mmd
   run_name: default

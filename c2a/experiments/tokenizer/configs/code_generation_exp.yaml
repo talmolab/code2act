@@ -74,7 +74,7 @@ wandb:
   entity: null
 
 output:
-  base_dir: ./outputs/moseq_code_generation
+  base_dir: ./outputs/tokenizer/moseq_code_generation
 
 env_config:
   mujoco_impl: "jax"

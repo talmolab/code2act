@@ -168,7 +168,7 @@ and are used by:
 - `c2a.codegen.shared.label_alignment` (loader / coverage metrics)
 - `c2a.codegen.run_sweep` (NMI + Hungarian-purity reporting at three
   granularities: behavior / direction / combined)
-- `c2a.experiments.run_labeled_hidden_dynamics` (label-anchored hidden
+- `c2a.experiments.dynamics.run_labeled_hidden_dynamics` (label-anchored hidden
   state experiment)
 
 The CSV is annotated against the original 30 fps videos (500 frames per
@@ -255,8 +255,8 @@ code-sequence ordering, generalization, KID/FID, gait dynamics, hidden-state
 dynamics). See [`docs/experiments.md`](docs/experiments.md).
 
 ```bash
-python -m c2a.experiments.run_inference
-python -m c2a.experiments.run_generalization_kid
+python -m c2a.experiments.behavior.run_inference
+python -m c2a.experiments.fidelity.run_generalization_kid
 ```
 
 ## Repository layout

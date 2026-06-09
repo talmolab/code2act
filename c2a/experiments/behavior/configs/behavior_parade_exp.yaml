@@ -36,7 +36,7 @@ rendering:
   camera_fovy: 90.0
 
 output:
-  base_dir: ./outputs/moseq_behavior_parade
+  base_dir: ./outputs/behavior/moseq_behavior_parade
 
 env_config:
   mujoco_impl: "jax"

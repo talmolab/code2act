@@ -12,8 +12,8 @@
 # (Stage 3 — unconditional generation — is a future extension.)
 #
 # Usage:
-#   python -m c2a.experiments.run_roundtrip
-#   python -m c2a.experiments.run_roundtrip stages=[1]
+#   python -m c2a.experiments.tokenizer.run_roundtrip
+#   python -m c2a.experiments.tokenizer.run_roundtrip stages=[1]
 # =============================================================================
 
 seed: 42
@@ -70,7 +70,7 @@ segmenters:
     type: kpms
     # project_dir / model_name for keypoint_moseq.load_checkpoint. KPMS
     # applies via Gibbs sampling — re-segmentation runs in a separate x64
-    # subprocess (c2a.experiments._roundtrip_kpms_worker).
+    # subprocess (c2a.experiments.tokenizer._roundtrip_kpms_worker).
     model_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/s30_k8e+01_l10_arhmm/seed4
     model_name: keypoint_arhmm_states30_seed4
     codes_npz: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/best_codes.npz
@@ -112,4 +112,4 @@ stage2:
 # Output
 # -----------------------------------------------------------------------------
 output:
-  base_dir: ./outputs/moseq_roundtrip
+  base_dir: ./outputs/tokenizer/moseq_roundtrip

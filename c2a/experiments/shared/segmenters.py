@@ -17,7 +17,7 @@ KPMS process isolation
 ``keypoint_moseq`` forces ``jax_enable_x64=True`` irreversibly per process,
 which would corrupt the float32 decoder rollouts. This module therefore never
 imports ``keypoint_moseq``: :class:`KPMSWorkerSegmenter` shells out to
-``c2a.experiments._roundtrip_kpms_worker`` (a separate x64 process).
+``c2a.experiments.tokenizer._roundtrip_kpms_worker`` (a separate x64 process).
 """
 
 from __future__ import annotations
@@ -238,7 +238,7 @@ class KPMSWorkerSegmenter(Segmenter):
     """Driver-side proxy for KPMS segmentation.
 
     Holds only the KPMS model paths. ``encode`` writes the qpos batch to a
-    temp ``.npz``, runs ``c2a.experiments._roundtrip_kpms_worker`` as a
+    temp ``.npz``, runs ``c2a.experiments.tokenizer._roundtrip_kpms_worker`` as a
     subprocess (which sets ``JAX_ENABLE_X64=1`` and runs FK + KPMS
     ``apply_model``), then reads the codes back. KPMS is a Gibbs sampler, so
     the result depends on ``seed``.
@@ -288,7 +288,7 @@ class KPMSWorkerSegmenter(Segmenter):
         cmd = [
             sys.executable,
             str(pyrun),
-            "c2a.experiments._roundtrip_kpms_worker",
+            "c2a.experiments.tokenizer._roundtrip_kpms_worker",
             "--qpos-npz", str(in_npz),
             "--out-npz", str(out_npz),
             "--kpms-model-dir", self.model_dir,

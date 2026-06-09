@@ -25,4 +25,4 @@ frames_per_segment: 2000
 seed: 42
 
 output:
-  base_dir: ./outputs/moseq_hidden_trajectory
+  base_dir: ./outputs/dynamics/moseq_hidden_trajectory

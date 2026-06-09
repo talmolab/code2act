@@ -18,7 +18,7 @@
 # Turn_Straight is absent in the current CSV and stays UNLABELED.
 #
 # Usage:
-#   python -m c2a.experiments.run_labeled_hidden_dynamics
+#   python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics
 # =============================================================================
 
 checkpoint:
@@ -87,4 +87,4 @@ seed: 42
 render_video: true
 
 output:
-  base_dir: ./outputs/labeled_hidden_dynamics
+  base_dir: ./outputs/dynamics/labeled_hidden_dynamics

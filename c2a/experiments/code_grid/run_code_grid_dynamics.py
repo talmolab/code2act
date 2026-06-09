@@ -40,7 +40,7 @@ Outputs under ``output.base_dir/<run_name>/{walk,rear,walk_label,rear_label}/``:
 
 Usage:
     cd code2act
-    python -m c2a.experiments.run_code_grid_dynamics
+    python -m c2a.experiments.code_grid.run_code_grid_dynamics
 """
 
 import os
@@ -631,7 +631,7 @@ def main(cfg: DictConfig) -> None:
     code_labels = load_code_labels_json(code_labels_path)
 
     dyn_base = (
-        Path(_abs(cfg.get("dynamics_output_base_dir", "./outputs/code_grid_dynamics")))
+        Path(_abs(cfg.get("dynamics_output_base_dir", "./outputs/code_grid/code_grid_dynamics")))
         / str(cfg.output.run_name)
     )
     dyn_base.mkdir(parents=True, exist_ok=True)

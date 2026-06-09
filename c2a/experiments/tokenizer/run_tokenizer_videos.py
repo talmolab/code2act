@@ -23,7 +23,7 @@ Reads:
 
 Run::
 
-    python -m c2a.experiments.run_tokenizer_videos
+    python -m c2a.experiments.tokenizer.run_tokenizer_videos
 """
 
 from __future__ import annotations

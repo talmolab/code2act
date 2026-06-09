@@ -31,7 +31,7 @@ Outputs under ``output.base_dir/<run_name>/{mmd_merge,label_merge}/{walk,rear}/`
 
 Usage:
     cd code2act
-    python -m c2a.experiments.run_code_grid_behavior_mmd
+    python -m c2a.experiments.code_grid.run_code_grid_behavior_mmd
 """
 
 import os

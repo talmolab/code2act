@@ -11,7 +11,7 @@ It is invoked by :class:`c2a.experiments.shared.segmenters.KPMSWorkerSegmenter`
 
 Usage::
 
-    python -m c2a.experiments._roundtrip_kpms_worker \\
+    python -m c2a.experiments.tokenizer._roundtrip_kpms_worker \\
         --qpos-npz IN.npz --out-npz OUT.npz \\
         --kpms-model-dir DIR --kpms-model-name NAME --num-iters 200 \\
         --fk-h5 H5 --stac-xml XML --seeds 0 1 2 3 4

@@ -30,7 +30,7 @@ rendering:
   camera_fovy: 45.0
 
 output:
-  base_dir: ./outputs/moseq_single_code
+  base_dir: ./outputs/behavior/moseq_single_code
 
 env_config:
   mujoco_impl: "jax"

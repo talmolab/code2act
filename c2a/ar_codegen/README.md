@@ -89,10 +89,10 @@ Output `.npz`:
 ## Wire into the code-generation experiment
 
 After training, plug the checkpoints into
-`c2a.experiments.run_code_generation`:
+`c2a.experiments.tokenizer.run_code_generation`:
 
 ```bash
-python -m c2a.experiments.run_code_generation \
+python -m c2a.experiments.tokenizer.run_code_generation \
     ar_checkpoints.gpt2=outputs/ar_codegen/gpt2/<dir> \
     ar_checkpoints.mamba=outputs/ar_codegen/mamba/<dir> \
     ar_checkpoints.s5=outputs/ar_codegen/s5/<dir> \

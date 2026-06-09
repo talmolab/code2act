@@ -41,7 +41,7 @@ from c2a.paths import get_repo_root
 # ── Paths ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = get_repo_root() / "outputs" / "hidden_dynamics"
+OUTPUT_DIR = get_repo_root() / "outputs" / "dynamics" / "hidden_dynamics"
 
 # ── Legacy aliases (used as defaults / pretty-names when keys match) ────────
 LEGACY_BEHAVIORS = ["walk", "immobility", "rear"]

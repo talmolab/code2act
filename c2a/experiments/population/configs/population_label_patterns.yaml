@@ -133,5 +133,5 @@ video:
   data_only: false
 
 output:
-  base_dir: ${paths.c2a_root}/outputs/population_label_patterns_v7_same_pos
+  base_dir: ${paths.c2a_root}/outputs/population/population_label_patterns_v7_same_pos
   reuse_rollouts: true

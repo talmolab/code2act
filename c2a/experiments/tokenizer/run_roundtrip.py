@@ -27,8 +27,8 @@ code — which is the headline steady-state fidelity.
 
 Usage::
 
-    python -m c2a.experiments.run_roundtrip                 # stages 1 + 2
-    python -m c2a.experiments.run_roundtrip stages=[1]      # stage 1 only
+    python -m c2a.experiments.tokenizer.run_roundtrip                 # stages 1 + 2
+    python -m c2a.experiments.tokenizer.run_roundtrip stages=[1]      # stage 1 only
 """
 
 import os

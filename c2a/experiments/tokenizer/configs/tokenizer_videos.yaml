@@ -2,7 +2,7 @@
 #
 # Run::
 #
-#     python -m c2a.experiments.run_tokenizer_videos
+#     python -m c2a.experiments.tokenizer.run_tokenizer_videos
 #
 defaults:
   - _self_
@@ -11,7 +11,7 @@ paths:
   c2a_root: ${oc.env:C2A_ROOT,.}
 
 input:
-  summary_json: ${paths.c2a_root}/outputs/tokenizer_diagnostics/tokenizer_diagnostics_summary.json
+  summary_json: ${paths.c2a_root}/outputs/tokenizer/tokenizer_diagnostics/tokenizer_diagnostics_summary.json
 
 reference:
   h5_path: ${paths.c2a_root}/data/rodent/rodent_reference_clips.h5
@@ -55,7 +55,7 @@ outputs:
   segmentation_seed: 0
 
 output:
-  base_dir: ${paths.c2a_root}/outputs/tokenizer_diagnostics/video
+  base_dir: ${paths.c2a_root}/outputs/tokenizer/tokenizer_diagnostics/video
 
 hydra:
   run:
