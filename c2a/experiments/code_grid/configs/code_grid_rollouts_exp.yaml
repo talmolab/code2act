@@ -41,11 +41,22 @@ data:
   csv_to_h5_subsample: 2
 
 # Hold each code for this many ctrl steps (env runs at 100 Hz).
-hold_frames: 500
+# 1500 frames = 15 s — long enough for ~30-45 gait cycles, giving the
+# DSA/jPCA/rSLDS analyses well-resolved limit-cycle structure.
+hold_frames: 1500
 
 # K bodies per (pose, code) panel. Each body uses a different starting
 # clip (sampled from the K test-clips matching the pose).
-K_per_panel: 10
+K_per_panel: 100
+
+# Which start poses to roll out / analyze. Each entry is one of:
+#   walk / rear  — K clips sharing that posture at a probe frame.
+#   random       — K random init positions (no posture constraint); the same
+#                  K inits are reused for every code, so cross-code differences
+#                  are purely the held code. Use this when a posture has too
+#                  few labeled clips to supply K distinct walkers.
+# Both rollouts and the dynamics analysis read this list.
+poses: [random]
 
 # Top-N codes by usage frequency across train+test code time series.
 # For tokenizers with fewer than N codes, all codes are used. Codes with
@@ -84,6 +95,11 @@ reuse_merge: false
 # auto-labeler over every rollout.
 reuse_labels: true
 
+# Reuse cached dynamics artifacts (DSA/InputDSA/jPCA/rSLDS) in
+# run_code_grid_dynamics if present. Default true so re-runs skip the heavy
+# DSA/rSLDS fits when the cluster assignment is unchanged.
+reuse_dynamics: true
+
 # -----------------------------------------------------------------------------
 # MMD merge configuration (per pose, separately for walk and rear)
 # -----------------------------------------------------------------------------
@@ -117,6 +133,52 @@ combined_rear_alpha: 0.4
 camera_distance: 0.8
 camera_elevation: -30.0
 camera_azimuth: 135.0
+
+# -----------------------------------------------------------------------------
+# Dynamics analysis (run_code_grid_dynamics) configuration
+# -----------------------------------------------------------------------------
+dynamics:
+  # Cluster strategies to analyze:
+  #   mmd   -> merged/clusters_{pose}.json          (MMD-merged clusters)
+  #   label -> merged/clusters_by_label_{pose}.json (label-majority clusters)
+  #   raw   -> one singleton cluster per top code   (no merging)
+  strategies: [mmd, label, raw]
+  # State representation(s):
+  #   hidden -> GRU hidden state only
+  #   joint  -> [hidden, root-stripped+standardized qpos], joint-PCA'd
+  representations: [hidden, joint]
+  pca_components: 32
+  # Vanilla DSA
+  run_dsa: true
+  dsa_rank: 32
+  dsa_n_delays: 5
+  # InputDSA — DIAGNOSTIC ONLY here: held-code closed-loop rollouts violate
+  # InputDSA's exogenous-input assumption (proprio is redundant with hidden).
+  # U = proprio, PCA-reduced.
+  run_inputdsa: true
+  inputdsa_u_pca_dim: 16
+  inputdsa_lamb: 1.0e-3
+  inputdsa_backend: n4sid
+  # jPCA — Churchland rotational-structure / limit-cycle detector.
+  run_jpca: true
+  # rSLDS — ssm Laplace-EM (heavy; gate with run_rslds). For the raw
+  # strategy a small fixed K is used (one-regime-per-code at 50 codes is
+  # degenerate), with a code -> regime confusion matrix.
+  run_rslds: false
+  rslds_continuous_dim: 8
+  rslds_iters: 20
+  rslds_max_trials: 1000
+  raw_rslds_K: 6
+
+# -----------------------------------------------------------------------------
+# Composite-video renderer (render_code_grid_dynamics) configuration
+# -----------------------------------------------------------------------------
+render:
+  walkers_per_group: 5    # highlighted ghost bodies per MMD/label cluster
+  frame_stride: 4         # render every Nth frame (runtime control)
+  fps: 30
+  panel_w: 960            # per-panel px → composite is 2*panel_w wide (1920)
+  panel_h: 720
 
 output:
   base_dir: ./outputs/code_grid/code_grid_rollouts

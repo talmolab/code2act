@@ -522,6 +522,25 @@ def _render_merged_grid_for_pose(
 # ---------------------------------------------------------------------------
 
 
+def _pick_random_clips(
+    test_indices: np.ndarray, K: int, seed: int, probe_frame: int,
+) -> tuple[np.ndarray, int]:
+    """Pick K random start clips with NO posture constraint.
+
+    Used by the ``random`` pose: instead of finding K clips that share a
+    Walk/Rear pose at a probe frame (which caps out at the few clips labeled
+    that behavior), we draw K random clips from the test split and reset each
+    at ``probe_frame``. The same seed → the same K initializations, which are
+    then reused for *every* code, so differences across codes are purely the
+    held code, not the init. With-replacement only if the pool < K.
+    """
+    rng = np.random.RandomState(seed)
+    pool = np.asarray(test_indices, dtype=np.int64)
+    replace = len(pool) < K
+    chosen = np.sort(rng.choice(pool, size=K, replace=replace))
+    return chosen.astype(np.int64), int(probe_frame)
+
+
 @hydra.main(
     version_base=None,
     config_path="configs",
@@ -625,24 +644,23 @@ def main(cfg: DictConfig) -> None:
         probe_frame_max = int(probe_frame_max)
     seed = int(cfg.seed)
 
-    walk_clips, walk_probe = _pick_start_clips(
-        cfg.start_pose.walking_label, test_indices, behavior_arr,
-        probe_frame=probe_frame, probe_frame_max=probe_frame_max,
-        K=K, seed=seed,
-    )
-    rear_clips, rear_probe = _pick_start_clips(
-        cfg.start_pose.rearing_label, test_indices, behavior_arr,
-        probe_frame=probe_frame, probe_frame_max=probe_frame_max,
-        K=K, seed=seed + 1,
-    )
-    log.info(
-        f"Pose clips — walk @ frame {walk_probe}: {walk_clips.tolist()}"
-    )
-    log.info(
-        f"Pose clips — rear @ frame {rear_probe}: {rear_clips.tolist()}"
-    )
+    # Which start poses to roll out. Subset of {walk, rear}; setting
+    # cfg.poses=[walk] does a walk-only run (skips rear entirely).
+    poses = [str(p) for p in cfg.get("poses", ["walk", "rear"])]
+    for p in poses:
+        if p not in ("walk", "rear", "random"):
+            raise ValueError(
+                f"Unknown pose {p!r}; expected 'walk', 'rear', or 'random'."
+            )
+    log.info(f"Poses: {poses}")
 
-    # --- Build per-pose envs ---
+    pose_start_label = {
+        "walk": cfg.start_pose.walking_label,
+        "rear": cfg.start_pose.rearing_label,
+    }
+    clip_seed_off = {"walk": 0, "rear": 1, "random": 7}
+    rollout_seed = {"walk": seed, "rear": seed + 2000, "random": seed + 4000}
+
     code_stack_size = int(ckpt_cfg.network_config.get("code_stack_size", 1))
 
     def _codes_for_pose(pose_clips: np.ndarray) -> np.ndarray:
@@ -653,46 +671,45 @@ def main(cfg: DictConfig) -> None:
             rows.append(codes_payload.test_codes[pos])
         return np.stack(rows, axis=0)
 
-    codes_walk = _codes_for_pose(walk_clips)
-    codes_rear = _codes_for_pose(rear_clips)
-
-    log.info("Building walking-pose env...")
-    env_walk = _build_pose_env(
-        ckpt_cfg, _abs(cfg.data.reference_data_path), clip_len,
-        keep_clips_idx=walk_clips, test_codes=codes_walk,
-        code_stack_size=code_stack_size, probe_frame=walk_probe,
-    )
-    jit_reset_w = jax.jit(env_walk.reset)
-    jit_step_w = jax.jit(env_walk.step)
-
-    log.info("Building rearing-pose env...")
-    env_rear = _build_pose_env(
-        ckpt_cfg, _abs(cfg.data.reference_data_path), clip_len,
-        keep_clips_idx=rear_clips, test_codes=codes_rear,
-        code_stack_size=code_stack_size, probe_frame=rear_probe,
-    )
-    jit_reset_r = jax.jit(env_rear.reset)
-    jit_step_r = jax.jit(env_rear.step)
-
-    # --- Rollouts (top_n × 2 poses × K bodies) ---
     hold_frames = int(cfg.hold_frames)
     reuse = bool(cfg.get("reuse_rollouts", False))
     log.info(
-        f"\nRollouts: {top_n} codes × 2 poses × {K} bodies × {hold_frames} "
-        f"frames (reuse_rollouts={reuse})"
+        f"\nRollouts: {top_n} codes × {len(poses)} pose(s) × {K} bodies × "
+        f"{hold_frames} frames (reuse_rollouts={reuse})"
     )
-    log.info("  Walking pose rollouts ...")
-    rollouts_walk = _rollouts_for_pose(
-        env_walk, inf_fn, params, ppo_networks,
-        walk_clips, top_codes, hold_frames, seed,
-        jit_reset_w, jit_step_w, "walk", data_dir, reuse, code_stack_size,
-    )
-    log.info("  Rearing pose rollouts ...")
-    rollouts_rear = _rollouts_for_pose(
-        env_rear, inf_fn, params, ppo_networks,
-        rear_clips, top_codes, hold_frames, seed + 2000,
-        jit_reset_r, jit_step_r, "rear", data_dir, reuse, code_stack_size,
-    )
+
+    # Per-pose env + rollouts, built only for the requested poses.
+    pose_envs = {}
+    pose_rollouts = {}
+    for p in poses:
+        if p == "random":
+            clips_p, probe_p = _pick_random_clips(
+                test_indices, K=K, seed=seed + clip_seed_off[p],
+                probe_frame=probe_frame,
+            )
+        else:
+            clips_p, probe_p = _pick_start_clips(
+                pose_start_label[p], test_indices, behavior_arr,
+                probe_frame=probe_frame, probe_frame_max=probe_frame_max,
+                K=K, seed=seed + clip_seed_off[p],
+            )
+        log.info(f"Pose clips — {p} @ frame {probe_p}: {clips_p.tolist()}")
+        codes_p = _codes_for_pose(clips_p)
+        log.info(f"Building {p}-pose env...")
+        env_p = _build_pose_env(
+            ckpt_cfg, _abs(cfg.data.reference_data_path), clip_len,
+            keep_clips_idx=clips_p, test_codes=codes_p,
+            code_stack_size=code_stack_size, probe_frame=probe_p,
+        )
+        jit_reset_p = jax.jit(env_p.reset)
+        jit_step_p = jax.jit(env_p.step)
+        log.info(f"  {p} pose rollouts ...")
+        pose_rollouts[p] = _rollouts_for_pose(
+            env_p, inf_fn, params, ppo_networks,
+            clips_p, top_codes, hold_frames, rollout_seed[p],
+            jit_reset_p, jit_step_p, p, data_dir, reuse, code_stack_size,
+        )
+        pose_envs[p] = env_p
 
     # --- Per-code labels from ROLLED-OUT qpos (TopoMimic auto-labeler) ---
     # Each (code, body) rollout's longest behavior segment + majority
@@ -713,7 +730,7 @@ def main(cfg: DictConfig) -> None:
         )
         code_labels = label_codes_from_rollouts_dir(
             data_dir, top_codes, num_codes=num_codes,
-            poses=("walk", "rear"),
+            poses=tuple(poses),
             src_fps=100.0,
         )
         save_code_labels_json(
@@ -738,30 +755,27 @@ def main(cfg: DictConfig) -> None:
     # --- Raw grid rendering (per pose) ---
     if bool(cfg.get("render_video", True)):
         log.info("\n=== Rendering raw grids ===")
-        _render_raw_grid_for_pose(
-            env_walk, "walk", top_codes, rollouts_walk,
-            label_colors, usage, cfg, videos_raw_dir,
-            code_labels=code_labels,
-        )
-        _render_raw_grid_for_pose(
-            env_rear, "rear", top_codes, rollouts_rear,
-            label_colors, usage, cfg, videos_raw_dir,
-            code_labels=code_labels,
-        )
-        log.info("\n=== Rendering combined walk+rear grids ===")
-        _render_combined_grid(
-            env_walk, top_codes, rollouts_walk, rollouts_rear,
-            label_colors, usage, cfg, videos_raw_dir,
-            code_labels=code_labels,
-        )
+        for pose_name in poses:
+            _render_raw_grid_for_pose(
+                pose_envs[pose_name], pose_name, top_codes,
+                pose_rollouts[pose_name],
+                label_colors, usage, cfg, videos_raw_dir,
+                code_labels=code_labels,
+            )
+        if "walk" in poses and "rear" in poses:
+            log.info("\n=== Rendering combined walk+rear grids ===")
+            _render_combined_grid(
+                pose_envs["walk"], top_codes,
+                pose_rollouts["walk"], pose_rollouts["rear"],
+                label_colors, usage, cfg, videos_raw_dir,
+                code_labels=code_labels,
+            )
 
     # --- MMD merge per pose ---
     log.info("\n=== Computing MMD merge ===")
     reuse_merge = bool(cfg.get("reuse_merge", False))
     merge_cfg = cfg.merge
-    pose_rollouts = {"walk": rollouts_walk, "rear": rollouts_rear}
     pose_clusters: dict[str, list[list[int]]] = {}
-    pose_envs = {"walk": env_walk, "rear": env_rear}
 
     for pose_name, rollouts_pose in pose_rollouts.items():
         dist_path = merged_dir / f"distance_{pose_name}.npz"
@@ -824,7 +838,7 @@ def main(cfg: DictConfig) -> None:
         f"{[(lbl_info['labels'][i], len(c)) for i, c in enumerate(lbl_clusters)]}"
     )
     pose_label_clusters: dict[str, list[list[int]]] = {}
-    for pose_name in ("walk", "rear"):
+    for pose_name in poses:
         save_clusters_json(
             merged_dir / f"clusters_by_label_{pose_name}.json",
             pose_name, lbl_clusters, lbl_info, usage,
@@ -838,7 +852,7 @@ def main(cfg: DictConfig) -> None:
     # --- Merged grid rendering ---
     if bool(cfg.get("render_video", True)):
         log.info("\n=== Rendering MMD-merged grids ===")
-        for pose_name in ("walk", "rear"):
+        for pose_name in poses:
             _render_merged_grid_for_pose(
                 pose_envs[pose_name], pose_name,
                 pose_clusters[pose_name], pose_rollouts[pose_name],
@@ -848,7 +862,7 @@ def main(cfg: DictConfig) -> None:
                 title_kind="MMD merged clusters",
             )
         log.info("\n=== Rendering label-merged grids ===")
-        for pose_name in ("walk", "rear"):
+        for pose_name in poses:
             _render_merged_grid_for_pose(
                 pose_envs[pose_name], pose_name,
                 pose_label_clusters[pose_name], pose_rollouts[pose_name],
