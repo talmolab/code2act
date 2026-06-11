@@ -167,7 +167,7 @@ dynamics:
   run_rslds: false
   rslds_continuous_dim: 8
   rslds_iters: 20
-  rslds_max_trials: 1000
+  rslds_max_trials: 250
   raw_rslds_K: 6
 
 # -----------------------------------------------------------------------------
