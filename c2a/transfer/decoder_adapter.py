@@ -138,7 +138,12 @@ def extract_decoder_proprio(task_env_obs: Any) -> jnp.ndarray:
     Returns:
         Flat proprioception array, shape ``[proprio_size]``.
     """
-    proprio = task_env_obs["privileged_state"]["proprioception"]
+    if "privileged_state" in task_env_obs:  # nested (e.g. rearing)
+        proprio = task_env_obs["privileged_state"]["proprioception"]
+    elif "proprioception" in task_env_obs:  # flat (e.g. arena_forage)
+        proprio = task_env_obs["proprioception"]
+    else:
+        proprio = task_env_obs["state"]["proprioception"]
     return jnp.nan_to_num(flatten_util.ravel_pytree(proprio)[0])
 
 

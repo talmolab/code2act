@@ -67,7 +67,8 @@ class CodePriorDecoderWrapper(wrapper.Wrapper):
 
     # -- obs assembly -------------------------------------------------------
     def _task_obs(self, base_obs) -> jnp.ndarray:
-        return jnp.nan_to_num(flatten_util.ravel_pytree(base_obs["state"]["task_obs"])[0])
+        t = base_obs["state"]["task_obs"] if "state" in base_obs else base_obs["task_obs"]
+        return jnp.nan_to_num(flatten_util.ravel_pytree(t)[0])
 
     def _build_obs(self, base_obs, prior_logits: jnp.ndarray) -> jnp.ndarray:
         proprio = extract_decoder_proprio(base_obs)  # 277

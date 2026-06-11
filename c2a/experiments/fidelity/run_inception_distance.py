@@ -61,7 +61,7 @@ from c2a.experiments.shared.plotting import set_nature_style, NATURE_COLORS
 # Import code generation functions. The HMM-fitting path moved to
 # c2a/ar_codegen/models/hmm.py — load a pre-fit checkpoint via
 # CodeGenerator.from_checkpoint instead of importing the old function.
-from experiments.run_code_generation import (
+from c2a.experiments.tokenizer.run_code_generation import (
     _assert_decoder_compatible_with_arhmm,
     generate_arhmm_level1_sequences,
     generate_arhmm_level2_sequences,
