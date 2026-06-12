@@ -776,6 +776,11 @@ def main(cfg: DictConfig) -> None:
             qpos_per_code, D, code_ids, sigma, strip_root, n_null, rng,
         )
         p1 = _plot_p1(dists, pose, dist_dir / f"P1_within_between_{pose}.png")
+        # persist raw distributions so paper figures can re-render violins
+        np.savez(
+            dist_dir / f"P1_dists_{pose}.npz",
+            within=dists["within"], between=dists["between"], null=dists["null"],
+        )
 
         floor = float(np.nanmedian(dists["within"]))
         _plot_p2(D, code_ids, floor, pose, dist_dir / f"P2_phylogeny_{pose}.png")

@@ -590,24 +590,28 @@ class MambaGenerator(CodeGenerator):
             )
         model = MambaLM(config=self.config.replace(deterministic=True))
 
-        # Same O(L²) prefix-based sampling as gpt2.py.
+        # Prefix-based sampling, identical per-position semantics to the
+        # original loop but batched over all n_seq sequences and JIT-compiled:
+        # one jitted forward per position (L calls) instead of n_seq*L
+        # un-jitted forwards. Compiles once, reused for every step.
+        temp = max(float(temperature), 1e-6)
+        apply_jit = jax.jit(
+            lambda p, toks: model.apply({"params": p}, toks)
+        )
         rng = jax.random.PRNGKey(int(seed))
-        seqs = np.zeros((n_seq, length), dtype=np.int32)
-        for i in range(n_seq):
-            tokens = np.zeros((1, length), dtype=np.int32)
-            for t in range(length):
-                logits = model.apply({"params": self._params}, jnp.asarray(tokens))
-                step_logits = logits[0, t] / max(float(temperature), 1e-6)
-                step_logits = step_logits.at[BOS_ID].set(-1e9)
-                rng, sub = jax.random.split(rng)
-                tok = int(jax.random.categorical(sub, step_logits))
-                tokens[0, t] = tok
-            seqs[i] = tokens[0] - 1
-            if (seqs[i] < 0).any() or (seqs[i] >= self.num_codes).any():
-                raise RuntimeError(
-                    f"Mamba sampled OOB code at seq {i}: min={seqs[i].min()}, "
-                    f"max={seqs[i].max()}."
-                )
+        tokens = jnp.zeros((n_seq, length), dtype=jnp.int32)
+        for t in range(length):
+            logits = apply_jit(self._params, tokens)  # [n_seq, length, V]
+            step_logits = logits[:, t] / temp
+            step_logits = step_logits.at[:, BOS_ID].set(-1e9)
+            rng, sub = jax.random.split(rng)
+            tok = jax.random.categorical(sub, step_logits)  # [n_seq]
+            tokens = tokens.at[:, t].set(tok.astype(jnp.int32))
+        seqs = np.asarray(tokens, dtype=np.int32) - 1
+        if (seqs < 0).any() or (seqs >= self.num_codes).any():
+            raise RuntimeError(
+                f"Mamba sampled OOB code: min={seqs.min()}, max={seqs.max()}."
+            )
         return seqs
 
     def _save_model_files(self, path: Path) -> None:

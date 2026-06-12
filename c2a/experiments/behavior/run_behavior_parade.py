@@ -362,12 +362,22 @@ def main(cfg: DictConfig) -> None:
     frames_per_beh = int(cfg.frames_per_behavior)
     behavior_seq = list(cfg.behavior_sequence)
 
+    # Optional: hold a constant known-good code per behavior (overrides the
+    # selected clip's code sequence). Use when the auto-selected clip codes do
+    # not decode to a clean behavior for this codebook.
+    held_codes = cfg.get("held_codes", None)
+
     code_sequence_parts = []
     behavior_boundaries = []
     offset = 0
 
     for beh in behavior_seq:
-        clip_codes = selected[beh]["code_sequence"][:frames_per_beh]
+        held = None if held_codes is None else held_codes.get(beh, None)
+        if held is not None:
+            base = selected[beh]["code_sequence"]
+            clip_codes = np.full(frames_per_beh, int(held), dtype=base.dtype)
+        else:
+            clip_codes = selected[beh]["code_sequence"][:frames_per_beh]
         code_sequence_parts.append(clip_codes)
         behavior_boundaries.append((beh, offset, offset + len(clip_codes)))
         offset += len(clip_codes)

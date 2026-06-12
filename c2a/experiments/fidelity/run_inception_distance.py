@@ -668,6 +668,34 @@ def generate_method_codes(
         rng = np.random.RandomState(int(gen_cfg.generation.seed) + 9000)
         clip_len = int(gen_cfg.generation.sequence_length)
         return [rng.randint(0, num_codes, size=clip_len) for _ in range(n_seqs)]
+    elif method_name in ("gpt2", "mamba", "s5"):
+        # Neural AR code generators trained via `c2a.ar_codegen.train
+        # model=<name> data=kinematics_vae`. Loaded from ar_checkpoints.<name>.
+        ar_ckpt_cfg = gen_cfg.get("ar_checkpoints", None)
+        ckpt_path = None if ar_ckpt_cfg is None else ar_ckpt_cfg.get(method_name, None)
+        if ckpt_path is None:
+            raise RuntimeError(
+                f"Method {method_name!r} requires ar_checkpoints.{method_name} to "
+                f"point at a directory produced by `python -m c2a.ar_codegen.train "
+                f"model={method_name} data=kinematics_vae`."
+            )
+        from c2a.ar_codegen.models.base import CodeGenerator
+        from c2a.paths import get_repo_root
+        cp = Path(ckpt_path)
+        if not cp.is_absolute():
+            cp = get_repo_root() / cp
+        gen = CodeGenerator.from_checkpoint(cp)
+        if gen.num_codes != num_codes:
+            raise RuntimeError(
+                f"{method_name} checkpoint at {cp} has num_codes={gen.num_codes}, "
+                f"but the experiment expects num_codes={num_codes}."
+            )
+        seqs = gen.sample(
+            n_seq=n_seqs,
+            length=int(gen_cfg.generation.sequence_length),
+            seed=int(gen_cfg.generation.seed),
+        )
+        return [seqs[i] for i in range(n_seqs)]
     else:
         raise ValueError(f"Unknown generative method: {method_name}")
 

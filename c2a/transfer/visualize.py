@@ -226,6 +226,11 @@ def rollout_center(env, make_policy, params, key, max_steps, width, height):
         act, _ = jpol(state.obs, k)
         codes.append(int(act))
         state = jstep(state, act)
+        # Reset on done so a long render spans multiple episodes (fresh patches)
+        # instead of stalling on a finished/empty arena.
+        if bool(state.done):
+            key, rk = jax.random.split(key)
+            state = jreset(rk)
         states.append(state)
     frames = _render_states(env, states[:-1], width, height)
     return frames, codes

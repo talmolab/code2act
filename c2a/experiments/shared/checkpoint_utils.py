@@ -16,6 +16,13 @@ from c2a.paths import get_c2a_root, get_repo_root
 from typing import Any, Callable
 
 import jax
+
+# Workaround: the venv's orbax-checkpoint (0.11.24) calls
+# jax.monitoring.record_scalar, removed from current JAX (0.5.3). Stub it
+# before any Orbax restore. Pure telemetry; safe.
+if not hasattr(jax.monitoring, "record_scalar"):
+    jax.monitoring.record_scalar = lambda *a, **k: None
+
 import jax.numpy as jnp
 import numpy as np
 import orbax.checkpoint as ocp

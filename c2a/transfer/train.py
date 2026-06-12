@@ -47,9 +47,9 @@ DEFAULT_MAMBA = "outputs/ar_codegen/mamba/260611_081253_devuser"
 DEFAULT_SPLIT = "data/rodent/rodent_balanced_splits.json"
 
 
-def build_prior(kind: str, frozen, repo: Path):
+def build_prior(kind: str, frozen, repo: Path, mamba_path: str | None = None):
     if kind == "mamba":
-        return mamba_prior_from_checkpoint(str(repo / DEFAULT_MAMBA))
+        return mamba_prior_from_checkpoint(str(repo / (mamba_path or DEFAULT_MAMBA)))
     if kind == "tm":
         return transition_matrix_prior_from_payload(frozen.cfg, str(repo / DEFAULT_SPLIT))
     raise ValueError(f"unknown prior kind {kind!r}")
@@ -57,11 +57,13 @@ def build_prior(kind: str, frozen, repo: Path):
 
 def make_env(decoder_ckpt: str, prior_kind: str, dwell: int, repo: Path,
              head_dense_weight: float = 5.0, task: str = "rearing",
-             scent_weight: float = 1.0, forage_overrides: dict | None = None):
+             scent_weight: float = 1.0, forage_overrides: dict | None = None,
+             occupancy_weight: float = 1.0, harvest_weight: float = 10.0,
+             mamba_path: str | None = None):
     from vnl_playground.tasks.rodent import consts
 
     frozen = load_frozen_decoder(str(repo / decoder_ckpt))
-    prior = build_prior(prior_kind, frozen, repo)
+    prior = build_prior(prior_kind, frozen, repo, mamba_path=mamba_path)
     # All tasks must use the decoder's EXACT training body (rodent.xml): the
     # default box_feet body's foot-collision dynamics destabilize the frozen
     # torques. Same nu/nbody/proprio, ctrl_dt/sim_dt=0.01/0.002 (match decoder).
@@ -91,6 +93,26 @@ def make_env(decoder_ckpt: str, prior_kind: str, dwell: int, repo: Path,
             else:
                 setattr(cfg, k, v)
         base = arena_forage.ArenaForage(config=cfg)
+    elif task == "forage_dwell":
+        from c2a.transfer.envs import arena_forage
+
+        cfg = arena_forage.default_config()
+        cfg.walker_xml_path = consts.RODENT_XML_PATH
+        cfg.scent_at_torso = True  # anti rear-hack: rearing can't inflate scent
+        # Reward = dense sustained-occupancy + harvest bonus + torso-scent for
+        # navigation. treat_collection (instant) is dropped — harvest is the event.
+        cfg.reward_terms = {
+            "dwell_occupancy": {"weight": float(occupancy_weight)},
+            "dwell_harvest": {"weight": float(harvest_weight)},
+            "scent_proximity": {"weight": float(scent_weight)},
+        }
+        for k, v in (forage_overrides or {}).items():
+            if k == "treat_weight":
+                continue  # not used in dwell mode
+            setattr(cfg, k, v)
+        if cfg.dwell_steps <= 0:
+            raise ValueError("forage_dwell needs dwell_steps>0")
+        base = arena_forage.ArenaForage(config=cfg)
     else:
         raise ValueError(f"unknown task {task!r}")
     env = CodePriorDecoderWrapper(base, frozen, prior, dwell=dwell)
@@ -100,6 +122,8 @@ def make_env(decoder_ckpt: str, prior_kind: str, dwell: int, repo: Path,
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--decoder_ckpt", default=DEFAULT_DECODER)
+    p.add_argument("--mamba_path", default=None,
+                   help="Mamba prior dir relative to repo root (default: DEFAULT_MAMBA constant)")
     p.add_argument("--prior", default="mamba", choices=["mamba", "tm"])
     p.add_argument("--dwell", type=int, default=2)
     p.add_argument("--num_timesteps", type=int, default=50_000_000)
@@ -115,7 +139,11 @@ def main():
     p.add_argument("--num_evals", type=int, default=10)
     p.add_argument("--num_eval_envs", type=int, default=64)
     p.add_argument("--head_dense_weight", type=float, default=5.0)
-    p.add_argument("--task", default="rearing", choices=["rearing", "forage"])
+    p.add_argument("--task", default="rearing", choices=["rearing", "forage", "forage_dwell"])
+    p.add_argument("--dwell_steps", type=int, default=0, help="forage_dwell: control steps to sustain before harvest")
+    p.add_argument("--immobile_thresh", type=float, default=0.06, help="torso speed below which = immobile (low patches)")
+    p.add_argument("--occupancy_weight", type=float, default=1.0, help="dwell: per-step sustain reward")
+    p.add_argument("--harvest_weight", type=float, default=10.0, help="dwell: harvest-completion bonus")
     p.add_argument("--scent_weight", type=float, default=1.0)
     # forage TRAIN arena
     p.add_argument("--treat_radius", type=float, default=0.08)
@@ -137,6 +165,7 @@ def main():
     p.add_argument("--log_video", action="store_true", help="log composite wandb.Video every --video_every evals")
     p.add_argument("--video_every", type=int, default=3)
     p.add_argument("--video_top_n", type=int, default=6)
+    p.add_argument("--video_steps", type=int, default=1000, help="frames in wandb video (length = video_steps/50 s; 1000 = 20 s). rollout resets on done so it can exceed one episode")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--run_name", default="walkrear_transfer")
     p.add_argument("--smoke", action="store_true")
@@ -167,9 +196,13 @@ def main():
         treat_weight=args.treat_weight,
         scent_sigma=args.scent_sigma,
         high_treat_reward_mult=args.high_treat_mult,
+        dwell_steps=args.dwell_steps,
+        immobile_speed_thresh=args.immobile_thresh,
     )
     mk = lambda ov: make_env(args.decoder_ckpt, args.prior, args.dwell, repo,
-                             args.head_dense_weight, args.task, args.scent_weight, ov)
+                             args.head_dense_weight, args.task, args.scent_weight, ov,
+                             args.occupancy_weight, args.harvest_weight,
+                             mamba_path=args.mamba_path)
     env, frozen, prior = mk(train_forage)
     eval_env, _, _ = mk(train_forage)
 
@@ -181,7 +214,7 @@ def main():
         test_forage["spawn_radius"] = args.test_spawn_radius
     if args.test_frac_high >= 0:
         test_forage["frac_high_treats"] = args.test_frac_high
-    if args.task == "forage" and test_forage != train_forage:
+    if args.task in ("forage", "forage_dwell") and test_forage != train_forage:
         test_env, _, _ = mk(test_forage)
         print(f"[video] held-out TEST arena: {test_forage}", flush=True)
     else:
@@ -225,6 +258,9 @@ def main():
             f"[transfer] step={int(step):>10d} "
             f"reward={g('eval/episode_reward', float('nan')):.3f} "
             f"treats={g('eval/episode_mean_collected_treats', float('nan')):.3f} "
+            f"harvest={g('eval/episode_mean_harvested', float('nan')):.3f} "
+            f"high_h={g('eval/episode_high_harvested', float('nan')):.3f} "
+            f"sustain_hi={g('eval/episode_sustained_high_steps', float('nan')):.2f} "
             f"scent={g('eval/episode_rewards/scent_proximity', float('nan')):.3f} "
             f"rear_success={g('eval/episode_rewards/rearing_success', float('nan')):.3f} "
             f"head_h={g('eval/episode_relative_head_height', float('nan')):.3f} "
@@ -254,7 +290,7 @@ def main():
                 args.decoder_ckpt, test_env, frozen, repo,
                 tiles_npz=str(out_dir / "code_tiles.npz"), code_list=code_list,
                 wb=wb, out_dir=str(out_dir), every=args.video_every,
-                max_steps=min(args.episode_length, 250),
+                max_steps=args.video_steps,  # resets on done, so not capped by episode_length
             )
             print(f"[video] live composite logging ON (every {args.video_every} evals)", flush=True)
         except Exception as e:  # noqa: BLE001

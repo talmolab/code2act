@@ -757,6 +757,12 @@ def _run_one_pass(
                    out_dir / "jpca_projection.png",
                    title_suffix=f"{strategy}/{representation}")
 
+    # Composition report — written unconditionally: it records the cluster
+    # composition / axis order / labels that downstream figure rendering needs,
+    # and is independent of rSLDS. rSLDS purity (if run below) overwrites it.
+    _composition_report(clusters, usage, {}, cluster_info, pose,
+                        out_dir / "composition.json", cluster_label_strings)
+
     # --- rSLDS ---
     if not dyn["run_rslds"]:
         log.info(f"    rSLDS deferred (run_rslds=false) for {pose}/{suffix}.")

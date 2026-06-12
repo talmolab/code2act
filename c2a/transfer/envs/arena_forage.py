@@ -51,6 +51,14 @@ def default_config() -> config_dict.ConfigDict:
         high_treat_height=0.16,
         frac_high_treats=0.0,  # 0 = all low (legacy behaviour); >0 enables high treats
         high_treat_reward_mult=1.0,  # >1 pays MORE for high (rear-required) treats
+        # ---- forage-dwell mode (0 = legacy instant collection) ----
+        # A patch is harvested only after the rodent SUSTAINS the patch-appropriate
+        # behaviour for `dwell_steps` control steps: immobile-hold at low patches,
+        # reared-hold at high patches (rear enforced geometrically by height).
+        dwell_steps=0,
+        immobile_speed_thresh=0.06,  # torso speed (m/s) below this = "immobile"
+        rear_height_thresh=0.085,  # skull z above this = "reared" (standing≈0.063)
+        scent_at_torso=False,  # read scent at torso (anti rear-hack) vs skull
         spawn_radius=1.0,
         min_spawn_radius=0.3,
         scent_sigma=0.5,
@@ -183,6 +191,8 @@ class ArenaForage(rodent_base.RodentEnv):
             "treat_positions": treat_positions,
             "treat_collected": jp.zeros(num_treats, dtype=bool),
             "newly_collected": jp.zeros(num_treats, dtype=bool),
+            "dwell_timer": jp.zeros(num_treats, dtype=jp.float32),
+            "satisfied": jp.zeros(num_treats, dtype=bool),
         }
 
         data = mjx.make_data(
@@ -219,8 +229,48 @@ class ArenaForage(rodent_base.RodentEnv):
 
         dists = jp.linalg.norm(skull_pos - treat_positions, axis=-1)
         in_range = dists < treat_r
-        newly_collected = jp.logical_and(in_range, jp.logical_not(treat_collected))
-        treat_collected = jp.logical_or(treat_collected, in_range)
+
+        if self._config.dwell_steps > 0:
+            # ---- forage-dwell: harvest only after SUSTAINING the right behaviour ----
+            # Decoupled criterion (robust to the rear's oscillation): be AT the patch
+            # in XY, AND hold the patch-appropriate posture — skull above a rear
+            # height for HIGH patches, torso immobile for LOW patches.
+            active = jp.logical_not(treat_collected)
+            thresh = 0.5 * (
+                self._config.treat_height + self._config.high_treat_height
+            )
+            is_high = treat_positions[:, 2] > thresh
+            dist_xy = jp.linalg.norm(
+                skull_pos[:2] - treat_positions[:, :2], axis=-1
+            )
+            in_xy = dist_xy < treat_r
+            reared = skull_pos[2] > self._config.rear_height_thresh
+            prev_xy = self._get_torso_pos(state.data)[:2]
+            new_xy = self._get_torso_pos(data)[:2]
+            torso_speed = jp.linalg.norm(new_xy - prev_xy) / self._config.ctrl_dt
+            immobile = torso_speed < self._config.immobile_speed_thresh
+            # low patch needs a genuine immobile crouch (skull low), so a rocking
+            # rear (whose torso speed momentarily dips) can't leak into "immobile".
+            posture_ok = jp.where(
+                is_high, reared, immobile & jp.logical_not(reared)
+            )
+            satisfied = active & in_xy & posture_ok
+            # HIGH (reared) patches: decay -1 on a miss so the rear's oscillation
+            # downswings don't wipe progress. LOW (immobile) patches: hard-reset on a
+            # miss so a rocking rear's brief slow/low frames can't accumulate — only a
+            # genuine sustained crouch does.
+            miss = jp.where(is_high, 1.0, float(self._config.dwell_steps))
+            dwell_timer = jp.clip(
+                info["dwell_timer"] + jp.where(satisfied, 1.0, -miss), 0.0, None
+            )
+            newly_collected = active & (dwell_timer >= self._config.dwell_steps)
+            treat_collected = jp.logical_or(treat_collected, newly_collected)
+            info["dwell_timer"] = dwell_timer
+            info["satisfied"] = satisfied
+        else:
+            newly_collected = jp.logical_and(in_range, jp.logical_not(treat_collected))
+            treat_collected = jp.logical_or(treat_collected, in_range)
+
         info["treat_collected"] = treat_collected
         info["newly_collected"] = newly_collected
 
@@ -272,9 +322,24 @@ class ArenaForage(rodent_base.RodentEnv):
         )
         return skull_body.xpos
 
+    def _get_torso_pos(self, data: mjx.Data) -> jax.Array:
+        """Get torso world position (3D)."""
+        torso_body = data.bind(
+            self.mjx_model, self._spec.body(f"torso{self._suffix}")
+        )
+        return torso_body.xpos
+
     def _compute_scent(self, data: mjx.Data, info: dict) -> jax.Array:
-        """Compute total scent at skull position from all active treats."""
-        skull_pos = self._get_skull_pos(data)
+        """Compute total scent at the sensing point from all active treats.
+
+        Read at the torso (fixed height) when ``scent_at_torso`` to prevent a
+        rear-for-scent hack (rearing can't inflate a torso-anchored field).
+        """
+        skull_pos = (
+            self._get_torso_pos(data)
+            if self._config.scent_at_torso
+            else self._get_skull_pos(data)
+        )
         treat_positions = info["treat_positions"]
         treat_collected = info["treat_collected"]
         sigma = self._config.scent_sigma
@@ -292,7 +357,11 @@ class ArenaForage(rodent_base.RodentEnv):
         uncollected treats, weighted by proximity. Returned in the torso
         body frame so the signal is orientation-invariant.
         """
-        skull_pos = self._get_skull_pos(data)
+        skull_pos = (
+            self._get_torso_pos(data)
+            if self._config.scent_at_torso
+            else self._get_skull_pos(data)
+        )
         treat_positions = info["treat_positions"]
         treat_collected = info["treat_collected"]
         sigma = self._config.scent_sigma
@@ -502,6 +571,47 @@ def _treat_collection_reward(env, data, info, metrics, weight) -> float:
     metrics["mean_collected_treats"] = jp.sum(newly)
     metrics["mean_high_collected"] = jp.sum(newly * is_high)
     return weighted_reward
+
+
+def _is_high(env, info):
+    heights = info["treat_positions"][:, 2]
+    thresh = 0.5 * (env._config.treat_height + env._config.high_treat_height)
+    h = (heights > thresh).astype(float)
+    mult = 1.0 + (env._config.high_treat_reward_mult - 1.0) * h
+    return h, mult
+
+
+@_named_reward("dwell_occupancy")
+def _dwell_occupancy_reward(env, data, info, metrics, weight) -> float:
+    """Dense reward per step while SUSTAINING the patch-appropriate behaviour.
+
+    Gated on ``satisfied`` (inside a patch AND correct posture: rear for high,
+    immobile for low) → cannot be hacked by rearing/immobility away from a patch.
+    """
+    satisfied = info.get(
+        "satisfied", jp.zeros(env._config.num_treats, dtype=bool)
+    ).astype(float)
+    h, mult = _is_high(env, info)
+    reward = jp.sum(satisfied * mult) * weight
+    metrics["rewards/dwell_occupancy"] = reward
+    metrics["sustained_high_steps"] = jp.sum(satisfied * h)
+    metrics["sustained_low_steps"] = jp.sum(satisfied * (1.0 - h))
+    return reward
+
+
+@_named_reward("dwell_harvest")
+def _dwell_harvest_reward(env, data, info, metrics, weight) -> float:
+    """Bonus when a patch is harvested (dwell completed); high patches pay more."""
+    newly = info.get(
+        "newly_collected", jp.zeros(env._config.num_treats, dtype=bool)
+    ).astype(float)
+    h, mult = _is_high(env, info)
+    reward = jp.sum(newly * mult) * weight
+    metrics["rewards/dwell_harvest"] = reward
+    metrics["mean_harvested"] = jp.sum(newly)
+    metrics["high_harvested"] = jp.sum(newly * h)
+    metrics["low_harvested"] = jp.sum(newly * (1.0 - h))
+    return reward
 
 
 @_named_reward("scent_proximity")
