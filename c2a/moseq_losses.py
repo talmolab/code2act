@@ -5,16 +5,6 @@ Provides two loss functions:
 * ``compute_moseq_ppo_loss`` — feedforward decoder (original).
 * ``compute_moseq_recurrent_ppo_loss`` — RNN decoder with scan-based
   forward pass, hidden-state carry, and deterministic z_e replay.
-
-Standard PPO losses (clipped surrogate, value, entropy). When ``e2e_mode``
-is enabled the loss additionally consumes the policy network's ``e2e_aux``
-dict (live VQ-VAE forward) to add a window-reconstruction loss plus the
-van den Oord commit + codebook terms; the imitation pathway flows back to
-the VQ-VAE encoder via the straight-through z_q inside the policy.
-
-The :func:`compute_e2e_recon_only_loss` and :func:`compute_e2e_split_grads`
-helpers below provide the eval-time snapshot of imitation vs reconstruction
-gradient magnitudes into the VQ-VAE subtree, per the spec.
 """
 
 from typing import Any
@@ -24,8 +14,6 @@ import jax
 import jax.numpy as jnp
 from brax.training import types
 from brax.training.types import Params
-
-from c2a.e2e_vqvae import VQVAE_PARAM_NAMES
 
 
 @flax.struct.dataclass
@@ -39,87 +27,6 @@ class PPONetworkParams:
 
     policy: Params
     value: Params
-
-
-def _compute_e2e_aux_losses(
-    e2e_aux: Any,
-    observation: Any,
-    *,
-    e2e_mode: bool,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Pull recon, commit, and codebook loss tensors out of the e2e_aux dict.
-
-    Returns ``(recon, commit, codebook)``. When ``e2e_mode=False`` or the
-    aux dict is empty, returns zero scalars (so the caller can fold the
-    products with ``e2e_w_*`` weights into the total loss unconditionally).
-
-    For the recurrent loss, ``e2e_aux`` is a per-step dict whose tensor
-    leaves carry a leading ``T`` axis; ``commit`` and ``codebook`` are
-    already mean-reduced across the encoded batch inside the bottleneck so
-    we just average over ``T``. ``recon_pred`` has shape
-    ``(T, B, stack, w, feat_dim)`` and we compare it against
-    ``observation["motion_window_stack"]`` of the same shape via MSE.
-
-    For the feedforward loss, the same structure holds without the ``T``
-    axis — ``commit`` / ``codebook`` are scalars, ``recon_pred`` is
-    ``(B, stack, w, feat_dim)``. The ``jnp.mean`` calls are no-ops in that
-    case so this helper covers both call sites.
-    """
-    if not e2e_mode or not e2e_aux:
-        zero = jnp.array(0.0)
-        return zero, zero, zero
-    recon_pred = e2e_aux["recon_pred"]
-    recon_target = observation["motion_window_stack"]
-    recon_loss = jnp.mean((recon_pred - recon_target) ** 2)
-    commit_loss = jnp.mean(e2e_aux["commit"])
-    codebook_loss = jnp.mean(e2e_aux["codebook"])
-    return recon_loss, commit_loss, codebook_loss
-
-
-def _e2e_metrics(
-    e2e_aux: Any,
-    observation: Any,
-    *,
-    e2e_mode: bool,
-    e2e_w_recon: float,
-    e2e_w_commit: float,
-    e2e_w_codebook: float,
-) -> dict[str, jnp.ndarray]:
-    """Compute the e2e/* metric dict (recon, commit, codebook, perplexity, ...).
-
-    Always returns the same keys so WandB panels don't disappear when
-    e2e_mode flips between runs. Zero-valued scalars are used when off.
-    """
-    recon, commit, codebook = _compute_e2e_aux_losses(
-        e2e_aux, observation, e2e_mode=e2e_mode,
-    )
-    if e2e_mode and e2e_aux:
-        # Aux dict has scalar `perplexity` and `utilization` per step
-        # (for recurrent) or single scalars (for FF). Mean over leading
-        # axes works for both.
-        e2e_perplexity = jnp.mean(e2e_aux["perplexity"])
-        e2e_utilization = jnp.mean(e2e_aux["utilization"])
-        live_codes = e2e_aux["live_codes"]
-        # live vs pretrained agreement (a quick drift signal).
-        pretrained_codes = jnp.round(observation["kpms_code"]).astype(jnp.int32)
-        # live_codes shape matches (..., stack); pretrained_codes shape
-        # is also (..., stack). Both share leading axes — direct compare.
-        agreement = jnp.mean((live_codes == pretrained_codes).astype(jnp.float32))
-    else:
-        e2e_perplexity = jnp.array(0.0)
-        e2e_utilization = jnp.array(0.0)
-        agreement = jnp.array(0.0)
-    return {
-        "e2e/recon_loss": recon,
-        "e2e/scaled_recon_loss": e2e_w_recon * recon,
-        "e2e/commit_loss": commit,
-        "e2e/scaled_commit_loss": e2e_w_commit * commit,
-        "e2e/codebook_loss": codebook,
-        "e2e/scaled_codebook_loss": e2e_w_codebook * codebook,
-        "e2e/live_perplexity": e2e_perplexity,
-        "e2e/live_codebook_utilization": e2e_utilization,
-        "e2e/live_vs_pretrained_agreement": agreement,
-    }
 
 
 def compute_gae(
@@ -193,11 +100,13 @@ def compute_moseq_ppo_loss(
     normalize_advantage: bool = True,
     vf_coefficient: float = 0.5,
     kl_weight: float = 0.0,
-    *,
-    e2e_mode: bool = False,
-    e2e_w_recon: float = 0.0,
-    e2e_w_commit: float = 0.0,
-    e2e_w_codebook: float = 0.0,
+    # Upstream-parity kwargs: track-mjx ff_ppo.compute_ppo_loss passes
+    # these unconditionally; we accept-and-ignore. MoSeq has its own KL
+    # on (μ, log σ) via `kl_weight` above, not the latent_* ones.
+    latent_kl_weight: float = 0.0,
+    latent_ar1_weight: float = 0.0,
+    latent_kl_schedule: Any = None,
+    latent_ar1_schedule: Any = None,
 ) -> tuple[jnp.ndarray, types.Metrics]:
     """Compute standard PPO loss for the MoSeq decoder policy.
 
@@ -227,8 +136,8 @@ def compute_moseq_ppo_loss(
     # [B, T, ...] -> [T, B, ...]
     data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), data)
 
-    # Forward pass through decoder policy (now returns e2e_aux as 5th element).
-    policy_logits, code_idx, cont_mean, cont_logvar, e2e_aux = policy_network.apply(
+    # Forward pass through decoder policy.
+    policy_logits, code_idx, cont_mean, cont_logvar = policy_network.apply(
         normalizer_params, params.policy, data.observation, policy_key
     )
 
@@ -282,18 +191,7 @@ def compute_moseq_ppo_loss(
         kl_loss = jnp.array(0.0)
         scaled_kl_loss = jnp.array(0.0)
 
-    # e2e: live VQ-VAE recon + VQ regularizers
-    e2e_recon_loss, e2e_commit_loss, e2e_codebook_loss = _compute_e2e_aux_losses(
-        e2e_aux, data.observation, e2e_mode=e2e_mode,
-    )
-    scaled_e2e_recon = e2e_w_recon * e2e_recon_loss
-    scaled_e2e_commit = e2e_w_commit * e2e_commit_loss
-    scaled_e2e_codebook = e2e_w_codebook * e2e_codebook_loss
-
-    total_loss = (
-        policy_loss + v_loss + entropy_loss + scaled_kl_loss
-        + scaled_e2e_recon + scaled_e2e_commit + scaled_e2e_codebook
-    )
+    total_loss = policy_loss + v_loss + entropy_loss + scaled_kl_loss
 
     # Code transition rate (diagnostic only)
     if code_idx.shape[0] > 1:
@@ -345,13 +243,6 @@ def compute_moseq_ppo_loss(
         "kl_loss": kl_loss,
         "scaled_kl_loss": scaled_kl_loss,
     }
-    metrics.update(_e2e_metrics(
-        e2e_aux, data.observation,
-        e2e_mode=e2e_mode,
-        e2e_w_recon=e2e_w_recon,
-        e2e_w_commit=e2e_w_commit,
-        e2e_w_codebook=e2e_w_codebook,
-    ))
 
     return total_loss, metrics
 
@@ -410,11 +301,11 @@ def compute_moseq_recurrent_ppo_loss(
     kl_weight: float = 0.0,
     z_e_scale: float = 1.0,
     distill_kl_weight: float = 0.0,
-    *,
-    e2e_mode: bool = False,
-    e2e_w_recon: float = 0.0,
-    e2e_w_commit: float = 0.0,
-    e2e_w_codebook: float = 0.0,
+    # Upstream-parity kwargs (same rationale as compute_moseq_ppo_loss above).
+    latent_kl_weight: float = 0.0,
+    latent_ar1_weight: float = 0.0,
+    latent_kl_schedule: Any = None,
+    latent_ar1_schedule: Any = None,
 ) -> tuple[jnp.ndarray, types.Metrics]:
     """Compute PPO loss for the recurrent MoSeq decoder.
 
@@ -491,12 +382,10 @@ def compute_moseq_recurrent_ppo_loss(
     # Done flags for hidden state reset
     done = data.discount < 0.5
 
-    # Forward pass via scan over time (apply_sequence returns 7 values now
-    # — `e2e_aux_seq` is a per-step dict that's empty when e2e_mode is off).
+    # Forward pass via scan over time.
     (
         policy_logits, cont_mean, cont_logvar,
         distill_means, distill_logvars, final_hidden,
-        e2e_aux_seq,
     ) = policy_network.apply_sequence(
         normalizer_params,
         params.policy,
@@ -559,7 +448,7 @@ def compute_moseq_recurrent_ppo_loss(
         kl_loss = jnp.array(0.0)
         scaled_kl_loss = jnp.array(0.0)
 
-    # Distillation KL loss (distill head predicts frozen encoder distribution)
+    # Distillation KL loss (distill head predicts frozen encoder distribution).
     if distill_means is not None and distill_kl_weight > 0:
         distill_kl_loss = compute_distill_kl_loss(
             cont_mean, cont_logvar, distill_means, distill_logvars,
@@ -569,18 +458,9 @@ def compute_moseq_recurrent_ppo_loss(
         distill_kl_loss = jnp.array(0.0)
         scaled_distill_kl_loss = jnp.array(0.0)
 
-    # e2e: live VQ-VAE recon + VQ regularizers, weighted small per spec.
-    e2e_recon_loss, e2e_commit_loss, e2e_codebook_loss = _compute_e2e_aux_losses(
-        e2e_aux_seq, data.observation, e2e_mode=e2e_mode,
-    )
-    scaled_e2e_recon = e2e_w_recon * e2e_recon_loss
-    scaled_e2e_commit = e2e_w_commit * e2e_commit_loss
-    scaled_e2e_codebook = e2e_w_codebook * e2e_codebook_loss
-
     total_loss = (
         policy_loss + v_loss + entropy_loss
         + scaled_kl_loss + scaled_distill_kl_loss
-        + scaled_e2e_recon + scaled_e2e_commit + scaled_e2e_codebook
     )
 
     # --- z_e and hidden state diagnostics ---
@@ -659,205 +539,5 @@ def compute_moseq_recurrent_ppo_loss(
         "prob_of_prev_code": jnp.array(0.0),
         "scaled_codebook_entropy_reg": jnp.array(0.0),
     }
-    metrics.update(_e2e_metrics(
-        e2e_aux_seq, data.observation,
-        e2e_mode=e2e_mode,
-        e2e_w_recon=e2e_w_recon,
-        e2e_w_commit=e2e_w_commit,
-        e2e_w_codebook=e2e_w_codebook,
-    ))
 
     return total_loss, metrics
-
-
-# =============================================================================
-# E2E split-gradient logging (eval-only snapshot)
-# =============================================================================
-
-
-def compute_e2e_recon_only_loss(
-    params: PPONetworkParams,
-    normalizer_params: Any,
-    data: types.Transition,
-    rng: jnp.ndarray,
-    ppo_network: Any,
-    *,
-    z_e_scale: float = 1.0,
-    e2e_w_recon: float = 1.0,
-    e2e_w_commit: float = 0.0,
-    e2e_w_codebook: float = 0.0,
-) -> jnp.ndarray:
-    """Reconstruction-only loss (no PPO terms) — used by the split-grad helper.
-
-    Re-runs ``policy_network.apply_sequence`` on the same data, ignores
-    every output except ``e2e_aux_seq``, and returns
-    ``w_recon * recon + w_commit * commit + w_codebook * codebook``. The
-    caller takes ``jax.grad`` of this w.r.t. ``params.policy`` and reads
-    the gradient norm into the VQ-VAE subtree.
-
-    Assumes ``data`` was collected with an e2e-mode policy (the rollout
-    transitions therefore contain ``motion_window_stack`` in obs). If
-    e2e_mode was off, ``e2e_aux_seq`` is an empty dict and this returns 0,
-    so ``jax.grad`` is also identically zero.
-    """
-    initial_carry = data.extras["policy_extras"]["initial_carry_state"]
-    data_t = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), data)
-    policy_extras = dict(data_t.extras["policy_extras"])
-    policy_extras["initial_carry_state"] = initial_carry
-    data_t = types.Transition(
-        observation=data_t.observation,
-        action=data_t.action,
-        reward=data_t.reward,
-        discount=data_t.discount,
-        next_observation=data_t.next_observation,
-        extras={
-            "policy_extras": policy_extras,
-            "state_extras": data_t.extras["state_extras"],
-        },
-    )
-    done = data_t.discount < 0.5
-    stored_keys = data_t.extras["policy_extras"].get("policy_rng")
-    (
-        _logits, _mean, _logvar, _dm, _dl, _final_h, e2e_aux_seq,
-    ) = ppo_network.policy_network.apply_sequence(
-        normalizer_params,
-        params.policy,
-        data_t.observation,
-        initial_carry,
-        done,
-        rng,
-        deterministic=False,
-        stored_keys=stored_keys,
-        z_e_scale=z_e_scale,
-    )
-    recon, commit, codebook = _compute_e2e_aux_losses(
-        e2e_aux_seq, data_t.observation, e2e_mode=True,
-    )
-    return e2e_w_recon * recon + e2e_w_commit * commit + e2e_w_codebook * codebook
-
-
-def compute_e2e_split_grads(
-    params: PPONetworkParams,
-    normalizer_params: Any,
-    data: types.Transition,
-    rng: jnp.ndarray,
-    step: int,
-    ppo_network: Any,
-    *,
-    imitation_loss_kwargs: dict[str, Any],
-    e2e_w_recon: float,
-    e2e_w_commit: float,
-    e2e_w_codebook: float,
-    z_e_scale: float = 1.0,
-) -> dict[str, jnp.ndarray]:
-    """Eval-only: ``||grad VQ-VAE||`` from imitation vs reconstruction pathways.
-
-    The actual PPO update still uses the combined loss; this helper exists
-    solely to log the relative magnitudes of the two gradient pathways into
-    the VQ-VAE param subtree (per the spec, snapshot at every eval boundary).
-
-    Imitation pathway: ``compute_moseq_recurrent_ppo_loss`` with all e2e
-    weights set to zero — gradient into VQ-VAE flows only through the
-    straight-through z_q used inside the policy.
-
-    Recon pathway: :func:`compute_e2e_recon_only_loss` — gradient into
-    VQ-VAE flows from MSE(recon_pred, motion_window_stack) plus the
-    weighted commit / codebook terms.
-
-    Args:
-        params: Current full PPO param container.
-        normalizer_params: Running stats.
-        data: Mini-batch of transitions ``(B, T, ...)``. Must come from an
-            e2e-mode rollout (obs contains ``motion_window_stack``).
-        rng: PRNG key.
-        step: Training step (forwarded into the imitation loss).
-        ppo_network: ``MoSeqRecurrentPPONetworks`` container.
-        imitation_loss_kwargs: Same kwargs passed to the per-minibatch
-            ``compute_moseq_recurrent_ppo_loss`` during training (entropy_cost,
-            discounting, etc.). The helper overrides the e2e_w_* keys to 0.
-        e2e_w_recon / e2e_w_commit / e2e_w_codebook: Weights used by the
-            ACTUAL training loss; used here to scale the recon pathway grad
-            so the logged magnitudes reflect what the optimizer sees.
-        z_e_scale: Forwarded to apply_sequence.
-
-    Returns:
-        Dict ``{"imit/<subtree>": norm, "recon/<subtree>": norm,
-        "imit/total": norm, "recon/total": norm}`` of L2 norms over the
-        VQ-VAE param subtree leaves. Subtree names come from
-        :data:`c2a.e2e_vqvae.VQVAE_PARAM_NAMES`.
-    """
-    imit_kwargs = dict(imitation_loss_kwargs)
-    imit_kwargs["e2e_w_recon"] = 0.0
-    imit_kwargs["e2e_w_commit"] = 0.0
-    imit_kwargs["e2e_w_codebook"] = 0.0
-    imit_kwargs.setdefault("e2e_mode", True)
-    imit_kwargs.setdefault("z_e_scale", z_e_scale)
-
-    def imit_loss(policy_params):
-        new_params = params.replace(policy=policy_params)
-        loss, _ = compute_moseq_recurrent_ppo_loss(
-            params=new_params,
-            normalizer_params=normalizer_params,
-            data=data,
-            rng=rng,
-            step=step,
-            ppo_network=ppo_network,
-            **imit_kwargs,
-        )
-        return loss
-
-    def recon_loss(policy_params):
-        new_params = params.replace(policy=policy_params)
-        return compute_e2e_recon_only_loss(
-            params=new_params,
-            normalizer_params=normalizer_params,
-            data=data,
-            rng=rng,
-            ppo_network=ppo_network,
-            z_e_scale=z_e_scale,
-            e2e_w_recon=e2e_w_recon,
-            e2e_w_commit=e2e_w_commit,
-            e2e_w_codebook=e2e_w_codebook,
-        )
-
-    g_imit = jax.grad(imit_loss)(params.policy)
-    g_recon = jax.grad(recon_loss)(params.policy)
-    out: dict[str, jnp.ndarray] = {}
-    out.update(_grad_norms_by_subtree(g_imit, prefix="imit"))
-    out.update(_grad_norms_by_subtree(g_recon, prefix="recon"))
-    return out
-
-
-def _grad_norms_by_subtree(
-    g_policy: dict[str, Any], *, prefix: str,
-) -> dict[str, jnp.ndarray]:
-    """L2 norms of gradient leaves restricted to the VQ-VAE subtrees.
-
-    Args:
-        g_policy: Gradient pytree with the same structure as
-            ``params.policy`` — top-level dict with ``"params"`` key and a
-            nested dict of submodule names below it.
-        prefix: WandB metric prefix (e.g. ``"imit"``, ``"recon"``). The
-            returned keys are ``f"{prefix}/{subtree}"`` plus
-            ``f"{prefix}/total"``.
-
-    Subtrees absent from the gradient (e.g. e2e_mode was off) contribute
-    zero — the metric is always emitted so panels stay stable.
-    """
-    base = g_policy.get("params", g_policy)
-    norms: dict[str, jnp.ndarray] = {}
-    total_sq = jnp.array(0.0)
-    for name in VQVAE_PARAM_NAMES:
-        sub = base.get(name)
-        if sub is None:
-            n2 = jnp.array(0.0)
-        else:
-            leaves = jax.tree_util.tree_leaves(sub)
-            if not leaves:
-                n2 = jnp.array(0.0)
-            else:
-                n2 = sum(jnp.sum(jnp.square(leaf)) for leaf in leaves)
-        norms[f"{prefix}/{name}"] = jnp.sqrt(n2)
-        total_sq = total_sq + n2
-    norms[f"{prefix}/total"] = jnp.sqrt(total_sq)
-    return norms

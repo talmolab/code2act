@@ -1,0 +1,131 @@
+# =============================================================================
+# Controlled labeled-behavior RNN Hidden Dynamics Experiment
+# =============================================================================
+# Companion to labeled_hidden_dynamics_exp.yaml. Holds each of the 5
+# directional-turn codes for a fixed duration in a fixed order from
+# two controlled starting poses (walking-pose / rearing-pose), in
+# decoder-only mode (z_e_scale = 0 → encoder bypassed, GRU sees only
+# code embed + proprio).
+#
+# 2 starting poses × 3 code sequences × K bodies → 6 rollouts → 6 mp4s
+# with synchronized rotating-PCA panel.
+#
+# Usage:
+#   python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled
+# =============================================================================
+
+checkpoint:
+  # Latest decoder, gt_directional_turn-trained (num_codes=5).
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260508_190937_955263/
+  step: null
+
+data:
+  # All data paths the labeled-hidden-dynamics experiment uses. The
+  # codes-loading is dispatched off ckpt_cfg.kpms_config.code_source
+  # (saved inside the checkpoint), so codes_path is NOT needed here —
+  # for gt_directional_turn the loader reads from labels_csv_path.
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  labeled_clip_range: [0, 841]
+  csv_to_h5_subsample: 2
+
+# -----------------------------------------------------------------------------
+# Hold each code for this many simulated seconds. The trained policy
+# saw 2 s imitation clips, so 5 s is 2.5× horizon — long enough to
+# observe settling but not so long that long-horizon drift dominates.
+# -----------------------------------------------------------------------------
+hold_seconds_per_code: 5
+ctrl_hz: 100              # env runs at ctrl_dt=0.01 s
+
+# K bodies per rollout. All K share the same starting-pose type and
+# receive identical per-frame code sequences; only the test-clip
+# reset varies across the K bodies.
+K_per_rollout: 10
+
+# -----------------------------------------------------------------------------
+# Starting-pose configuration: pick K test clips whose label at
+# `probe_frame` matches the requested directional-turn class. The
+# env's start_frame_range is then pinned to [probe_frame, probe_frame]
+# so the rodent starts at exactly that labeled frame.
+# -----------------------------------------------------------------------------
+start_pose:
+  probe_frame: 20         # earliest frame to consider. 20 is past the
+                          # very-start of clips where labels may be
+                          # sparse, but before behaviors have
+                          # transitioned away.
+  probe_frame_max: 200    # latest frame to consider. The matcher scans
+                          # [probe_frame, probe_frame_max] and picks the
+                          # earliest frame at which ≥K test clips match
+                          # the pose's behavior class. This is per-pose,
+                          # so Rear (common right from the start) may
+                          # land at frame 20 while Walk (rare until the
+                          # rodent starts moving) may land later.
+                          # Set probe_frame_max = probe_frame for strict
+                          # single-frame matching.
+  walking_label: Walk     # low root-Z, body laid out
+  rearing_label: Rear     # high root-Z, body upright
+
+# -----------------------------------------------------------------------------
+# Code sequences. Each is a list of directional-turn label names; the
+# experiment resolves names → KPMS code integers using the policy's
+# code_source mapping. For gt_directional_turn (current checkpoint),
+# the mapping is identity. Each name's hold duration is
+# `hold_seconds_per_code`.
+# -----------------------------------------------------------------------------
+sequences:
+  walk_turn_rear:
+    - Walk
+    - Turn_Right
+    - Turn_Left
+    - Walk
+    - Rear
+  rear_walk_turn:
+    - Rear
+    - Walk
+    - Turn_Right
+    - Turn_Left
+    - Walk
+  immobile_walk_turn:
+    - Immobile
+    - Walk
+    - Turn_Right
+    - Turn_Left
+    - Walk
+
+# -----------------------------------------------------------------------------
+# Inference / rollout knobs
+# -----------------------------------------------------------------------------
+# Encoder contribution scale. 0.0 = decoder-only (z_e * 0 → GRU sees
+# only code_embed + proprio). 1.0 = full encoder feed (matches
+# training distribution). Use 0.0 for the controlled experiment.
+z_e_scale: 0.0
+
+seed: 42
+
+# -----------------------------------------------------------------------------
+# Composite video rendering. Each video is 2 × panel_w wide and
+# panel_h + banner_h tall. Camera azimuth interpolates linearly from
+# azim_start to azim_end over the full video.
+# -----------------------------------------------------------------------------
+render_video: true
+render_fps: 50
+panel_w: 640
+panel_h: 360
+banner_h: 44
+azim_start: 140.0
+azim_end: 260.0
+
+# -----------------------------------------------------------------------------
+# Reuse cached rollouts. Default is false — always run fresh rollouts.
+# Set to true to skip the JIT-compile + 60-rollout loop when every
+# expected `hidden_<pose>_<seq>.npz` already exists under
+# output.base_dir/data/ (useful for iterating on the rendering /
+# PCA pass without redoing the ~hour of rollouts). Override on the CLI:
+#     python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled \
+#         reuse_rollouts=true
+# -----------------------------------------------------------------------------
+reuse_rollouts: false
+
+output:
+  base_dir: ./outputs/dynamics/labeled_hidden_dynamics_controlled

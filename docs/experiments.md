@@ -1,8 +1,42 @@
 # Experiments — analysis scripts
 
-Eighteen experiment scripts in `c2a/experiments/` evaluate trained Code2Act
-decoders. All commands below run from the `code2act/` repo root with the
-venv active.
+The experiment scripts in `c2a/experiments/` evaluate trained Code2Act
+decoders. They are organized into **six theme subfolders**, each with its
+own co-located `configs/` directory:
+
+| Folder | Scripts | Theme |
+|--------|---------|-------|
+| `tokenizer/` | `run_tokenizer_diagnostics`, `run_tokenizer_videos`, `run_roundtrip`, `run_code_distinctness`, `run_code_generation` | Segmenter / code quality (no RL decoder) |
+| `behavior/` | `run_inference`, `run_code_sequence`, `run_single_code`, `run_behavior_parade`, `run_generalization` | Decoder rollouts & motion-imitation behavior |
+| `fidelity/` | `run_inception_distance`, `run_generalization_kid`, `run_gait_dynamics` | Distribution-quality metrics (FID / KID / PSD) |
+| `dynamics/` | `run_hidden_dynamics`, `run_hidden_trajectory`, `run_labeled_hidden_dynamics`, `run_labeled_hidden_dynamics_controlled` | GRU hidden-state dynamical-systems analyses |
+| `code_grid/` | `run_code_grid_rollouts`, `run_code_grid_dynamics`, `run_code_grid_behavior_mmd` | Code-grid pipeline (rollouts → merge → dynamics → MMD) |
+| `population/` | `run_population_intention_dynamics`, `run_population_held_codes`, `run_population_label_patterns`, `render_population_*` | Multi-walker population rollouts + renderers |
+| `ic_contraction/` | `run_ic_contraction` | **Standalone** — initial-condition contraction / the one-to-many test |
+
+`ic_contraction/` is a standalone analysis (its own folder + `outputs/ic_contraction/`,
+not under any theme): pure post-processing (no GPU) of the `run_code_grid_rollouts`
+held-code rollouts (100 bodies from diverse poses, code held constant,
+decoder-only). Per code, in pose space (root-stripped, yaw-removed qpos) **and**
+GRU hidden space, it measures whether bodies *converge*: `σ_inst(t)`
+(phase-sensitive cross-body dispersion), `d_manifold(t)` (phase-**invariant**
+distance to the shared late-time motif manifold, leave-half-out PCA+kNN), and
+contraction ratios `ρ=median(late)/median(early)`, with a **cross-code null**
+control. Conditions = the three featured tokenizers on the diverse-IC protocol
+(KPMS, multiscale-designed, kinematics-VAE). Result: every condition contracts
+(phase-invariant ρ≈0.22–0.37≪1) in both spaces while the null diverges (ρ>1);
+Immobile/Rear → fixed points, Walk/Turn → limit cycles (manifold collapses,
+instantaneous plateaus on phase). Run:
+`python -m c2a.experiments.ic_contraction.run_ic_contraction`. Outputs
+`ratio_matrix_*`, `overview_*`, `curves_*`, `summary_*` + `contraction_summary.json`
++ `FINDINGS.md` under `outputs/ic_contraction/default/`.
+
+Invoke a script with its theme in the module path:
+`python -m c2a.experiments.<theme>.<script>` (e.g.
+`c2a.experiments.behavior.run_inference`). The shared `c2a/experiments/shared/`
+helpers and per-experiment outputs (`outputs/<theme>/<experiment>/`) mirror the
+same six-theme structure. All commands below run from the `code2act/` repo root
+with the venv active.
 
 | # | Script | Config | Purpose |
 |---|--------|--------|---------|
@@ -13,7 +47,6 @@ venv active.
 | 5 | `run_roundtrip` | `roundtrip.yaml` | Code round-trip reconstruction across all 4 segmenters (kpms, vae, vqvae, ps_vqvae). **Stage 1** — segmenter self-consistency: segment reference clips repeatedly, measure code agreement (accuracy / precision / recall / F1). The 3 autoencoders are deterministic (~100%); KPMS is Gibbs-sampled, run under `same_seed` / `diff_seed` conditions. **Stage 2** — generate-from-real-code round trip: roll out each decoder decoder-only (`z_e_scale=0`), re-segment the generated motion, compare `ĉ` vs `c` (all-frame + transition-masked, since the GRU needs a few frames to settle after a code change). KPMS FK + apply runs in a separate x64 subprocess. |
 | 6 | `run_single_code` | `single_code_exp.yaml` | Single-code sustain grid — each code held for K frames |
 | 7 | `run_behavior_parade` | `behavior_parade_exp.yaml` | Behavior transition parade — walk→groom→rear |
-| 8 | `run_syllable_viz` | `syllable_viz_exp.yaml` | KPMS syllable 3D viz, frequency/duration stats |
 | 9 | `run_inception_distance` | `inception_distance_exp.yaml` | FID/KID — generative distribution quality vs real mocap |
 | 10 | `run_gait_dynamics` | `gait_dynamics_exp.yaml` | Gait PSD — Code2Act vs MIMIC-MJX walking frequency |
 | 11 | `run_hidden_dynamics` | `hidden_dynamics_exp.yaml` | RNN hidden state dynamics — PCA of GRU hidden states per sustained code (kinematic-heuristic-derived 3-class labels: walk / immobility / rear) |
@@ -24,6 +57,33 @@ venv active.
 | 16 | `run_code_grid_rollouts` | `code_grid_rollouts_exp.yaml` | Per-code 5x5 grid videos from controlled poses + MMD merge + label merge + per-code majority-label tagging. See "Code-grid pipeline" below. |
 | 17 | `run_code_grid_dynamics` | `code_grid_rollouts_exp.yaml` | DSA + rSLDS over the merged-cluster hidden trajectories from experiment 16. Runs both MMD-merge and label-merge strategies in one pass; cluster tick labels and regime-trace bands carry the majority-label string. |
 | 18 | `run_code_grid_behavior_mmd` | `code_grid_behavior_mmd.yaml` | Per-cluster MMD² (RBF) + KID (poly) between each merged cluster's pooled rollout qpos and each canonical labeled GT behavior class (the 12-cell behavior×direction grid). Runs for **both** MMD-merged and label-merged clusters — the labels now come from the TopoMimic auto-labeler over the rollouts (a separate signal from qpos-MMD), so MMD-merge clusters carry a meaningful label hypothesis and the comparison is no longer tautological. Mirrors the TopoVNL `feature_analysis/mmd_kid` flow. |
+| 19 | `run_population_intention_dynamics` | `population_intention_dynamics.yaml` | **Population dynamics in (hidden, intention) space** per pure-behavior-label clip combination. For each of 12 combinations whose collapsed-behavior sequence is exactly a target (e.g. ``Walk``, ``Walk→Rear``, ``Imm→Walk→Imm``), pick a qualifying training clip and extract its per-frame code sequence from the segmenter. Run **n=100 walkers** (random frame-0 inits, same pool reused across all 12 combinations) all fed the same code sequence in **decoder-only mode** (``z_e_scale=0``, **deterministic action mode** — previously used sampled actions, fixed 2026-06-07). Collect ``hidden`` (GRU state) and ``intention`` (encoder posterior mean ``cont_mean``, diagnostic-only when ``z_e_scale=0``). Joint PCA-3D across all 12 cells for shared axes. Saves per-cell npz of shape ``(100, T, ...)``. The video pass (separate helper) renders a 3×4 behavior grid (3 walkers per cell) and per-cell 3-column composites (motion ghost / hidden-PCA / intention-PCA) with 3 highlighted trajectories on top of 97 grey background points. |
+| 20 | `run_population_label_patterns` | `population_label_patterns.yaml` | **Format-A (held mode code) + Format-B (per-label code pattern) population rollouts** for the v6/v7/v8 multi-init protocol. 12 cells × 2 formats × N walkers, decoder-only (``z_e_scale=0``), deterministic action mode. Init mode is ``same_pos`` (all walkers reset to source-clip frame 0) or ``walking_pose`` (walkers sampled from train clips with a Walk pose at a shared frame). Saves per-(cell, format) npz of qpos / hidden / intention (vae_mean) / fed_code_seq. Companion renderer `render_population_v5_videos` produces a 4-panel composite (motion ghost + hidden PCA-3D + intention PCA-3D + per-frame code timeline). |
+## Decoder-only invariants (enforced)
+
+Experiments that drive the policy purely from the discrete code stream
+(`run_labeled_hidden_dynamics_controlled`, `run_code_grid_rollouts`,
+`run_population_label_patterns`, `run_population_held_codes`,
+`run_population_intention_dynamics`, `run_roundtrip` stage 2) MUST satisfy two
+invariants, now centralized in **`c2a/experiments/shared/decoder_only.py`**:
+
+1. **`deterministic=True`** — action = distribution **mode**, not a sample.
+   Sampled actions inject per-step noise that contaminates dynamics analysis.
+   *(`run_population_held_codes` and `run_population_intention_dynamics` used
+   `deterministic=False` + `sample_no_postprocessing`; fixed to mode 2026-06-07.)*
+2. **Encoder severed** — the frozen MIMIC encoder must contribute nothing to the
+   action or GRU. The mechanism is checkpoint-dependent
+   (`use_continuous_encoder=False`, `use_distillation_head=True`, or
+   `z_e_scale=0`), so a flag check is unreliable.
+
+Helpers (call right after building the inference fn):
+- `assert_decoder_only_settings(z_e_scale, deterministic)` — static guard.
+- `describe_decoder_only_mode(network_config)` — logs *why* the encoder is severed.
+- `verify_encoder_severed_from_env(inf_fn, params, ppo_networks, env, key)` —
+  **behavioural** check: perturbs the encoder's only private input
+  (`obs["task_obs"]`) and asserts the action + hidden are bit-identical.
+
+Contract test: `c2a/tests/test_decoder_only_check.py`.
 
 ## Prerequisites
 
@@ -45,17 +105,18 @@ cd code2act
 source .venv/bin/activate
 
 # Example: run inference
-python -m c2a.experiments.run_inference
+python -m c2a.experiments.behavior.run_inference
 
 # Override checkpoint
-python -m c2a.experiments.run_inference checkpoint.path=/path/to/checkpoint
+python -m c2a.experiments.behavior.run_inference checkpoint.path=/path/to/checkpoint
 
 # Quick test
-python -m c2a.experiments.run_inference rendering.K=3
+python -m c2a.experiments.behavior.run_inference rendering.K=3
 ```
 
-All scripts read config from `c2a/experiments/configs/`. Outputs land under
-`c2a/outputs/<experiment>/`.
+Each script reads config from its theme's co-located `configs/` directory
+(`c2a/experiments/<theme>/configs/`). Outputs land under
+`outputs/<theme>/<experiment>/`.
 
 ## Notable experiments
 
@@ -179,17 +240,17 @@ needed for the current 5-class output and should be omitted.
 
 Outputs:
 
-* `outputs/labeled_hidden_dynamics/data/hidden_dynamics_labeled.npz` —
+* `outputs/dynamics/labeled_hidden_dynamics/data/hidden_dynamics_labeled.npz` —
   per-label hidden / qpos / proprio / codes / rewards arrays, keyed
   `hidden_<L>` / `qpos_<L>` / ... for `L` in the 5-class set above.
-* `outputs/labeled_hidden_dynamics/data/labeled_<L>.mp4` — one
+* `outputs/dynamics/labeled_hidden_dynamics/data/labeled_<L>.mp4` — one
   ghost-rendered verification clip per populated label.
 * Mirror of the npz at `c2a/figures/data/hidden_dynamics_labeled.npz`
   so the plotting scripts find it without `--npz`.
 
 ```bash
 # Run the experiment (requires GPU).
-python -m c2a.experiments.run_labeled_hidden_dynamics
+python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics
 
 # Run DSA / InputDSA + rSLDS on the labeled output. The --npz flag is
 # required because c2a/figures/data/ may also contain a legacy
@@ -234,27 +295,27 @@ rearing-pose). The env is built with `start_frame_range = [probe_frame,
 probe_frame]` so the rodent resets at exactly the labeled frame.
 
 Outputs:
-* `outputs/labeled_hidden_dynamics_controlled/data/hidden_<pose>_<seq>.npz`
+* `outputs/dynamics/labeled_hidden_dynamics_controlled/data/hidden_<pose>_<seq>.npz`
   — per (pose, sequence): `hidden`, `qpos`, `proprio`, `codes`,
   `rewards` arrays of shape `(K, T, ...)` plus the K reset clip indices.
-* `outputs/labeled_hidden_dynamics_controlled/data/pca_basis.npz` —
+* `outputs/dynamics/labeled_hidden_dynamics_controlled/data/pca_basis.npz` —
   joint PCA components + variance + axes limits (shared across all 6
   videos so panels are visually comparable).
-* `outputs/labeled_hidden_dynamics_controlled/videos/<pose>_<seq>.mp4`
+* `outputs/dynamics/labeled_hidden_dynamics_controlled/videos/<pose>_<seq>.mp4`
   — side-by-side rotating-PCA + ghost-render composite with a
   full-width phase banner at the top.
 
 ```bash
-python -m c2a.experiments.run_labeled_hidden_dynamics_controlled
+python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled
 
 # Quick smoke test (1 s holds, K=2 bodies, no video):
-python -m c2a.experiments.run_labeled_hidden_dynamics_controlled \
+python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled \
     hold_seconds_per_code=1 K_per_rollout=2 render_video=false
 
 # Encoder-on ablation for comparison (z_e contribution restored):
-python -m c2a.experiments.run_labeled_hidden_dynamics_controlled \
+python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled \
     z_e_scale=1.0 \
-    output.base_dir=./outputs/labeled_hidden_dynamics_controlled_z1
+    output.base_dir=./outputs/dynamics/labeled_hidden_dynamics_controlled_z1
 ```
 
 ### 16, 17, 18. Code-grid pipeline (`run_code_grid_*`)
@@ -339,7 +400,7 @@ discrete code source (VAE + k-means, VQ-VAE, PS-VQ-VAE, etc).
 **Outputs:**
 
 ```
-outputs/code_grid_rollouts/<run_name>/
+outputs/code_grid/code_grid_rollouts/<run_name>/
 ├── data/rollout_{walk,rear}_code{000..049}.npz
 ├── data/usage_rank.npz
 ├── videos_raw/{walk,rear}_raw_codes_*.mp4
@@ -349,10 +410,10 @@ outputs/code_grid_rollouts/<run_name>/
 ├── merged/{walk,rear}_merged_clusters_g00.mp4
 ├── merged/{walk,rear}_merged_by_label_g00.mp4
 └── labels/code_labels.json
-outputs/code_grid_dynamics/<run_name>/
+outputs/code_grid/code_grid_dynamics/<run_name>/
 ├── {walk,rear}/                       # MMD-merge strategy
 └── {walk_label,rear_label}/           # label-merge strategy
-outputs/code_grid_behavior_mmd/<run_name>/
+outputs/code_grid/code_grid_behavior_mmd/<run_name>/
 ├── mmd_merge/{walk,rear}/   # MMD-merged clusters vs GT classes
 └── label_merge/{walk,rear}/ # label-merged clusters vs GT classes
 ```
@@ -375,13 +436,13 @@ sees a single integer code per frame regardless of the source.
 
 ```bash
 # VAE checkpoint
-python -m c2a.experiments.run_code_grid_rollouts \
+python -m c2a.experiments.code_grid.run_code_grid_rollouts \
     output.run_name=ckpt_260513_062522_599062 \
     checkpoint.path=model_checkpoints/260513_062522_599062/
-python -m c2a.experiments.run_code_grid_dynamics \
+python -m c2a.experiments.code_grid.run_code_grid_dynamics \
     output.run_name=ckpt_260513_062522_599062 \
     checkpoint.path=model_checkpoints/260513_062522_599062/
-python -m c2a.experiments.run_code_grid_behavior_mmd \
+python -m c2a.experiments.code_grid.run_code_grid_behavior_mmd \
     rollouts.run_name=ckpt_260513_062522_599062 \
     output.run_name=ckpt_260513_062522_599062
 ```

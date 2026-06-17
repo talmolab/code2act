@@ -16,6 +16,13 @@ from c2a.paths import get_c2a_root, get_repo_root
 from typing import Any, Callable
 
 import jax
+
+# Workaround: the venv's orbax-checkpoint (0.11.24) calls
+# jax.monitoring.record_scalar, removed from current JAX (0.5.3). Stub it
+# before any Orbax restore. Pure telemetry; safe.
+if not hasattr(jax.monitoring, "record_scalar"):
+    jax.monitoring.record_scalar = lambda *a, **k: None
+
 import jax.numpy as jnp
 import numpy as np
 import orbax.checkpoint as ocp
@@ -177,6 +184,28 @@ def load_moseq_checkpoint(
         checkpoint_path, step_prefix=STEP_PREFIX, step=step,
     )
     cfg = OmegaConf.create(cfg) if not isinstance(cfg, DictConfig) else cfg
+
+    # 1a. Auto-correct legacy combo: training with use_distillation_head=True
+    # forces the encoder to be instantiated (frozen teacher) regardless of
+    # use_continuous_encoder.  Some training runs save the user's pre-override
+    # use_continuous_encoder=False, but the on-disk params still contain
+    # encoder_module.  When we rebuild the network with
+    # use_continuous_encoder=False, orbax restore mismatches the structure.
+    # Detect this case and flip the flag so the abstract template includes
+    # encoder_module again.
+    _net = cfg.network_config
+    if (
+        bool(_net.get("use_distillation_head", False))
+        and not bool(_net.get("use_continuous_encoder", False))
+    ):
+        logging.info(
+            "load_moseq_checkpoint: ckpt has use_distillation_head=True with "
+            "use_continuous_encoder=False — overriding to True to match the "
+            "on-disk encoder_module params (encoder will still be effectively "
+            "bypassed at inference via z_e_scale=0)."
+        )
+        OmegaConf.update(cfg, "network_config.use_continuous_encoder", True,
+                         merge=False)
 
     # 2. Build network architecture (needed for abstract template)
     net_cfg = cfg.network_config

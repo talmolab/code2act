@@ -12,6 +12,7 @@ Usage:
     python render_behavior_parade_trail.py --n-copies-per-beh 4
 """
 
+import re
 import argparse
 import json
 import logging
@@ -45,8 +46,16 @@ from c2a.rendering_utils import _disable_lights_recursive
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-PARADE_DATA = MOSEQ_DIR / "outputs" / "moseq_behavior_parade" / "data" / "parade_rollouts.npz"
-PARADE_META = MOSEQ_DIR / "outputs" / "moseq_behavior_parade" / "code_selection.json"
+# Behavior-parade rollouts live under the repo-root outputs/ tree (never
+# c2a/outputs), one subdir per behavior sequence written by
+# run_behavior_parade. Select the sequence to render here.
+PARADE_SEQUENCE = "walk_groom_rear"
+_PARADE_DIR = (
+    get_repo_root() / "outputs" / "behavior" / "moseq_behavior_parade"
+    / PARADE_SEQUENCE
+)
+PARADE_DATA = _PARADE_DIR / "data" / "parade_rollouts.npz"
+PARADE_META = _PARADE_DIR / "code_selection.json"
 
 BEHAVIOR_ORDER = ["rear", "walk", "groom"]
 BEHAVIOR_LABELS = {"walk": "Walk", "groom": "Immobility", "rear": "Rear"}
@@ -106,14 +115,23 @@ def recolor_copies(
     model: mujoco.MjModel,
     copy_rgbas: list[list[float]],
 ) -> None:
-    """Recolor each copy's body geoms. copy_rgbas[i] applies to suffix -t{i}."""
+    """Recolor each copy's body geoms. copy_rgbas[i] applies to suffix -t{i}.
+
+    Matches the per-copy suffix on the geom name or its parent body name. The
+    suffix must be followed by a non-digit (regex boundary) -- a plain substring
+    test would match ``-t1`` inside ``-t10``/``-t11``, miscoloring copies 10/11
+    as copy 1 (the orange-headed reared body bug).
+    """
+    pats = [re.compile(rf"-t{ci}(?!\d)") for ci in range(len(copy_rgbas))]
     for gi in range(model.ngeom):
-        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gi)
-        if not name:
-            continue
+        gname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gi) or ""
+        bid = int(model.geom_bodyid[gi])
+        bname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
+        tag = gname + "\x00" + bname
         for ci, rgba in enumerate(copy_rgbas):
-            if f"-t{ci}" in name:
+            if pats[ci].search(tag):
                 model.geom_rgba[gi] = rgba
+                model.geom_matid[gi] = -1
                 break
 
 
@@ -181,6 +199,12 @@ def build_parade_trail_model(
     all_positions = np.concatenate([p for p, _ in trace_segments], axis=0)
     if camera_lookat is None:
         camera_lookat = all_positions.mean(axis=0)
+        # center horizontally on the content span (not the point-density mean,
+        # which is pulled toward the dense walk trace -> off-center framing)
+        camera_lookat[0] = 0.5 * (all_positions[:, 0].min()
+                                  + all_positions[:, 0].max())
+        camera_lookat[1] = 0.5 * (all_positions[:, 1].min()
+                                  + all_positions[:, 1].max())
         camera_lookat[2] = max(camera_lookat[2], 0.06)
 
     el_rad = np.radians(camera_elevation)
@@ -263,6 +287,11 @@ def main():
                         help="Which body from the parade to use (default: 0)")
     parser.add_argument("--n-copies-per-beh", type=int, default=4,
                         help="Frozen copies per behavior phase")
+    parser.add_argument("--phase-spacing", type=float, default=0.0,
+                        help="If >0, re-center each behavior phase along x at "
+                             "this spacing (metres) so phases read as distinct "
+                             "left-to-right groups instead of overlapping. "
+                             "0 = use natural trajectory positions.")
     parser.add_argument("--trace-step", type=int, default=3,
                         help="Trace line resolution: connect every N frames")
     parser.add_argument("--width", type=int, default=2048,
@@ -285,7 +314,7 @@ def main():
     from vnl_playground.tasks.rodent.imitation import ReferenceClips
     from c2a.moseq_env_wrapper import MoSeqImitation
 
-    ckpt_path = str(REPO_ROOT / "model_checkpoints" / "260407_031233_484020")
+    ckpt_path = str(REPO_ROOT / "model_checkpoints" / "260603_180852_140475")
     cfg = checkpointing.load_config_from_checkpoint(
         ckpt_path, step_prefix="MoSeqPPONetwork"
     )
@@ -299,7 +328,7 @@ def main():
         splits = json.load(f)
     test_indices = splits["balanced"]["test_indices"]
 
-    codes_data = np.load(get_repo_root() / "outputs" / "tokenizer" / "kpms_sweep" / "best_codes.npz")
+    codes_data = np.load(get_repo_root() / "outputs" / "tokenizer" / "trained_kinematics_vae_ckpts" / "vae_sweep" / "kl_0p001" / "tokenize_k25" / "best_codes.npz")
     test_codes = codes_data["test_codes"]
 
     test_clips = ReferenceClips(
@@ -318,38 +347,83 @@ def main():
     with open(PARADE_META) as f:
         selection = json.load(f)
 
-    boundaries = []
-    offset = 0
-    for beh in BEHAVIOR_ORDER:
-        if beh in selection:
-            beh_len = len(selection[beh]["code_sequence"])
-            boundaries.append((beh, offset, offset + beh_len))
-            offset += beh_len
+    # Phase boundaries must follow the ACTUAL temporal order of the rollout
+    # (behavior_names/starts/ends saved by run_behavior_parade), not the
+    # hardcoded BEHAVIOR_ORDER -- otherwise colors/labels get scrambled.
+    if "behavior_names" in d:
+        names = [str(x) for x in d["behavior_names"]]
+        starts = [int(x) for x in np.asarray(d["behavior_starts"]).tolist()]
+        ends = [int(x) for x in np.asarray(d["behavior_ends"]).tolist()]
+        boundaries = list(zip(names, starts, ends))
+    else:
+        boundaries = []
+        offset = 0
+        for beh in BEHAVIOR_ORDER:
+            if beh in selection:
+                beh_len = len(selection[beh]["code_sequence"])
+                boundaries.append((beh, offset, offset + beh_len))
+                offset += beh_len
 
     for beh, start, end in boundaries:
         log.info(f"  {beh}: frames {start}-{end}")
 
     # ── Compute copy timesteps and trace segments ────────────────────
     all_trail_indices = []
-    trace_segments = []
+    copy_phase = []                 # phase index per copy
+    raw_trace = []                  # (positions, rgba, phase_idx)
 
-    for beh, beh_start, beh_end in boundaries:
+    for pi, (beh, beh_start, beh_end) in enumerate(boundaries):
         phase_indices = np.linspace(
             beh_start, beh_end - 1, args.n_copies_per_beh
         ).round().astype(int)
         all_trail_indices.extend(phase_indices.tolist())
+        copy_phase.extend([pi] * len(phase_indices))
 
         trace_timesteps = np.arange(beh_start, beh_end, args.trace_step)
         trace_pos = qpos[trace_timesteps, :3].copy()
         trace_pos[:, 2] += 0.005
-        trace_rgb = BEHAVIOR_RGB[beh]
-        trace_segments.append((trace_pos, [*trace_rgb, 0.85]))
+        raw_trace.append((trace_pos, [*BEHAVIOR_RGB[beh], 0.85], pi))
 
     total_copies = len(all_trail_indices)
     log.info(f"Total copies: {total_copies} at timesteps: {all_trail_indices}")
 
-    # Auto-compute camera distance
-    positions = qpos[all_trail_indices, :3]
+    # Per-copy qpos; optionally re-center each phase along x so stationary
+    # phases (immobile/rear) don't pile on top of the walk's endpoint.
+    copy_qpos = [qpos[t].copy() for t in all_trail_indices]
+    phase_dx = {pi: 0.0 for pi in range(len(boundaries))}
+    if args.phase_spacing > 0:
+        for pi in range(len(boundaries)):
+            xs = [copy_qpos[k][0] for k in range(len(copy_phase))
+                  if copy_phase[k] == pi]
+            centroid = float(np.mean(xs)) if xs else 0.0
+            phase_dx[pi] = pi * args.phase_spacing - centroid
+        for k in range(len(copy_qpos)):
+            copy_qpos[k][0] += phase_dx[copy_phase[k]]
+        for trace_pos, _rgba, pi in raw_trace:
+            trace_pos[:, 0] += phase_dx[pi]
+        # Bridge the gaps between offset phases so the trace reads as one
+        # continuous line (walk -> immobile -> rear), not just within walk.
+        # Each bridge is a colour gradient from the previous phase's colour to
+        # the next phase's, drawn as several short sub-segments.
+        bridges = []
+        n_sub = 10
+        for pi in range(len(raw_trace) - 1):
+            end_pt = raw_trace[pi][0][-1].copy()
+            start_pt = raw_trace[pi + 1][0][0].copy()
+            c0 = np.array(BEHAVIOR_RGB[boundaries[pi][0]])
+            c1 = np.array(BEHAVIOR_RGB[boundaries[pi + 1][0]])
+            pts = np.linspace(end_pt, start_pt, n_sub + 1)
+            for s in range(n_sub):
+                frac = (s + 0.5) / n_sub
+                col = ((1 - frac) * c0 + frac * c1).tolist()
+                bridges.append((pts[s:s + 2], [*col, 0.85], -1))
+        raw_trace.extend(bridges)
+        log.info(f"  phase x-offsets: "
+                 f"{[round(phase_dx[pi], 3) for pi in range(len(boundaries))]}")
+    trace_segments = [(tp, rgba) for tp, rgba, _pi in raw_trace]
+
+    # Auto-compute camera distance from the (possibly offset) copy positions
+    positions = np.stack([qp[:3] for qp in copy_qpos], axis=0)
     extent = positions.max(axis=0) - positions.min(axis=0)
     max_span = max(extent[0], extent[1])
     fovy_rad = math.radians(args.cam_fovy)
@@ -379,7 +453,7 @@ def main():
         copy_colors.append(BEHAVIOR_RGBA[beh])
     recolor_copies(trail_model, copy_colors)
 
-    copy_qpos = [qpos[t] for t in all_trail_indices]
+    # copy_qpos already built above (with optional per-phase x offsets)
     frame = render_trail_frame(
         trail_model, base_nq, copy_qpos,
         width=args.width, height=args.height,
@@ -429,32 +503,31 @@ def main():
     # Bottom: real gait diagram (stance/swing per limb)
     ax_gait = fig.add_subplot(gs[2])
 
+    def _draw_stance(li, t0, t1, beh):
+        ax_gait.fill_between(
+            [t0 / FPS, t1 / FPS], li - 0.4, li + 0.4,
+            color=BEHAVIOR_RGB[beh], alpha=0.7, edgecolor="none",
+        )
+
     for li, limb in enumerate(LIMBS):
         stance = contacts[limb]
         in_stance = False
         start_t = 0
+        cur_beh = None
         for t in range(len(stance)):
-            # Get behavior color at this timestep
+            beh_t = timestep_to_behavior(t, boundaries) if stance[t] else None
             if stance[t] and not in_stance:
-                start_t = t
-                in_stance = True
-            elif not stance[t] and in_stance:
-                beh = timestep_to_behavior(start_t, boundaries)
-                color = BEHAVIOR_RGB[beh]
-                ax_gait.fill_between(
-                    [start_t / FPS, t / FPS],
-                    li - 0.4, li + 0.4,
-                    color=color, alpha=0.7, edgecolor="none",
-                )
-                in_stance = False
+                start_t, cur_beh, in_stance = t, beh_t, True
+            elif in_stance and (not stance[t] or beh_t != cur_beh):
+                # close run at the swing onset OR the phase boundary, so a
+                # foot held across a phase boundary is split and recolored
+                _draw_stance(li, start_t, t, cur_beh)
+                if stance[t]:               # phase changed, still planted
+                    start_t, cur_beh = t, beh_t
+                else:
+                    in_stance = False
         if in_stance:
-            beh = timestep_to_behavior(start_t, boundaries)
-            color = BEHAVIOR_RGB[beh]
-            ax_gait.fill_between(
-                [start_t / FPS, total_frames / FPS],
-                li - 0.4, li + 0.4,
-                color=color, alpha=0.7, edgecolor="none",
-            )
+            _draw_stance(li, start_t, len(stance), cur_beh)
 
     # Behavior phase boundaries
     for _, beh_start, beh_end in boundaries:

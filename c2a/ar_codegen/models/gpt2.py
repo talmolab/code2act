@@ -495,32 +495,33 @@ class GPT2Generator(CodeGenerator):
         # growing prefix and take the last-position logits. This is O(L²)
         # in length; for L=250 it's fine. A cached-kv "decode" path could
         # speed it up but adds complexity we don't need here.
+        # Identical per-position semantics to the original loop, but batched
+        # over all n_seq sequences and JIT-compiled: one jitted forward per
+        # position (L calls) instead of n_seq*L un-jitted forwards.
+        temp = max(float(temperature), 1e-6)
+        apply_jit = jax.jit(
+            lambda p, toks: model.apply({"params": p}, toks)
+        )
         rng = jax.random.PRNGKey(int(seed))
-        seqs = np.zeros((n_seq, length), dtype=np.int32)
-        for i in range(n_seq):
-            tokens = np.zeros((1, length), dtype=np.int32)
-            for t in range(length):
-                logits = model.apply(
-                    {"params": self._params},
-                    jnp.asarray(tokens),
-                )  # [1, length, V]
-                step_logits = logits[0, t] / max(float(temperature), 1e-6)
-                # Mask the BOS token — the model should never emit it.
-                step_logits = step_logits.at[BOS_ID].set(-1e9)
-                rng, sub = jax.random.split(rng)
-                tok = int(jax.random.categorical(sub, step_logits))
-                tokens[0, t] = tok
-            # Strip the +1 offset: model emits in [1, num_codes], we
-            # return codes in [0, num_codes).
-            seqs[i] = tokens[0] - 1
-            # Guard: sampled value 0 (now -1 after shift) should never
-            # happen because we masked BOS. Catch silent vocab bugs.
-            if (seqs[i] < 0).any() or (seqs[i] >= self.num_codes).any():
-                raise RuntimeError(
-                    f"GPT-2 sampled an out-of-range code at seq {i}: "
-                    f"min={seqs[i].min()}, max={seqs[i].max()}. Vocab "
-                    "or BOS masking is wrong."
-                )
+        tokens = jnp.zeros((n_seq, length), dtype=jnp.int32)
+        for t in range(length):
+            logits = apply_jit(self._params, tokens)  # [n_seq, length, V]
+            step_logits = logits[:, t] / temp
+            # Mask the BOS token — the model should never emit it.
+            step_logits = step_logits.at[:, BOS_ID].set(-1e9)
+            rng, sub = jax.random.split(rng)
+            tok = jax.random.categorical(sub, step_logits)  # [n_seq]
+            tokens = tokens.at[:, t].set(tok.astype(jnp.int32))
+        # Strip the +1 offset: model emits in [1, num_codes], we
+        # return codes in [0, num_codes).
+        seqs = np.asarray(tokens, dtype=np.int32) - 1
+        # Guard: sampled value 0 (now -1 after shift) should never happen
+        # because we masked BOS. Catch silent vocab bugs.
+        if (seqs < 0).any() or (seqs >= self.num_codes).any():
+            raise RuntimeError(
+                f"GPT-2 sampled an out-of-range code: min={seqs.min()}, "
+                f"max={seqs.max()}. Vocab or BOS masking is wrong."
+            )
         return seqs
 
     # ------------------------------------------------------------------

@@ -146,7 +146,7 @@ network_config:
   critic_layer_sizes: [512, 512, 256, 256]
 
   # Continuous encoder (reference trajectory -> continuous latent)
-  use_continuous_encoder: true
+  use_continuous_encoder: false   # clean c2c architecture: GRU sees only [code_embed, proprio], no reference-shortcut z_e
   encoder_layer_sizes: [512, 512, 256]
   continuous_latent_dim: 16
   encoder_uses_proprio: true        # concat [task_obs, proprio] as encoder input (matches mimic encoder)
@@ -237,54 +237,51 @@ train_setup:
     deterministic_eval: true
 
 # =============================================================================
-# End-to-End VQ-VAE Configuration
+# code2code reward mode (optional)
 # =============================================================================
-# When ``e2e_mode: true``, the pretrained VQ-VAE encoder + bottleneck +
-# decoder are folded into the policy network as live (trainable) Flax
-# submodules. The straight-through z_q replaces nn.Embed(kpms_code) into
-# the GRU, so the imitation loss flows back into the encoder. The
-# reconstruction loss (decoder output vs ``motion_window_stack``) plus
-# the van den Oord 2017 commit + codebook terms are added to the total
-# loss with the small weights below (start with recon=0.05 per spec).
+# When ``code2code.reward_mode != off``, the env runs the frozen
+# tokenizer on the rollout motion at every step and shapes the reward
+# by the distance between the encoded z and the codebook entry for the
+# target code. Encoder + codebook stay FROZEN — PPO never updates
+# them. This is fundamentally different from the (removed) e2e_mode,
+# which let PPO drift the codebook into a private control basis.
 #
 # Requirements:
-#   - ``kpms_config.code_source == "vqvae"`` (the codes_path and the
-#     pretrained_vqvae_ckpt MUST come from the same training run).
-#   - ``code_stack_size`` should match the policy's; the env builds the
-#     motion buffer with this stack width.
+#   - kpms_config.code_source must be 'kinematics_vae' | 'vqvae' | 'ps_vqvae'.
+#     KPMS / gt_directional_turn raise NotSupportedError.
+#   - The tokenizer_ckpt and kpms_config.codes_path MUST come from the
+#     same training run (codebook-size match is asserted at startup).
 #
-# Eval-only diagnostic: at every eval boundary the trainer snapshots
-# ``||grad VQ-VAE||`` from the imitation pathway and the reconstruction
-# pathway separately (see ``c2a.moseq_losses.compute_e2e_split_grads``).
-# Set ``log_split_grads_at_eval: false`` to disable.
-e2e_config:
-  e2e_mode: false
-  pretrained_vqvae_ckpt: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/step_0030000
-  # Base e2e loss weights. v8 ran with recon=0.05, commit=0.25 and tracking
-  # plateaued because the codebook drifted faster than the GRU could refit
-  # (codebook_loss climbed 1.30 -> 2.64, agreement collapsed 0.45 -> 0.16).
-  # v9 bumps recon + commit so the codebook stays kinematically anchored
-  # and z_e -> z_q gap is tighter.
-  loss_weights:
-    recon: 1.0                   # was 0.05 (v8) — keep kinematic anchor strong
-    commit: 1.0                  # was 0.25 (v8) — tighten z_e -> z_q gap
-    codebook: 1.0                # gradient codebook coefficient
-  # Anneal multiplier applied to ALL three e2e weights as a function of
-  # eval-step. start_multiplier > end_multiplier means "lock the codebook
-  # tightly early (so the GRU sees a stable z_st_flat distribution) then
-  # relax later to let the codebook adapt." When schedule='none' the
-  # multiplier is always 1.0 (no anneal).
-  anneal:
-    schedule: ramp               # 'ramp' (linear start->end) or 'none'
-    start_multiplier: 2.0        # extra-tight lock during warmup
-    end_multiplier: 1.0          # relax to base weights at end_frac
-    end_frac: 0.3                # fraction of total evals at which anneal completes
-  log_split_grads_at_eval: true
+# See scratch/2026-05-26-code2code-mode/design-A-reward-shaping.md.
+code2code:
+  reward_mode: "off"            # "off" | "additive"  (additive: r = r_track + α·match)
+  tokenizer_kind: null          # vae | vqvae | ps_vqvae
+  tokenizer_ckpt: null          # path to the tokenizer step_NNNNN dir
 
-  # Pretrain-arch knobs the loader passes to load_pretrained_vqvae. These
-  # MUST match the values used when the ckpt was produced; the loader
-  # validates ``feat_dim`` and ``sum(branch_latent_dims)`` against the
-  # ckpt's ``meta.json`` and raises on mismatch.
+  # Mix weights (literature: AMP convention is track=0.5, alpha=0.5;
+  # this conservative default keeps tracking dominant)
+  alpha: 0.5                    # weight on the code-match term
+  track_weight: 1.0             # weight on the existing tracking reward
+
+  # Reward shape — see literature.md §"Design implications"
+  reward_form: exp_neg_distance # exp_neg_distance | neg_distance
+  distance_form: cosine         # cosine (CALM default) | l2
+
+  # Temperature for exp_neg_distance. "auto" calls
+  # calibrate_temperature(tokenizer, ref_clips) at startup to set τ
+  # such that the initial reward ≈ 0.3 (mid-saturation). Override
+  # with a float for manual control.
+  temperature: auto
+  calibrate_target_reward: 0.3
+  calibrate_n_clips: 50
+  calibrate_n_windows_per_clip: 8
+
+  # VAE-only: path to the tokenizer.pkl with K-Means centroids
+  vae_tokenizer_pkl: null
+
+  # VQVAE / PS-VQVAE: encoder/decoder architecture knobs (must match
+  # the ckpt's training-time config). Same shape as the
+  # (now-removed) e2e_config.vqvae_arch.
   vqvae_arch:
     n_joints: 67
     use_qvel: false
@@ -294,6 +291,14 @@ e2e_config:
     conv_kernel_size: 3
     conv_head_layers: [256]
     decoder_layer_sizes: [256, 256, 256]
+
+  # PS-VQVAE-only: per-group codebook structure. Pulled from the
+  # tokenizer's best_codes.npz (ps_group_dims +
+  # ps_group_codebook_sizes) when null.
+  ps_group_dims: null
+  ps_group_codebook_sizes: null
+
+  log_diagnostics: true         # emit c2c/* WandB metrics every step
 
 # =============================================================================
 # Logging Configuration

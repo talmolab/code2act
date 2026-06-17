@@ -84,7 +84,7 @@ def make_moseq_inference_fn(
             key_sample, key_net = jax.random.split(key_sample)
 
             (
-                action_params, code_idx, cont_mean, cont_logvar, e2e_aux,
+                action_params, code_idx, cont_mean, cont_logvar,
             ) = policy_network.apply(
                 *params, observations, key_net, deterministic=deterministic
             )
@@ -92,9 +92,6 @@ def make_moseq_inference_fn(
             extras = {"code_idx": code_idx}
             if cont_mean is not None:
                 extras["cont_mean"] = cont_mean
-            if e2e_aux and "live_codes" in e2e_aux:
-                # First-in-stack live code for the rendering bottom-bar.
-                extras["live_code_idx"] = e2e_aux["live_codes"][..., 0]
 
             if deterministic:
                 action = jnp.array(action_dist.mode(action_params))
@@ -141,7 +138,7 @@ def make_moseq_logging_inference_fn(
             key_sample, key_net = jax.random.split(key_sample)
 
             (
-                action_params, code_idx, cont_mean, cont_logvar, e2e_aux,
+                action_params, code_idx, cont_mean, cont_logvar,
             ) = policy_network.apply(
                 *params,
                 observations,
@@ -153,8 +150,6 @@ def make_moseq_logging_inference_fn(
             extras = {"code_idx": code_idx, "indices": code_idx}
             if cont_mean is not None:
                 extras["cont_mean"] = cont_mean
-            if e2e_aux and "live_codes" in e2e_aux:
-                extras["live_code_idx"] = e2e_aux["live_codes"][..., 0]
 
             if deterministic:
                 action = jnp.array(action_dist.mode(action_params))
@@ -180,17 +175,9 @@ def make_moseq_logging_inference_fn(
 # ---------------------------------------------------------------------------
 
 
-def _zero_dummy(size, batch_size: int | None = None) -> jnp.ndarray:
-    """Build a Flax-init dummy obs leaf from either an int size or a shape tuple.
-
-    obs_sizes values are normally ints; the e2e branch passes a 3-tuple
-    ``(stack, w, feat_dim)`` for ``motion_window_stack`` so the Conv1D
-    encoder's kernel param can be traced with the right ``feat_dim``.
-    """
-    if isinstance(size, tuple):
-        shape = tuple(int(s) for s in size)
-    else:
-        shape = (int(size),)
+def _zero_dummy(size: int, batch_size: int | None = None) -> jnp.ndarray:
+    """Build a Flax-init dummy obs leaf with the given size."""
+    shape = (int(size),)
     if batch_size is not None:
         shape = (int(batch_size),) + shape
     return jnp.zeros(shape)
@@ -198,22 +185,14 @@ def _zero_dummy(size, batch_size: int | None = None) -> jnp.ndarray:
 
 # Obs keys we MUST preserve verbatim through ``normalize_dict_obs`` (which
 # drops anything the running-stats state didn't see). kpms_code is the
-# pretrained-code float-as-int the env injects; motion_window_stack is the
-# already-normalized VQ-VAE input the env injects under e2e_mode.
-_PRESERVE_RAW_OBS_KEYS: tuple[str, ...] = (
-    "kpms_code",
-    "motion_window_stack",
-    # Inference-time hook: when present, the e2e policy bypasses its live
-    # encoder/bottleneck and uses ``codebook[code_override]`` instead.
-    # See ``MoSeqRecurrentDecoderNetwork._e2e_forward`` and the
-    # ``c2a.experiments.run_e2e_live_vs_fixed_codes`` experiment.
-    "code_override",
-)
+# pretrained-code float-as-int the env injects after the parent ``_get_obs``,
+# so running-stats never sees it.
+_PRESERVE_RAW_OBS_KEYS: tuple[str, ...] = ("kpms_code",)
 
 
 def _make_moseq_policy_network(
     module: MoSeqEncoderDecoderNetwork,
-    obs_sizes: Mapping[str, int | tuple[int, ...]],
+    obs_sizes: Mapping[str, int],
 ) -> networks.FeedForwardNetwork:
     """Build a FeedForwardNetwork that normalizes obs and forwards to *module*.
 
@@ -307,11 +286,8 @@ def make_moseq_value_network(
         # Save raw code
         raw_code = obs.get("kpms_code")
 
-        # Normalize, then drop any preserve-keys before flattening. Under
-        # e2e_mode, motion_window_stack is tracked by running_stats (because
-        # init_obs_sizes includes it for Flax init), so normalize_dict_obs
-        # keeps it. The value network has no use for it — strip it before
-        # concat so dim and rank match the MLP.
+        # Normalize, then drop any preserve-keys before flattening so the
+        # value MLP only sees the running-stats-tracked obs entries.
         normalized = normalize_dict_obs(obs, processor_params)
         normalized = {
             k: v for k, v in normalized.items() if k not in _PRESERVE_RAW_OBS_KEYS
@@ -340,7 +316,7 @@ def make_moseq_value_network(
 
 
 def make_moseq_decoder_ppo_networks(
-    obs_sizes: Mapping[str, int | tuple[int, ...]],
+    obs_sizes: Mapping[str, int],
     action_size: int,
     num_codes: int = 32,
     code_embed_dim: int = 16,
@@ -351,17 +327,6 @@ def make_moseq_decoder_ppo_networks(
     continuous_latent_dim: int = 16,
     z_e_dropout_rate: float = 0.0,
     encoder_uses_proprio: bool = False,
-    *,
-    e2e_mode: bool = False,
-    e2e_motion_window_shape: tuple[int, int, int] | None = None,
-    vqvae_branch_input_indices: tuple = (),
-    vqvae_branch_latent_dims: tuple = (4, 8, 12),
-    vqvae_codebook_size: int = 30,
-    vqvae_code_dim: int = 24,
-    vqvae_conv_channels: tuple = (64, 128, 256),
-    vqvae_conv_kernel_size: int = 3,
-    vqvae_conv_head_layers: tuple = (256,),
-    vqvae_decoder_layer_sizes: tuple = (256, 256, 256),
 ) -> MoSeqPPONetworks:
     """Create MoSeq decoder PPO networks for imitation learning.
 
@@ -382,12 +347,6 @@ def make_moseq_decoder_ppo_networks(
     """
     action_dist = distribution.NormalTanhDistribution(event_size=action_size)
 
-    if e2e_mode and e2e_motion_window_shape is None:
-        raise ValueError(
-            "e2e_mode=True requires e2e_motion_window_shape so the Flax "
-            "init can trace the live VQ-VAE encoder's Conv1D kernel shape."
-        )
-
     module = MoSeqEncoderDecoderNetwork(
         num_codes=num_codes,
         code_embed_dim=code_embed_dim,
@@ -398,29 +357,11 @@ def make_moseq_decoder_ppo_networks(
         continuous_latent_dim=continuous_latent_dim,
         z_e_dropout_rate=z_e_dropout_rate,
         encoder_uses_proprio=encoder_uses_proprio,
-        e2e_mode=e2e_mode,
-        vqvae_window_len=(e2e_motion_window_shape[1] if e2e_motion_window_shape else 10),
-        vqvae_feat_dim=(e2e_motion_window_shape[2] if e2e_motion_window_shape else 45),
-        vqvae_branch_input_indices=vqvae_branch_input_indices,
-        vqvae_branch_latent_dims=vqvae_branch_latent_dims,
-        vqvae_codebook_size=vqvae_codebook_size,
-        vqvae_code_dim=vqvae_code_dim,
-        vqvae_conv_channels=vqvae_conv_channels,
-        vqvae_conv_kernel_size=vqvae_conv_kernel_size,
-        vqvae_conv_head_layers=vqvae_conv_head_layers,
-        vqvae_decoder_layer_sizes=vqvae_decoder_layer_sizes,
     )
 
-    # Build the obs_sizes dict for init (include kpms_code, motion_window_stack).
-    # track-mjx's get_obs_sizes collapses multi-dim obs to the last-axis size
-    # (so a (5, 10, 45) motion_window_stack arrives here as 45). For Flax init
-    # to trace the Conv1D encoder kernel correctly we must override that to
-    # the full (stack, w, feat_dim) shape tuple regardless of what came in.
-    init_obs_sizes: dict[str, int | tuple[int, ...]] = {**obs_sizes}
+    init_obs_sizes: dict[str, int] = {**obs_sizes}
     if "kpms_code" not in init_obs_sizes:
         init_obs_sizes["kpms_code"] = 1
-    if e2e_mode:
-        init_obs_sizes["motion_window_stack"] = tuple(e2e_motion_window_shape)
 
     policy_network = _make_moseq_policy_network(module, init_obs_sizes)
 
@@ -489,14 +430,12 @@ def _normalize_and_reattach_code(
     obs: Mapping[str, jnp.ndarray],
     processor_params: DictRunningStatisticsState,
 ) -> dict[str, jnp.ndarray]:
-    """Normalize obs; preserve raw kpms_code and (under e2e_mode) motion_window_stack.
+    """Normalize obs; preserve raw kpms_code.
 
     ``normalize_dict_obs`` only keeps keys present in the running-stats
-    state. The env injects ``kpms_code`` (pretrained-code float-as-int) and
-    optionally ``motion_window_stack`` (already-normalized VQ-VAE input)
-    AFTER the parent's ``_get_obs``, so running-stats never sees them. We
-    save those keys verbatim before the normalize call and reattach
-    afterwards. Without this, the policy would lose both signals.
+    state. The env injects ``kpms_code`` (pretrained-code float-as-int)
+    AFTER the parent's ``_get_obs``, so running-stats never sees it. We
+    save it verbatim before the normalize call and reattach afterwards.
     """
     saved = {k: obs[k] for k in _PRESERVE_RAW_OBS_KEYS if k in obs}
     normalized = normalize_dict_obs(obs, processor_params)
@@ -507,7 +446,7 @@ def _normalize_and_reattach_code(
 
 def _make_moseq_recurrent_policy_network(
     module: MoSeqRecurrentDecoderNetwork,
-    obs_sizes: Mapping[str, int | tuple[int, ...]],
+    obs_sizes: Mapping[str, int],
     rnn_hidden_sizes: tuple[int, ...],
 ) -> MoSeqRecurrentNetwork:
     """Build a MoSeqRecurrentNetwork wrapping the Flax RNN module."""
@@ -615,7 +554,6 @@ def make_moseq_recurrent_inference_fn(
                 _new_hidden,
                 _distill_mean,
                 _distill_logvar,
-                e2e_aux,
             ) = policy_network.apply(
                 *params, observations, hidden, key_net, deterministic=deterministic
             )
@@ -623,8 +561,6 @@ def make_moseq_recurrent_inference_fn(
             extras = {"code_idx": code_idx}
             if cont_mean is not None:
                 extras["cont_mean"] = cont_mean
-            if e2e_aux and "live_codes" in e2e_aux:
-                extras["live_code_idx"] = e2e_aux["live_codes"][..., 0]
 
             if deterministic:
                 action = jnp.array(action_dist.mode(action_params))
@@ -678,7 +614,6 @@ def make_moseq_recurrent_logging_inference_fn(
                 new_hidden,
                 _distill_mean,
                 _distill_logvar,
-                e2e_aux,
             ) = policy_network.apply(
                 *params,
                 observations,
@@ -691,8 +626,6 @@ def make_moseq_recurrent_logging_inference_fn(
             extras = {"code_idx": code_idx, "indices": code_idx}
             if cont_mean is not None:
                 extras["cont_mean"] = cont_mean
-            if e2e_aux and "live_codes" in e2e_aux:
-                extras["live_code_idx"] = e2e_aux["live_codes"][..., 0]
 
             if deterministic:
                 action = jnp.array(action_dist.mode(action_params))
@@ -755,7 +688,6 @@ def make_moseq_rnn_rollout_policy_fn(
                 new_hidden,
                 _distill_mean,
                 _distill_logvar,
-                e2e_aux,
             ) = policy_network.apply(
                 *params,
                 observations,
@@ -767,8 +699,6 @@ def make_moseq_rnn_rollout_policy_fn(
             extras = {"code_idx": code_idx, "policy_rng": per_sample_keys}
             if cont_mean is not None:
                 extras["cont_mean"] = cont_mean
-            if e2e_aux and "live_codes" in e2e_aux:
-                extras["live_code_idx"] = e2e_aux["live_codes"][..., 0]
 
             raw_actions = action_dist.sample_no_postprocessing(
                 action_params, key_sample
@@ -791,7 +721,7 @@ def make_moseq_rnn_rollout_policy_fn(
 
 
 def make_moseq_recurrent_decoder_ppo_networks(
-    obs_sizes: Mapping[str, int | tuple[int, ...]],
+    obs_sizes: Mapping[str, int],
     action_size: int,
     num_codes: int = 32,
     code_embed_dim: int = 16,
@@ -812,17 +742,6 @@ def make_moseq_recurrent_decoder_ppo_networks(
     use_pretrained_decoder: bool = False,
     decoder_layer_sizes_vae: tuple[int, ...] = (512, 256, 256, 256),
     encoder_uses_proprio: bool = False,
-    *,
-    e2e_mode: bool = False,
-    e2e_motion_window_shape: tuple[int, int, int] | None = None,
-    vqvae_branch_input_indices: tuple = (),
-    vqvae_branch_latent_dims: tuple = (4, 8, 12),
-    vqvae_codebook_size: int = 30,
-    vqvae_code_dim: int = 24,
-    vqvae_conv_channels: tuple = (64, 128, 256),
-    vqvae_conv_kernel_size: int = 3,
-    vqvae_conv_head_layers: tuple = (256,),
-    vqvae_decoder_layer_sizes: tuple = (256, 256, 256),
 ) -> MoSeqRecurrentPPONetworks:
     """Create recurrent MoSeq decoder PPO networks.
 
@@ -848,11 +767,6 @@ def make_moseq_recurrent_decoder_ppo_networks(
     """
     if rnn_cell_type != "gru":
         raise ValueError(f"Only 'gru' is supported, got '{rnn_cell_type}'")
-    if e2e_mode and e2e_motion_window_shape is None:
-        raise ValueError(
-            "e2e_mode=True requires e2e_motion_window_shape so the Flax "
-            "init can trace the live VQ-VAE encoder's Conv1D kernel shape."
-        )
 
     rnn_hidden_sizes = tuple(rnn_hidden_sizes)
     action_dist = distribution.NormalTanhDistribution(event_size=action_size)
@@ -876,27 +790,11 @@ def make_moseq_recurrent_decoder_ppo_networks(
         use_pretrained_decoder=use_pretrained_decoder,
         decoder_layer_sizes_vae=decoder_layer_sizes_vae,
         encoder_uses_proprio=encoder_uses_proprio,
-        e2e_mode=e2e_mode,
-        vqvae_window_len=(e2e_motion_window_shape[1] if e2e_motion_window_shape else 10),
-        vqvae_feat_dim=(e2e_motion_window_shape[2] if e2e_motion_window_shape else 45),
-        vqvae_branch_input_indices=vqvae_branch_input_indices,
-        vqvae_branch_latent_dims=vqvae_branch_latent_dims,
-        vqvae_codebook_size=vqvae_codebook_size,
-        vqvae_code_dim=vqvae_code_dim,
-        vqvae_conv_channels=vqvae_conv_channels,
-        vqvae_conv_kernel_size=vqvae_conv_kernel_size,
-        vqvae_conv_head_layers=vqvae_conv_head_layers,
-        vqvae_decoder_layer_sizes=vqvae_decoder_layer_sizes,
     )
 
-    # See comment in make_moseq_decoder_ppo_networks: always override the
-    # motion_window_stack obs-sizes entry with the full (stack, w, feat_dim)
-    # tuple so Flax init traces the Conv1D encoder kernel correctly.
-    init_obs_sizes: dict[str, int | tuple[int, ...]] = {**obs_sizes}
+    init_obs_sizes: dict[str, int] = {**obs_sizes}
     if "kpms_code" not in init_obs_sizes:
         init_obs_sizes["kpms_code"] = 1
-    if e2e_mode:
-        init_obs_sizes["motion_window_stack"] = tuple(e2e_motion_window_shape)
 
     policy_network = _make_moseq_recurrent_policy_network(
         module, init_obs_sizes, rnn_hidden_sizes

@@ -1,0 +1,51 @@
+# =============================================================================
+# Code Grid Behavior MMD / KID
+# =============================================================================
+# Per merged-cluster MMD² (RBF) + KID (polynomial) vs labeled GT behavior
+# classes (Immobile, Rear, Walk_L/R/S, Turn_L/R/S) extracted from
+# rodent_labels.csv × rodent_reference_clips.h5.
+#
+# Runs for BOTH merge strategies (MMD-merge, label-merge) × BOTH starting
+# poses (walk, rear), using the cached rollouts under
+# rollouts.base_dir/<run_name>/.
+#
+# Usage:
+#   python -m c2a.experiments.code_grid.run_code_grid_behavior_mmd \
+#     rollouts.run_name=ckpt_260513_062522_599062 \
+#     output.run_name=ckpt_260513_062522_599062
+# =============================================================================
+
+rollouts:
+  # Where run_code_grid_rollouts wrote its cached outputs.
+  base_dir: ${oc.env:C2A_ROOT,.}/outputs/code_grid/code_grid_rollouts
+  run_name: default
+
+data:
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  labeled_clip_range: [0, 841]
+  csv_to_h5_subsample: 2
+  # H5 frames per clip in the reference qpos array. The h5 stores qpos as
+  # a flat (n_clips * n_frames, nq) array; we slice with this stride.
+  n_h5_frames_per_clip: 250
+
+# Windowing convention. Each rollout body and each GT segment is uniformly
+# resampled to K frames before MMD/KID (matches the TopoVNL convention).
+window:
+  K: 100
+  # Drop the first 3 qpos dims (world translation). Keep the free-joint
+  # quaternion as a posture signal. Matches code_grid_rollouts' MMD merge.
+  strip_root_dims: 3
+  # Subsample caps. null = use all.
+  max_cluster_windows: 200
+  max_gt_windows: 200
+
+gt:
+  # Skip GT segments shorter than this (H5 frames).
+  min_segment_length: 10
+
+seed: 42
+
+output:
+  base_dir: ./outputs/code_grid/code_grid_behavior_mmd
+  run_name: default

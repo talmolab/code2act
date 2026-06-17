@@ -398,3 +398,229 @@ def render_rotating_pca_video(
 
     log.info(f"Saved video: {output_path}")
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# Grouped variant: N groups of highlighted ghost bodies + rotating hidden PCA
+# with faint per-group background point clouds. Used by the code-grid renderer.
+# ---------------------------------------------------------------------------
+
+
+def _render_legend_image(
+    names: list[str], colors_rgba: list, width: int,
+    max_cols: int = 6, row_h: int = 22,
+) -> np.ndarray:
+    """Static horizontal legend strip (``width`` × H, uint8 RGB)."""
+    n = max(len(names), 1)
+    ncols = min(max_cols, n)
+    nrows = int(np.ceil(n / ncols))
+    H = max(28, nrows * row_h + 10)
+    fig = plt.figure(figsize=(width / 100, H / 100), dpi=100)
+    ax = fig.add_axes([0, 0, 1, 1]); ax.axis("off")
+    handles = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=colors_rgba[i],
+               markersize=6, linestyle="None", label=names[i])
+        for i in range(len(names))
+    ]
+    if handles:
+        ax.legend(handles=handles, loc="center", ncol=ncols, fontsize=6,
+                  frameon=False, handletextpad=0.3, columnspacing=0.8)
+    fig.canvas.draw()
+    img = np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
+    plt.close(fig)
+    return cv2.resize(img, (width, H), interpolation=cv2.INTER_AREA)
+
+
+def render_grouped_rotating_pca_video(
+    *,
+    group_qpos: list[np.ndarray],
+    group_hidden: list[np.ndarray],
+    group_bg_hidden: list[np.ndarray],
+    group_colors: list,
+    group_names: list[str],
+    output_path: Path,
+    pca: PCA,
+    var_explained: np.ndarray,
+    xlim: tuple,
+    ylim: tuple,
+    zlim: tuple,
+    ghost_env,
+    fps: int = 30,
+    panel_w: int = 640,
+    panel_h: int = 480,
+    azim_start: float = 140.0,
+    azim_end: float = 320.0,
+    ghost_camera_distance: float = 1.6,
+    ghost_camera_elevation: float = -25.0,
+    ghost_camera_azimuth: float = 135.0,
+    ghost_camera_fovy: float = 60.0,
+    trajectory_alpha: float = 0.9,
+    bg_alpha: float = 0.06,
+    bg_max_points: int = 8000,
+    frame_stride: int = 1,
+    legend_below: bool = True,
+    title: str = "Code-grid hidden dynamics",
+) -> Path:
+    """Ghost bodies (left) + rotating hidden-PCA (right) with per-group clouds.
+
+    Each group contributes a handful of *highlighted* bodies (ghost-rendered +
+    full-color hidden trajectories) and a *faint background point cloud* of all
+    its other walkers' hidden states. Foreground/background are colored by
+    group. Used for the 3 code-grid composites (MMD / label / raw).
+
+    Args:
+        group_qpos: per group, ``(n_hi_g, T, nq)`` highlighted-body qpos.
+        group_hidden: per group, ``(n_hi_g, T, H)`` highlighted-body hidden.
+        group_bg_hidden: per group, ``(M_g, H)`` background hidden samples
+            (already pooled over the group's other walkers/frames).
+        group_colors: per group RGBA (matplotlib color) — used for both the
+            ghost body and the trajectories/cloud of that group.
+        group_names: per-group legend label.
+        pca / var_explained / xlim / ylim / zlim: shared 3-D hidden PCA basis.
+        ghost_env: env to build the ghost mujoco model from.
+        frame_stride: render every ``frame_stride``-th frame (runtime control).
+        legend_below: append a static legend strip beneath the composite.
+
+    Returns:
+        ``output_path``.
+
+    Note: the base mujoco body (index 0) keeps the env's default color; only
+    ghost bodies 1.. receive their group color. With many bodies this single
+    body is a negligible cosmetic exception.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Flatten bodies across groups, remembering each body's group.
+    body_qpos, body_hidden, body_group = [], [], []
+    for g, (qg, hg) in enumerate(zip(group_qpos, group_hidden)):
+        for b in range(qg.shape[0]):
+            body_qpos.append(qg[b]); body_hidden.append(hg[b]); body_group.append(g)
+    n_bodies = len(body_qpos)
+    if n_bodies == 0:
+        raise ValueError("No highlighted bodies to render.")
+    T = min(min(q.shape[0] for q in body_qpos),
+            min(h.shape[0] for h in body_hidden))
+    nq = body_qpos[0].shape[1]
+    hid = body_hidden[0].shape[1]
+    body_color = [group_colors[g] for g in body_group]
+
+    log.info(f"Grouped composite: {n_bodies} ghost bodies, {len(group_names)} "
+             f"groups, T={T}, stride={frame_stride} → {output_path}")
+
+    # ── Ghost model (body 0 base + n_bodies-1 ghosts) ──────────────────────
+    ghost_model, base_nq = build_ghost_model(
+        ghost_env, num_ghosts=n_bodies - 1,
+        ghost_colors=[list(body_color[i]) for i in range(1, n_bodies)],
+        camera_distance=ghost_camera_distance,
+        camera_elevation=ghost_camera_elevation,
+        camera_azimuth=ghost_camera_azimuth, camera_fovy=ghost_camera_fovy,
+    )
+    ghost_model.vis.global_.offwidth = panel_w
+    ghost_model.vis.global_.offheight = panel_h
+    mj_data = mujoco.MjData(ghost_model)
+    renderer = mujoco.Renderer(ghost_model, height=panel_h, width=panel_w)
+
+    # Center xy by the global per-frame mean over all bodies.
+    qpos_stack = np.stack([q[:T] for q in body_qpos], axis=0)  # (n, T, nq)
+    mean_xy = qpos_stack[..., :2].mean(axis=0)  # (T, 2)
+    qpos_stack[..., 0] -= mean_xy[:, 0][None, :]
+    qpos_stack[..., 1] -= mean_xy[:, 1][None, :]
+
+    # Foreground PCA embeddings (n_bodies, T, 3).
+    emb_fg = pca.transform(
+        np.stack([h[:T] for h in body_hidden], axis=0).reshape(-1, hid)
+    ).reshape(n_bodies, T, 3)
+
+    # Background clouds per group (subsampled, projected once).
+    bg_proj, bg_col = [], []
+    total_bg = sum(b.shape[0] for b in group_bg_hidden) or 1
+    rng = np.random.RandomState(0)
+    for g, bg in enumerate(group_bg_hidden):
+        if bg.shape[0] == 0:
+            continue
+        keep = max(1, int(round(bg_max_points * bg.shape[0] / total_bg)))
+        if bg.shape[0] > keep:
+            bg = bg[rng.choice(bg.shape[0], keep, replace=False)]
+        bg_proj.append(pca.transform(bg.reshape(-1, hid)))
+        bg_col.append(group_colors[g])
+
+    # ── Figure + writer ────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(panel_w / 100, panel_h / 100), dpi=100)
+    ax = fig.add_subplot(111, projection="3d")
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=0.95)
+
+    legend_img = (
+        _render_legend_image(group_names, group_colors, panel_w * 2)
+        if legend_below else None
+    )
+    legend_h = legend_img.shape[0] if legend_img is not None else 0
+
+    total_w = ((panel_w * 2 + 15) // 16) * 16
+    total_h = ((panel_h + legend_h + 15) // 16) * 16
+    tmp_path = output_path.with_suffix(".tmp.mp4")
+    writer = cv2.VideoWriter(
+        str(tmp_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (total_w, total_h),
+    )
+
+    frames = list(range(0, T, max(1, frame_stride)))
+    log_every = max(1, len(frames) // 10)
+    for fi, t in enumerate(frames):
+        combined = np.ones((total_h, total_w, 3), dtype=np.uint8) * 255
+        azim = azim_start + (azim_end - azim_start) * t / max(T - 1, 1)
+
+        # ── Ghost panel (left) ──────────────────────────────────────────
+        mj_data.qpos[:base_nq] = qpos_stack[0, t]
+        for gi in range(1, n_bodies):
+            qs = base_nq + (gi - 1) * base_nq
+            mj_data.qpos[qs:qs + base_nq] = qpos_stack[gi, t]
+        mujoco.mj_forward(ghost_model, mj_data)
+        renderer.update_scene(mj_data, camera="divergent_cam")
+        frame_ghost = renderer.render().copy()
+        if frame_ghost.shape[:2] != (panel_h, panel_w):
+            frame_ghost = cv2.resize(frame_ghost, (panel_w, panel_h),
+                                     interpolation=cv2.INTER_AREA)
+        combined[:panel_h, :panel_w] = frame_ghost
+
+        # ── PCA panel (right) ───────────────────────────────────────────
+        ax.cla()
+        for pts, col in zip(bg_proj, bg_col):
+            ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], s=2, color=col,
+                       alpha=bg_alpha, edgecolors="none", depthshade=False)
+        for bi in range(n_bodies):
+            traj = emb_fg[bi, :t + 1]
+            ax.plot(traj[:, 0], traj[:, 1], traj[:, 2], color=body_color[bi],
+                    linewidth=0.9, alpha=trajectory_alpha)
+            ax.scatter([traj[-1, 0]], [traj[-1, 1]], [traj[-1, 2]],
+                       color=body_color[bi], s=16, edgecolors="black",
+                       linewidths=0.3, depthshade=False, zorder=10)
+        _style_pca_axes(ax, var_explained, xlim, ylim, zlim)
+        ax.view_init(elev=22, azim=azim)
+        ax.set_title(title, fontsize=8, fontweight="bold", pad=-2)
+        fig.canvas.draw()
+        pca_img = np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
+        pca_img = cv2.resize(pca_img, (panel_w, panel_h), interpolation=cv2.INTER_AREA)
+        combined[:panel_h, panel_w:panel_w * 2] = pca_img
+
+        if legend_img is not None:
+            combined[panel_h:panel_h + legend_h, :panel_w * 2] = legend_img
+
+        combined = add_multi_line_overlay(
+            combined, [f"t={t}/{T}"], start_position=(panel_w + 8, 4), font_size=11,
+        )
+        writer.write(cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+        if (fi + 1) % log_every == 0:
+            log.info(f"  frame {fi + 1}/{len(frames)}")
+
+    writer.release(); renderer.close(); plt.close(fig)
+
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    subprocess.run(
+        [ffmpeg, "-y", "-i", str(tmp_path), "-c:v", "libx264",
+         "-pix_fmt", "yuv420p", "-crf", "23", "-movflags", "+faststart",
+         str(output_path)],
+        check=True, capture_output=True,
+    )
+    tmp_path.unlink()
+    log.info(f"Saved video: {output_path}")
+    return output_path

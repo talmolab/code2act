@@ -42,14 +42,6 @@ from track_mjx.agent.ff_ppo.intention_network import (
     reparameterize,
 )
 
-# e2e_mode sub-modules — when on, the policy folds these into its forward pass
-# so the imitation + reconstruction losses can flow back into the VQ-VAE.
-from c2a.codegen.kinematics_vae.backbone.decoder import MotionDecoderSplit
-from c2a.codegen.kinematics_vae.backbone.encoder import (
-    MotionEncoderConv1DSharedSplit,
-)
-from c2a.codegen.kinematics_vae.vqvae.bottleneck import VQVAEBottleneck
-
 
 class MoSeqEncoderDecoderNetwork(nn.Module):
     """Encoder-decoder policy: code embedding + continuous latent + proprio -> action.
@@ -78,96 +70,11 @@ class MoSeqEncoderDecoderNetwork(nn.Module):
     z_e_dropout_rate: float = 0.0
     encoder_uses_proprio: bool = False
 
-    # ------------------------------------------------------------------
-    # e2e mode (live VQ-VAE folded into the policy forward pass)
-    # ------------------------------------------------------------------
-    e2e_mode: bool = False
-    vqvae_window_len: int = 10
-    vqvae_feat_dim: int = 45
-    vqvae_branch_input_indices: tuple = ()
-    vqvae_branch_latent_dims: tuple = (4, 8, 12)
-    vqvae_codebook_size: int = 30
-    vqvae_code_dim: int = 24
-    vqvae_conv_channels: tuple = (64, 128, 256)
-    vqvae_conv_kernel_size: int = 3
-    vqvae_conv_head_layers: tuple = (256,)
-    vqvae_decoder_layer_sizes: tuple = (256, 256, 256)
-
     def setup(self):
         self.code_embedding = nn.Embed(
             num_embeddings=self.num_codes,
             features=self.code_embed_dim,
         )
-        if self.e2e_mode:
-            self.vqvae_encoder = MotionEncoderConv1DSharedSplit(
-                branch_latent_dims=tuple(self.vqvae_branch_latent_dims),
-                conv_channels=tuple(self.vqvae_conv_channels),
-                kernel_size=int(self.vqvae_conv_kernel_size),
-                head_layer_sizes=tuple(self.vqvae_conv_head_layers),
-            )
-            self.vqvae_bottleneck = VQVAEBottleneck(
-                codebook_size=int(self.vqvae_codebook_size),
-                code_dim=int(self.vqvae_code_dim),
-            )
-            self.vqvae_decoder = MotionDecoderSplit(
-                branch_output_indices=tuple(
-                    tuple(int(i) for i in ix)
-                    for ix in self.vqvae_branch_input_indices
-                ),
-                branch_latent_dims=tuple(self.vqvae_branch_latent_dims),
-                full_feat_dim=int(self.vqvae_feat_dim),
-                window_len=int(self.vqvae_window_len),
-                layer_sizes=tuple(self.vqvae_decoder_layer_sizes),
-            )
-
-    def _e2e_forward(
-        self, motion_window_stack: jnp.ndarray, rng: jax.Array,
-    ) -> dict:
-        """Run encoder -> bottleneck -> decoder on the per-step stack.
-
-        Args:
-            motion_window_stack: ``(..., stack, w, feat_dim)`` normalized
-                motion features. Leading dims (``...``) may include the batch.
-            rng: PRNG key (unused by VQ bottleneck but required for interface
-                compat with the variant-agnostic apply signature).
-
-        Returns:
-            Dict containing:
-                - ``z_st_flat``: ``(..., stack * code_dim)`` straight-through
-                  z_q concatenated across the stack, ready to drop into the
-                  policy MLP / GRU in place of the discrete code embedding.
-                - ``live_codes``: ``(..., stack)`` int32 discrete codes.
-                - ``recon_pred``: ``(..., stack, w, feat_dim)`` decoder output.
-                - ``commit``, ``codebook``: scalar VQ aux losses (already
-                  mean-reduced over the encoded batch).
-                - ``perplexity``, ``utilization``: scalar diagnostics.
-        """
-        if not self.e2e_mode:
-            raise RuntimeError(
-                "_e2e_forward called with e2e_mode=False — caller bug."
-            )
-        leading = motion_window_stack.shape[:-3]
-        stack = int(motion_window_stack.shape[-3])
-        w = int(motion_window_stack.shape[-2])
-        feat_dim = int(motion_window_stack.shape[-1])
-        flat = motion_window_stack.reshape(-1, w, feat_dim)
-        mean, logvar = self.vqvae_encoder(flat)
-        z_st_flat, aux_losses, aux_metrics = self.vqvae_bottleneck(
-            mean, logvar, rng, deterministic=True,
-        )
-        recon_pred_flat = self.vqvae_decoder(z_st_flat)
-        z_st = z_st_flat.reshape(*leading, stack, -1)
-        live_codes = aux_metrics["codes"].reshape(*leading, stack)
-        recon_pred = recon_pred_flat.reshape(*leading, stack, w, feat_dim)
-        return {
-            "z_st_flat": z_st.reshape(*leading, -1),
-            "live_codes": live_codes,
-            "recon_pred": recon_pred,
-            "commit": aux_losses["commit"],
-            "codebook": aux_losses["codebook"],
-            "perplexity": aux_metrics["perplexity"],
-            "utilization": aux_metrics["codebook_utilization"],
-        }
 
     @nn.compact
     def __call__(
@@ -181,7 +88,6 @@ class MoSeqEncoderDecoderNetwork(nn.Module):
         jnp.ndarray,
         jnp.ndarray | None,
         jnp.ndarray | None,
-        dict,
     ]:
         """Forward pass.
 
@@ -190,39 +96,24 @@ class MoSeqEncoderDecoderNetwork(nn.Module):
                 shape ``[..., 1]``), ``proprioception`` (normalized,
                 shape ``[..., proprio_dim]``), and optionally
                 ``imitation_target`` (normalized, shape ``[..., target_dim]``).
-                Under ``e2e_mode``, additionally contains
-                ``motion_window_stack`` of shape
-                ``[..., stack, w, feat_dim]``.
             key: PRNG key for reparameterization (used when
                 ``use_continuous_encoder=True`` and ``deterministic=False``).
             deterministic: If True, use mean (no sampling) for continuous latent.
             z_e_scale: Multiplier on z_e (1.0 = full, 0.0 = decoder-only).
 
         Returns:
-            Tuple ``(action_params, code_idx, mean, logvar, e2e_aux)`` where
+            Tuple ``(action_params, code_idx, mean, logvar)`` where
             ``code_idx`` is always the pretrained-code index (round of
-            ``kpms_code[..., 0]``), ``mean``/``logvar`` are ``None`` when
-            ``use_continuous_encoder=False``, and ``e2e_aux`` is ``{}`` when
-            ``e2e_mode=False`` or the live-VQ-VAE aux dict otherwise (see
-            :meth:`_e2e_forward`).
+            ``kpms_code[..., 0]``), and ``mean``/``logvar`` are ``None``
+            when ``use_continuous_encoder=False``.
         """
         # Extract code indices — may be stacked [code_t, ..., code_{t+N-1}]
         kpms_code = obs["kpms_code"]  # [..., N] where N = code_stack_size
         code_idx = jnp.round(kpms_code[..., 0]).astype(jnp.int32)  # current code for metrics
 
-        if self.e2e_mode:
-            # Live VQ-VAE: z_q replaces the discrete code embedding.
-            if key is None:
-                e2e_rng = self.make_rng("params")
-            else:
-                e2e_rng = key
-            e2e_aux = self._e2e_forward(obs["motion_window_stack"], e2e_rng)
-            code_emb = e2e_aux["z_st_flat"]
-        else:
-            all_code_idx = jnp.round(kpms_code).astype(jnp.int32)
-            all_emb = self.code_embedding(all_code_idx)  # [..., N, code_embed_dim]
-            code_emb = all_emb.reshape(*all_emb.shape[:-2], -1)  # [..., N * code_embed_dim]
-            e2e_aux = {}
+        all_code_idx = jnp.round(kpms_code).astype(jnp.int32)
+        all_emb = self.code_embedding(all_code_idx)  # [..., N, code_embed_dim]
+        code_emb = all_emb.reshape(*all_emb.shape[:-2], -1)  # [..., N * code_embed_dim]
 
         # Proprioception (already normalized and flattened by the policy wrapper)
         proprio = obs["proprioception"]
@@ -281,7 +172,7 @@ class MoSeqEncoderDecoderNetwork(nn.Module):
             name="action_head",
         )(x)
 
-        return action_params, code_idx, mean, logvar, e2e_aux
+        return action_params, code_idx, mean, logvar
 
 
 class MoSeqRecurrentDecoderNetwork(nn.Module):
@@ -342,47 +233,11 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
     decoder_layer_sizes_vae: Sequence[int] = (512, 256, 256, 256)
     encoder_uses_proprio: bool = False
 
-    # ------------------------------------------------------------------
-    # e2e mode (live VQ-VAE folded into the policy forward pass)
-    # ------------------------------------------------------------------
-    e2e_mode: bool = False
-    vqvae_window_len: int = 10
-    vqvae_feat_dim: int = 45
-    vqvae_branch_input_indices: tuple = ()
-    vqvae_branch_latent_dims: tuple = (4, 8, 12)
-    vqvae_codebook_size: int = 30
-    vqvae_code_dim: int = 24
-    vqvae_conv_channels: tuple = (64, 128, 256)
-    vqvae_conv_kernel_size: int = 3
-    vqvae_conv_head_layers: tuple = (256,)
-    vqvae_decoder_layer_sizes: tuple = (256, 256, 256)
-
     def setup(self):
         self.code_embedding = nn.Embed(
             num_embeddings=self.num_codes,
             features=self.code_embed_dim,
         )
-        if self.e2e_mode:
-            self.vqvae_encoder = MotionEncoderConv1DSharedSplit(
-                branch_latent_dims=tuple(self.vqvae_branch_latent_dims),
-                conv_channels=tuple(self.vqvae_conv_channels),
-                kernel_size=int(self.vqvae_conv_kernel_size),
-                head_layer_sizes=tuple(self.vqvae_conv_head_layers),
-            )
-            self.vqvae_bottleneck = VQVAEBottleneck(
-                codebook_size=int(self.vqvae_codebook_size),
-                code_dim=int(self.vqvae_code_dim),
-            )
-            self.vqvae_decoder = MotionDecoderSplit(
-                branch_output_indices=tuple(
-                    tuple(int(i) for i in ix)
-                    for ix in self.vqvae_branch_input_indices
-                ),
-                branch_latent_dims=tuple(self.vqvae_branch_latent_dims),
-                full_feat_dim=int(self.vqvae_feat_dim),
-                window_len=int(self.vqvae_window_len),
-                layer_sizes=tuple(self.vqvae_decoder_layer_sizes),
-            )
 
         # Encoder: reuse IntentionEncoder from the main branch so that
         # param names (encoder/hidden_0, encoder/fc2_mean, etc.) are
@@ -524,64 +379,6 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
             )
         return mu, logvar
 
-    def _e2e_forward(
-        self, motion_window_stack: jnp.ndarray, rng: jax.Array,
-        code_override: jnp.ndarray | None = None,
-    ) -> dict:
-        """Run live VQ-VAE on the per-step window stack — see FF variant docstring.
-
-        When ``code_override`` is provided (shape ``(..., stack)`` int32), skip
-        the encoder + nearest-neighbour quantization entirely and use
-        ``codebook[code_override]`` for the z_q stack. This is the inference-time
-        hook used by the live-vs-fixed-codes experiment to force the policy
-        to act on a pre-computed code sequence (e.g. the pretrained tokenizer's
-        encoding of the GT clip).
-        """
-        if not self.e2e_mode:
-            raise RuntimeError(
-                "_e2e_forward called with e2e_mode=False — caller bug."
-            )
-        leading = motion_window_stack.shape[:-3]
-        stack = int(motion_window_stack.shape[-3])
-        w = int(motion_window_stack.shape[-2])
-        feat_dim = int(motion_window_stack.shape[-1])
-        if code_override is not None:
-            # Bypass encoder + bottleneck — pick z_q straight from the codebook.
-            # codebook_lookup returns (..., stack, code_dim).
-            z_st_full = self.vqvae_bottleneck.codebook_lookup(
-                code_override.astype(jnp.int32)
-            )
-            return {
-                "z_st_flat": z_st_full.reshape(*leading, -1),
-                "live_codes": code_override.astype(jnp.int32),
-                "recon_pred": jnp.zeros(
-                    leading + (stack, w, feat_dim),
-                    dtype=motion_window_stack.dtype,
-                ),
-                "commit": jnp.float32(0.0),
-                "codebook": jnp.float32(0.0),
-                "perplexity": jnp.float32(0.0),
-                "utilization": jnp.float32(0.0),
-            }
-        flat = motion_window_stack.reshape(-1, w, feat_dim)
-        mean, logvar = self.vqvae_encoder(flat)
-        z_st_flat, aux_losses, aux_metrics = self.vqvae_bottleneck(
-            mean, logvar, rng, deterministic=True,
-        )
-        recon_pred_flat = self.vqvae_decoder(z_st_flat)
-        z_st = z_st_flat.reshape(*leading, stack, -1)
-        live_codes = aux_metrics["codes"].reshape(*leading, stack)
-        recon_pred = recon_pred_flat.reshape(*leading, stack, w, feat_dim)
-        return {
-            "z_st_flat": z_st.reshape(*leading, -1),
-            "live_codes": live_codes,
-            "recon_pred": recon_pred,
-            "commit": aux_losses["commit"],
-            "codebook": aux_losses["codebook"],
-            "perplexity": aux_metrics["perplexity"],
-            "utilization": aux_metrics["codebook_utilization"],
-        }
-
     def _encode(
         self,
         obs: dict[str, jnp.ndarray],
@@ -594,42 +391,19 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
         jnp.ndarray | None,
         jnp.ndarray | None,
         jnp.ndarray | None,
-        dict,
     ]:
-        """Encode obs into (decoder_input, code_idx, mean, logvar, z_e_scaled, e2e_aux).
+        """Encode obs into (decoder_input, code_idx, mean, logvar, z_e_scaled).
 
         ``code_idx`` is always the pretrained-code index (round of
-        ``kpms_code[..., 0]``) regardless of e2e mode, so downstream
-        diagnostics that compare to the pretrained tokenizer stay valid.
-        ``e2e_aux`` is ``{}`` when e2e_mode is off; otherwise it carries the
-        live VQ-VAE forward outputs (see :meth:`_e2e_forward`).
+        ``kpms_code[..., 0]``).
         """
         kpms_code = obs["kpms_code"]
         # Current pretrained code index (first in stack, used for metrics/logging)
         code_idx = jnp.round(kpms_code[..., 0]).astype(jnp.int32)
 
-        if self.e2e_mode:
-            # Live VQ-VAE: replace nn.Embed(kpms_code) with the STE z_q stack.
-            # The discrete code_idx still echoes the pretrained tokenizer so
-            # render/eval and the value network keep their existing semantics.
-            e2e_rng = key if key is not None else self.make_rng("params")
-            # If `key` is per-sample (shape [..., 2]), take the first sample's
-            # key — VQ is deterministic so the actual key value is irrelevant,
-            # but `bottleneck.apply` expects a single rank-1 PRNG key.
-            if e2e_rng.ndim > 1:
-                e2e_rng = e2e_rng.reshape(-1, e2e_rng.shape[-1])[0]
-            # Inference-time hook: if obs carries ``code_override`` we skip the
-            # live encoder and feed codebook[override] straight to the policy.
-            code_override = obs.get("code_override", None) if isinstance(obs, dict) else None
-            e2e_aux = self._e2e_forward(
-                obs["motion_window_stack"], e2e_rng, code_override=code_override,
-            )
-            code_emb = e2e_aux["z_st_flat"]
-        else:
-            all_code_idx = jnp.round(kpms_code).astype(jnp.int32)
-            all_emb = self.code_embedding(all_code_idx)  # [..., N, code_embed_dim]
-            code_emb = all_emb.reshape(*all_emb.shape[:-2], -1)
-            e2e_aux = {}
+        all_code_idx = jnp.round(kpms_code).astype(jnp.int32)
+        all_emb = self.code_embedding(all_code_idx)  # [..., N, code_embed_dim]
+        code_emb = all_emb.reshape(*all_emb.shape[:-2], -1)
 
         proprio = obs["proprioception"]
 
@@ -708,7 +482,7 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
             z_e_scaled = None
             decoder_input = jnp.concatenate([code_emb, proprio], axis=-1)
 
-        return decoder_input, code_idx, mean, logvar, z_e_scaled, e2e_aux
+        return decoder_input, code_idx, mean, logvar, z_e_scaled
 
     def _decode_rnn(
         self,
@@ -780,16 +554,14 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
         list[jnp.ndarray],
         jnp.ndarray | None,
         jnp.ndarray | None,
-        dict,
     ]:
         """Single-timestep forward pass (no per-code decay — used in rollout).
 
         Returns:
             ``(action_params, code_idx, mean, logvar, new_hidden,
-            distill_mean, distill_logvar, e2e_aux)``.
+            distill_mean, distill_logvar)``.
             When ``use_distillation_head=False`` and
             ``use_pretrained_decoder=False``, distill outputs are ``None``.
-            ``e2e_aux`` is ``{}`` unless ``e2e_mode=True``.
         """
         # Split key: one for encoder z_e, one for VAE head sampling
         encode_key = key
@@ -800,7 +572,7 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
             else:
                 encode_key, decode_key = jax.random.split(key)
 
-        decoder_input, code_idx, mean, logvar, z_e_scaled, e2e_aux = self._encode(
+        decoder_input, code_idx, mean, logvar, z_e_scaled = self._encode(
             obs, encode_key, deterministic, z_e_scale,
         )
         if self.use_distillation_head:
@@ -831,7 +603,7 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
             distill_logvar = None
         return (
             action_params, code_idx, mean, logvar, new_hidden,
-            distill_mean, distill_logvar, e2e_aux,
+            distill_mean, distill_logvar,
         )
 
     def apply_sequence(
@@ -862,11 +634,8 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
 
         Returns:
             ``(logits, means, logvars, distill_means, distill_logvars,
-            final_hidden, e2e_aux_seq)`` each ``[T, B, ...]``.  When
+            final_hidden)`` each ``[T, B, ...]``.  When
             ``use_distillation_head=False``, distill outputs are ``None``.
-            ``e2e_aux_seq`` is ``{}`` when ``e2e_mode=False`` and otherwise a
-            dict of per-step VQ-VAE outputs (recon_pred, live_codes, etc.)
-            stacked along leading axis T.
         """
 
         def _reset_hidden_on_done(hidden_list, done_t):
@@ -930,7 +699,7 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
                         encode_key = keys_t
                         decode_key = None
 
-                    decoder_input, code_idx, mean, logvar, z_e_scaled, e2e_aux = self._encode(
+                    decoder_input, code_idx, mean, logvar, z_e_scaled = self._encode(
                         obs_t, encode_key, deterministic, z_e_scale
                     )
                     _proprio = obs_t["proprioception"] if self.use_pretrained_decoder else None
@@ -947,11 +716,11 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
                     new_hidden = _reset_hidden_on_done(new_hidden, done_t)
                     return (
                         (new_hidden, code_t),
-                        (action_params, mean, logvar, d_mean, d_logvar, e2e_aux),
+                        (action_params, mean, logvar, d_mean, d_logvar),
                     )
 
                 (final_hidden, _), (
-                    logits, means, logvars, d_means, d_logvars, e2e_aux_seq,
+                    logits, means, logvars, d_means, d_logvars,
                 ) = jax.lax.scan(
                     step_stored,
                     (initial_hidden, init_prev_code),
@@ -977,7 +746,7 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
                         encode_key = keys_t
                         decode_key = None
 
-                    decoder_input, code_idx, mean, logvar, z_e_scaled, e2e_aux = self._encode(
+                    decoder_input, code_idx, mean, logvar, z_e_scaled = self._encode(
                         obs_t, encode_key, deterministic, z_e_scale
                     )
                     z_e_arg = _z_e_arg_for_action(z_e_scaled)
@@ -992,15 +761,15 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
                         # VAE head outputs go to mean/logvar positions for KL-to-prior
                         return (
                             (new_hidden, code_t),
-                            (action_params, vae_mean, vae_logvar, e2e_aux),
+                            (action_params, vae_mean, vae_logvar),
                         )
                     return (
                         (new_hidden, code_t),
-                        (action_params, mean, logvar, e2e_aux),
+                        (action_params, mean, logvar),
                     )
 
                 (final_hidden, _), (
-                    logits, means, logvars, e2e_aux_seq,
+                    logits, means, logvars,
                 ) = jax.lax.scan(
                     step_stored,
                     (initial_hidden, init_prev_code),
@@ -1029,7 +798,7 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
                         encode_key, next_key = jax.random.split(step_key)
                         decode_key = None
 
-                    decoder_input, code_idx, mean, logvar, z_e_scaled, e2e_aux = self._encode(
+                    decoder_input, code_idx, mean, logvar, z_e_scaled = self._encode(
                         obs_t, encode_key, deterministic, z_e_scale
                     )
                     _proprio = obs_t["proprioception"] if self.use_pretrained_decoder else None
@@ -1046,11 +815,11 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
                     new_hidden = _reset_hidden_on_done(new_hidden, done_t)
                     return (
                         (new_hidden, code_t, next_key),
-                        (action_params, mean, logvar, d_mean, d_logvar, e2e_aux),
+                        (action_params, mean, logvar, d_mean, d_logvar),
                     )
 
                 (final_hidden, _, _), (
-                    logits, means, logvars, d_means, d_logvars, e2e_aux_seq,
+                    logits, means, logvars, d_means, d_logvars,
                 ) = jax.lax.scan(
                     step_fresh,
                     (initial_hidden, init_prev_code, key),
@@ -1075,7 +844,7 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
                         encode_key, next_key = jax.random.split(step_key)
                         decode_key = None
 
-                    decoder_input, code_idx, mean, logvar, z_e_scaled, e2e_aux = self._encode(
+                    decoder_input, code_idx, mean, logvar, z_e_scaled = self._encode(
                         obs_t, encode_key, deterministic, z_e_scale
                     )
                     z_e_arg = _z_e_arg_for_action(z_e_scaled)
@@ -1090,15 +859,15 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
                         # VAE head outputs go to mean/logvar positions for KL-to-prior
                         return (
                             (new_hidden, code_t, next_key),
-                            (action_params, vae_mean, vae_logvar, e2e_aux),
+                            (action_params, vae_mean, vae_logvar),
                         )
                     return (
                         (new_hidden, code_t, next_key),
-                        (action_params, mean, logvar, e2e_aux),
+                        (action_params, mean, logvar),
                     )
 
                 (final_hidden, _, _), (
-                    logits, means, logvars, e2e_aux_seq,
+                    logits, means, logvars,
                 ) = jax.lax.scan(
                     step_fresh,
                     (initial_hidden, init_prev_code, key),
@@ -1107,7 +876,7 @@ class MoSeqRecurrentDecoderNetwork(nn.Module):
                 d_means = None
                 d_logvars = None
 
-        return logits, means, logvars, d_means, d_logvars, final_hidden, e2e_aux_seq
+        return logits, means, logvars, d_means, d_logvars, final_hidden
 
 
 # Backward-compatible alias

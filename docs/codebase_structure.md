@@ -114,7 +114,10 @@ c2a/
 │   └── pipeline_best_kpms.yaml
 │
 ├── ar_codegen/                # AR sequence-model code generators (HMM/GPT2-xs/Mamba)
-├── experiments/               # 18 evaluation scripts + experiments/configs/
+├── experiments/               # evaluation scripts in 6 theme subfolders:
+│                              #   tokenizer/ behavior/ fidelity/ dynamics/
+│                              #   code_grid/ population/ — each with its own
+│                              #   configs/. Invoke c2a.experiments.<theme>.<script>
 │                              #   experiments/shared/: code_labels.py
 │                              #   (per-code majority-label helpers) +
 │                              #   behavior_mmd.py (MMD/KID + GT-segment
@@ -123,15 +126,10 @@ c2a/
 ├── tests/                     # pytest suite (load-bearing; see CLAUDE.md)
 │
 ├── moseq_env_wrapper.py       # MoSeqImitation(Imitation) — injects kpms_code obs
-│                              #   (+ motion_window_stack under e2e_mode)
-├── moseq_decoder_network.py   # encoder–GRU–decoder policy (+ live VQ-VAE sub-modules
-│                              #   `vqvae_encoder`/`vqvae_bottleneck`/`vqvae_decoder` under e2e_mode)
+├── moseq_decoder_network.py   # encoder–GRU–decoder policy
 ├── moseq_losses.py            # PPO + KL + distillation + code metrics
-│                              #   (+ recon/commit/codebook + compute_e2e_split_grads under e2e_mode)
-├── moseq_ppo.py               # PPO wrapper (monkey-patches ff_ppo; e2e weights threaded)
+├── moseq_ppo.py               # PPO wrapper (monkey-patches ff_ppo)
 ├── moseq_ppo_networks.py
-├── e2e_vqvae.py               # ckpt loader + motion-buffer builder + JIT extractor
-│                              #   (host-side glue for e2e_mode)
 ├── train_mimic_encoder.py     # pretrain the distillation target VAE
 └── train_moseq_decoder.py     # main entry — Hydra
 ```
@@ -142,17 +140,6 @@ c2a/
   every downstream consumer (env wrapper, decoder, RL loop, experiments)
   uses for behavioral codes. Adding a new tokenizer family means adding a
   new `SOURCE_*` constant and a dispatch branch — nothing else changes.
-- **e2e mode (`c2a/e2e_vqvae.py` + `e2e_config.e2e_mode`)** is the ONLY
-  path that folds a live VQ-VAE into the policy. It requires
-  `kpms_config.code_source == "vqvae"` and the codes_path must come from
-  the same training run as `pretrained_vqvae_ckpt` (codebook size match is
-  enforced at startup). The pretrained codes still flow into the env via
-  `kpms_code` (used by the value network's separate embedding and by the
-  top row of the eval-video code bar); the policy reads `motion_window_stack`
-  to re-encode the same windows with the live VQ-VAE and substitutes
-  straight-through `z_q` into the GRU. The reconstruction loss target is
-  `motion_window_stack` itself, so we don't need to thread a separate
-  recon-target tensor.
 - **`c2a/codegen/shared/npz_schema.py::write_codes_npz`** is the only
   writer every tokenizer's codegen must call. It validates the schema
   before disk write and enforces `all_codes` sorted-union ordering when
@@ -186,7 +173,7 @@ c2a/
 | MIMIC encoder | `trained_mimic_ckpts/` | `c2a.train_mimic_encoder` |
 | Decoder RL | `model_checkpoints/` | `c2a.train_moseq_decoder` |
 | Figures | `outputs/<figure_name>/` | every `c2a.figures.*` script (one subdir per script) |
-| Experiments | `outputs/<exp_name>/` | every `c2a.experiments.*` script |
+| Experiments | `outputs/<theme>/<exp_name>/` | every `c2a.experiments.<theme>.*` script |
 | WandB | `wandb/` (or `c2a/wandb/`) | every training script |
 
 Every `c2a.figures.*` script resolves its output dir via

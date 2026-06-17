@@ -5,9 +5,8 @@ panels showing the average pose evolution across all bouts in 3D, with
 projection planes and optional GIF / MP4 export. The layout is the
 canonical "MoSeq grid" the lab is used to.
 
-This module factors what was previously inline in
-``c2a/experiments/run_syllable_viz.py`` so the sweep auto-render
-(``c2a/kpms/sweep_impl.py``) and the auto-merge orchestrator
+This module factors the native syllable-grid rendering out so the sweep
+auto-render (``c2a/kpms/sweep_impl.py``) and the auto-merge orchestrator
 (``c2a/kpms/merge_states.py``) can both produce the same artifact:
 
 * :func:`render_native_for_fit`  — render one fit's trajectory plots.

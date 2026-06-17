@@ -73,7 +73,7 @@ from c2a.paths import get_repo_root
 
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = get_repo_root() / "outputs" / "hidden_dynamics"
+OUTPUT_DIR = get_repo_root() / "outputs" / "dynamics" / "hidden_dynamics"
 
 # ── Default label aliases (legacy npz from run_hidden_dynamics) ─────────────
 # The list also serves as the preferred display order in legacy mode —

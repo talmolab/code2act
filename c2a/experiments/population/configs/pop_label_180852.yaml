@@ -1,0 +1,42 @@
+# @package _global_
+# =============================================================================
+# Override: ckpt 260603_180852_140475 (VAE k=25 kl=0.001)
+# =============================================================================
+# Tokenizer: VAE-encoder + K-means K=25, kl=0.001 → all 25 codes used
+#
+# Per-(label×code) analysis:
+#   Walk     39% code 1, 33% code 18, 7% code 5, 5% code 0
+#            1↔18 oscillation: 1→18 81%, 18→1 66%, runs 6.7 + 5.9 frames
+#            (same flavor as v7's K=20 [12, 0] @ block=7)
+#   Rear     four near-equal Rear-specific codes (each ≥97% Rear):
+#            3 (20%), 20 (16%), 8 (16%), 19 (14%), runs 50-60 frames
+#   Turn     four codes: 24 (17%), 1 (14%), 18 (12%), 13 (7%) — overlap
+#            with Walk on 1 and 18 (Turn and Walk share gait-like codes)
+#   Immobile spreads thin across many K=25 clusters; top codes 23, 0, 4,
+#            5, 6, 17 each ~7%, runs 20-30 frames
+#
+# Closest analog to v7's K=20 setup.  Recommended for the cleanest demo.
+# =============================================================================
+
+defaults:
+  - population_label_patterns
+  - _self_
+
+checkpoint:
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260603_180852_140475
+  step: null
+
+label_to_mode_code:
+  Immobile: 4
+  Rear:     3
+  Walk:     1
+  Turn:     24
+
+pattern_per_label:
+  Walk:     { mode: "oscillate", codes: [1, 18],            block_frames: 7  }
+  Rear:     { mode: "cycle",     codes: [3, 20, 8, 19],     block_frames: 50 }
+  Turn:     { mode: "cycle",     codes: [24, 1, 18, 13],    block_frames: 12 }
+  Immobile: { mode: "cycle",     codes: [23, 0, 4, 5, 6],   block_frames: 25 }
+
+output:
+  base_dir: ${paths.c2a_root}/outputs/population/pop_label_180852_same_pos

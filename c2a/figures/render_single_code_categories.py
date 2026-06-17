@@ -45,7 +45,9 @@ from c2a.rendering_utils import add_multi_line_overlay
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-SINGLE_CODE_DIR = MOSEQ_DIR / "outputs" / "moseq_single_code" / "data"
+SINGLE_CODE_DIR = (
+    get_repo_root() / "outputs" / "behavior" / "moseq_single_code" / "data"
+)
 
 BEHAVIOR_LABELS = {
     "groom": "Groom",

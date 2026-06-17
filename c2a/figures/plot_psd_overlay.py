@@ -22,7 +22,7 @@ from scipy.signal import welch
 from c2a.paths import get_repo_root
 
 SCRIPT_DIR = Path(__file__).parent
-DATA_DIR = SCRIPT_DIR.parent / "outputs" / "moseq_gait_dynamics"
+DATA_DIR = get_repo_root() / "outputs" / "fidelity" / "moseq_gait_dynamics"
 OUTPUT_DIR = get_repo_root() / "outputs" / "psd_overlay"
 
 CONDITION_COLORS = {

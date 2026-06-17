@@ -82,7 +82,7 @@ _NATURE_RC = {
 
 
 # ---------------------------------------------------------------------------
-# Data loading (mirrors run_syllable_viz.py Steps 1-3)
+# Data loading (load keypoints + KPMS results + config)
 # ---------------------------------------------------------------------------
 
 

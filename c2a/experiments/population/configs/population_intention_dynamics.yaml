@@ -1,0 +1,107 @@
+# =============================================================================
+# Population intention dynamics — populate the (hidden, intention) subspace
+# =============================================================================
+# For each of 12 pure-label clip combinations, extract that clip's per-frame
+# code sequence and roll out N=100 walkers (random frame=0 inits, decoder-only)
+# fed the same sequence. Collect GRU hidden state h_t and encoder mu z_e per
+# frame. Joint PCA-3D fit across all cells for shared axes.
+#
+# Two video products:
+#   (a) grid_behavior.mp4  — 3 walkers per cell × 12 cells (3×4 ghost grid)
+#   (b) per-cell 3-col     — motion / hidden-PCA-rotating / intention-PCA-rotating
+# =============================================================================
+
+defaults:
+  - _self_
+
+paths:
+  c2a_root: ${oc.env:C2A_ROOT,.}
+  labels_csv: ${.c2a_root}/data/rodent/rodent_labels.csv
+  balanced_splits: ${.c2a_root}/data/rodent/rodent_balanced_splits.json
+
+checkpoint:
+  # Default ckpt picked by the user for this experiment (260521_163957_196292).
+  # Override via `checkpoint.path=...` on the Hydra CLI.
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260521_163957_196292/
+  # Optional: pick a specific MoSeqPPONetwork_N step. null = use the highest.
+  step: null
+
+# 12 combinations — all have ≥3 pure-label matches in rodent_labels.csv.
+# Grid layout = 3 rows × 4 cols. Pure Walk and pure Turn are not in the
+# corpus so Walk only appears in the last cell (Immobile→Walk→Immobile,
+# 3 clips).  Each cell name = behavior label sequence joined by " → ".
+combinations:
+  - { name: "Immobile",                 labels: ["Immobile"] }
+  - { name: "Rear",                     labels: ["Rear"] }
+  - { name: "Immobile → Rear",          labels: ["Immobile", "Rear"] }
+  - { name: "Rear → Immobile",          labels: ["Rear", "Immobile"] }
+  - { name: "Turn → Immobile",          labels: ["Turn", "Immobile"] }
+  - { name: "Immobile → Turn",          labels: ["Immobile", "Turn"] }
+  - { name: "Rear → Turn",              labels: ["Rear", "Turn"] }
+  - { name: "Immobile → Turn → Immobile", labels: ["Immobile", "Turn", "Immobile"] }
+  - { name: "Immobile → Rear → Immobile", labels: ["Immobile", "Rear", "Immobile"] }
+  - { name: "Rear → Immobile → Rear",   labels: ["Rear", "Immobile", "Rear"] }
+  - { name: "Rear → Turn → Immobile",   labels: ["Rear", "Turn", "Immobile"] }
+  - { name: "Immobile → Walk → Immobile", labels: ["Immobile", "Walk", "Immobile"] }
+
+grid:
+  rows: 3
+  cols: 4
+
+population:
+  # Same 100 init poses across ALL combinations — cleanest comparison.
+  num_walkers: 100
+  # Per the user: random init only uses frame=0; init clip does NOT have to
+  # come from the source clip whose code sequence we extract.
+  init_seed: 0
+  # `frame_zero_only`: all inits at frame 0 of randomly-sampled clips.
+  # Sampled once at startup, reused across all 12 cells.
+  frame_zero_only: true
+
+rollout:
+  # z_e_scale=0: encoder is computed but its sampled z_e is multiplied by 0
+  # before entering the GRU.  The encoder's (mu, logvar) is still emitted in
+  # the inference extras, so we can plot mu as the intention space.
+  z_e_scale: 0.0
+  # Per-frame code override mode: feed the chosen clip's code sequence
+  # directly into obs["kpms_code"], one stack window per t.
+  use_code_override: true
+  # Episode length — cap by clip length (250 frames) by default.
+  max_steps: 250
+  # PRNG seed offset for the per-walker policy keys.
+  policy_seed: 12345
+
+highlight:
+  # 3 walkers per cell get colored trajectories; the other 97 are grey dots.
+  # Strategy "spread_by_final_pca": pick the 3 walkers whose final
+  # joint-PCA-(hidden) position has the max-min pairwise distance.
+  strategy: spread_by_final_pca
+  n_highlight: 3
+  highlight_colors: [[0.9, 0.2, 0.2], [0.2, 0.6, 0.9], [0.3, 0.8, 0.3]]
+  background_color: [0.6, 0.6, 0.6, 0.4]  # grey + 40% alpha
+
+video:
+  fps: 30
+  # Per-cell 3-column video dimensions.
+  per_cell:
+    motion_panel_w: 480
+    motion_panel_h: 480
+    pca_panel_w: 480
+    pca_panel_h: 480
+    banner_h: 40
+  # Grid behavior video — 3 walkers per cell, 3×4 cells.
+  grid:
+    cell_w: 240
+    cell_h: 240
+    panel_banner_h: 28
+    grid_banner_h: 36
+  # Tilt the PCA cameras by this much over the duration of the rollout.
+  pca_rotation_degrees: 360.0
+  # If true, skip videos and save only npz + plots.  Keeps the overnight run
+  # robust if EGL or MuJoCo rendering breaks.
+  data_only: false
+
+output:
+  base_dir: ${paths.c2a_root}/outputs/population/population_intention_dynamics
+  # Cache + reuse rollout npz across re-runs.
+  reuse_rollouts: true

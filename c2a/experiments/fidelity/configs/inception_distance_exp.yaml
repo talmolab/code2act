@@ -1,0 +1,156 @@
+# =============================================================================
+# Inception Distance (FID/KID) Experiment Configuration
+# =============================================================================
+# Trains a VAE on real mocap qpos, then computes FID/KID between real
+# distribution and decoder rollouts driven by generative code models.
+#
+# All methods generate the same number of rollouts (= number of balanced
+# clips). Clips shorter than survival_threshold are excluded from KID.
+#
+# Usage:
+#   cd moseq_jax
+#   python -m experiments.run_inception_distance
+# =============================================================================
+
+# Code2Act: MoSeq decoder checkpoint
+checkpoint:
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260407_031233_484020/
+  step: null
+
+# Mimic-MJX: Oracle VAE checkpoint (for mimic_mjx method)
+mimic_checkpoint:
+  path: ${oc.env:C2A_ROOT,.}/trained_mimic_ckpts/260405_235031_234849/
+  step: null
+
+data:
+  codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/best_codes.npz
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+
+inception_distance:
+  # Methods to compare. All generate fresh rollouts.
+  # Options: decoder_original_codes, mimic_mjx, arhmm_level2, arhmm_level1,
+  #          hmm_pretrained, transition_matrix, uniform_random,
+  #          gpt2, mamba, s5
+  # NOTE: "hmm_dynamax" is kept as a legacy alias of "hmm_pretrained" —
+  # both require ar_checkpoints.hmm to point at a trained HMM checkpoint
+  # (the inline EM-fit path moved to c2a.ar_codegen.models.hmm).
+  methods: ["decoder_original_codes", "mimic_mjx", "arhmm_level2", "hmm_pretrained", "transition_matrix", "uniform_random"]
+
+  # Number of rollout clips per method. null = use all balanced clips.
+  num_rollout_clips: 100
+
+  # Minimum control steps for a clip to be included in KID.
+  # Clips shorter than this are saved but excluded.
+  # All included clips are truncated to exactly this length.
+  # Default 450 -> 225 mocap frames at steps_per_frame=2.
+  survival_threshold: 450
+
+  # ARHMM model parameters (for arhmm_level1 / arhmm_level2)
+  arhmm:
+    model_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/kpms_sweep/s50_k1e+04_l10_arhmm/seed1/keypoint_arhmm_states50_seed1/checkpoint.h5
+    snapshot_idx: 50
+
+  # Code generation parameters
+  generation:
+    seed: 42
+    # hmm_dynamax / hmm_pretrained: load a pre-fit HMM via
+    # ar_checkpoints.hmm (the legacy `hmm_dynamax.num_states_sweep`
+    # block is no longer read).
+    transition_matrix:
+      temperatures: [1.0]
+
+  # VAE feature extractor configuration
+  vae:
+    latent_dim: 64
+    hidden_layers: [512, 256]
+    num_epochs: 5000
+    learning_rate: 0.001
+    batch_size: 32
+    beta: 1.0
+    beta_warmup_epochs: null
+    weight_decay: 0.00001
+    grad_clip_norm: 1.0
+    dropout_rate: 0.1
+    use_layer_norm: true
+    seeds: [0, 1, 2]
+    cache_dir: null
+
+  # Preprocessing options
+  preprocessing:
+    exclude_xy: true
+    handle_rotation: true
+    normalize_joints: true
+
+  # KID computation parameters
+  kid:
+    degree: 3
+    num_subsets: 100
+    subset_size: null
+    split_seed: 42
+
+# Rollout parameters
+rollout:
+  seed: 42
+
+# AR-codegen checkpoints. Each is a directory produced by
+# `python -m c2a.ar_codegen.train model=<name>`. Required when the
+# matching method (gpt2 / mamba / s5 / hmm_pretrained) is in
+# `inception_distance.methods`.
+ar_checkpoints:
+  gpt2: null
+  mamba: null
+  s5: null
+  hmm: null
+
+output:
+  base_dir: ./outputs/fidelity/moseq_inception_distance
+
+# --- Environment config (deterministic evaluation, no DR) ---
+env_config:
+  mujoco_impl: "jax"
+  solver: "newton"
+  iterations: 5
+  ls_iterations: 5
+  nconmax: 256
+  njmax: 128
+  noslip_iterations: 0
+  sim_dt: 0.002
+  ctrl_dt: 0.01
+  mocap_hz: 50
+  clip_length: 250
+  clip_set: "all"
+  reference_length: 5
+  start_frame_range: [0, 0]
+  qvel_init: "zeros"
+  keep_clips_idx: null
+  domain_randomization:
+    use_domain_randomization: false
+    floor_friction: [0.7, 0.7]
+    static_friction_scale: [1.0, 1.0]
+    armature_scale: [1.0, 1.0]
+    com_jitter: [0.0, 0.0]
+    link_mass_scale: [1.0, 1.0]
+    torso_mass_jitter: [0.0, 0.0]
+    qpos0_jitter: [0.0, 0.0]
+  reward_terms:
+    root_pos: {exp_scale: 0.035, weight: 1.0}
+    root_quat: {exp_scale: 20.0, weight: 1.0}
+    joints: {exp_scale: 1.41, weight: 1.0}
+    joints_vel: {exp_scale: 1.0, weight: 0.5}
+    bodies_pos: {exp_scale: 0.25, weight: 0.0}
+    end_eff: {exp_scale: 0.03, weight: 1.0}
+    torso_z_range: {healthy_z_range: [0.0325, 0.5], weight: 1.0}
+    control_cost: {weight: 0.02}
+    control_diff_cost: {weight: 0.02}
+    energy_cost: {max_value: 50.0, weight: 0.01}
+  termination_criteria:
+    root_too_far: {max_distance: 0.2}
+    root_too_rotated: {max_degrees: 90.0}
+    pose_error: {max_l2_error: 6.0}
+    nan_termination: {}
+
+walker_config:
+  walker_name: "rodent"
+  torque_actuators: true
+  rescale_factor: 0.9

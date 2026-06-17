@@ -66,7 +66,7 @@ from c2a.paths import get_repo_root
 
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = get_repo_root() / "outputs" / "hidden_dynamics"
+OUTPUT_DIR = get_repo_root() / "outputs" / "dynamics" / "hidden_dynamics"
 
 # ── Default label aliases (legacy npz) ──────────────────────────────────────
 LEGACY_BEHAVIORS = [
@@ -287,6 +287,7 @@ def fit_rslds(
     method: str = DEFAULT_FIT_METHOD,
     seed: int = 42,
     verbose: bool = True,
+    return_latents: bool = False,
 ) -> tuple[object, np.ndarray, list[np.ndarray]]:
     """Fit rSLDS via Laplace EM, return (model, elbos, per-trial discrete states).
 
@@ -294,6 +295,12 @@ def fit_rslds(
     p(z_{t+1} | z_t, x_t) ∝ exp(W_z x_t + b_z) — i.e., the discrete regime
     distribution depends on the continuous latent, which is what makes it
     *recurrent* SLDS rather than vanilla SLDS.
+
+    If ``return_latents`` is True, returns a 4-tuple
+    ``(model, elbos, z_per_trial, x_per_trial)`` where ``x_per_trial`` are the
+    posterior-mean continuous latents per trial (``(T, D)`` each) — used by
+    downstream callers that plot the latent phase portrait. Default False
+    preserves the 3-tuple for existing callers.
     """
     import autograd.numpy.random as anp_random
     import numpy.random as np_random
@@ -341,11 +348,15 @@ def fit_rslds(
     # continuous-state means.
     q_x_means = q_lem.mean_continuous_states
     z_per_trial: list[np.ndarray] = []
+    x_per_trial: list[np.ndarray] = []
     for d, qx in zip(datas, q_x_means):
         qx = np.asarray(qx)
         z = model.most_likely_states(qx, d)
         z_per_trial.append(np.asarray(z, dtype=np.int64))
+        x_per_trial.append(qx.astype(np.float64))
 
+    if return_latents:
+        return model, elbos, z_per_trial, x_per_trial
     return model, elbos, z_per_trial
 
 

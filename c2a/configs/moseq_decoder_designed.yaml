@@ -1,0 +1,50 @@
+# @package _global_
+# =============================================================================
+# Designed multi-scale segmenter — K=25 + UNL = 26-slot embedding table
+# =============================================================================
+# Inherits the full v7 training stack (RNN decoder, distillation head,
+# frozen MIMIC decoder) but feeds the hand-crafted multi-scale codebook
+# from `c2a.codegen.designed_segmenter`.
+#
+# Build the codes BEFORE launching training:
+#   python3.12 bash_scripts/_pyrun.py c2a.codegen.designed_segmenter \
+#     --pattern_yaml c2a/codegen/patterns/multi_scale_v1.yaml \
+#     --output outputs/tokenizer/designed_v1/best_codes.npz
+#
+# Then:
+#   bash bash_scripts/run_train_designed_segmenter.sh
+# =============================================================================
+
+defaults:
+  - moseq_decoder
+  - _self_
+
+kpms_config:
+  code_source: designed
+  codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/designed_v1/best_codes.npz
+  # Pattern YAML used by both the segmenter (to BUILD the codes) and the
+  # training-time renderer (to derive the per-code tier color + name for
+  # the overlay).  Without this, training videos use the default
+  # single-row golden-ratio colorbar and the viewer can't tell which
+  # scale/granularity is currently active.
+  pattern_yaml: ${oc.env:C2A_ROOT,.}/c2a/codegen/patterns/multi_scale_v1.yaml
+
+network_config:
+  # K=26 = 25 hand-designed codes + UNL sentinel.  The embedding table
+  # is auto-resized at load time to match the codes_path npz num_states,
+  # but we set it here so smoke-test fallbacks (codes_path=null) get the
+  # right shape.
+  num_codes: 26
+
+  # Bumped from 16 → 32: composite codes carry more semantic load than
+  # kinematic VAE clusters (one code = a 5-segment routine).  The larger
+  # embedding gives the policy capacity to represent multi-scale meaning.
+  code_embed_dim: 32
+
+train_setup:
+  run_name: designed_v1_from_scratch
+  train_config:
+    # ~2 days at ~1B-2B steps with the default num_envs=2048 / lr=1e-4.
+    # For smoke testing, override on the CLI:
+    #   train_setup.train_config.num_timesteps=10000000 num_envs=256
+    num_timesteps: 1_500_000_000

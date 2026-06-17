@@ -43,8 +43,16 @@ from c2a.rendering_utils import add_multi_line_overlay
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-PARADE_DATA = MOSEQ_DIR / "outputs" / "moseq_behavior_parade" / "data" / "parade_rollouts.npz"
-PARADE_META = MOSEQ_DIR / "outputs" / "moseq_behavior_parade" / "code_selection.json"
+# Behavior-parade rollouts live under the repo-root outputs/ tree (never
+# c2a/outputs), one subdir per behavior sequence written by
+# run_behavior_parade. Select the sequence to render here.
+PARADE_SEQUENCE = "walk_groom_rear"
+_PARADE_DIR = (
+    REPO_ROOT / "outputs" / "behavior" / "moseq_behavior_parade"
+    / PARADE_SEQUENCE
+)
+PARADE_DATA = _PARADE_DIR / "data" / "parade_rollouts.npz"
+PARADE_META = _PARADE_DIR / "code_selection.json"
 
 BEHAVIOR_COLORS_RGB = {
     "walk": (0, 114, 178),     # #0072B2

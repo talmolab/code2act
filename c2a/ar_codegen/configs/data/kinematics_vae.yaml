@@ -1,0 +1,18 @@
+# Kinematics-VAE codes (VAE + post-hoc K-Means tokenizer).
+#
+# Codes from the kl_0p001 / k25 VAE sweep cell — the SAME code source the
+# RNN decoder 260603_180852_140475 was trained on. Used to fit the Mamba
+# behavior prior for Option-B interpretable task transfer.
+#
+#   python -m c2a.ar_codegen.train model=mamba data=kinematics_vae
+
+_name: kinematics_vae
+
+code_source: kinematics_vae
+codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vae_sweep/kl_0p001/tokenize_k25/best_codes.npz
+labels_csv_path: null
+csv_to_h5_subsample: 2
+
+balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+n_frames: 250
+num_codes_for_random: 25  # only consulted if codes_path is null

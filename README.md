@@ -108,9 +108,9 @@ If you previously installed a GPU torch and it's now broken (symptom:
     --index-url https://download.pytorch.org/whl/cpu torch
 ```
 
-This is non-destructive to the training pipeline (verified: v8 e2e
-real training survived a live swap mid-run, 2026-05-14). The only
-caller of torch is DSA, which runs on CPU.
+This is non-destructive to the training pipeline (verified: real
+training survived a live swap mid-run, 2026-05-14). The only caller
+of torch is DSA, which runs on CPU.
 
 If you specifically need GPU torch alongside CUDA-12 JAX (rare — only
 relevant if you want CUDA-accelerated DSA), the legacy recipe was:
@@ -168,7 +168,7 @@ and are used by:
 - `c2a.codegen.shared.label_alignment` (loader / coverage metrics)
 - `c2a.codegen.run_sweep` (NMI + Hungarian-purity reporting at three
   granularities: behavior / direction / combined)
-- `c2a.experiments.run_labeled_hidden_dynamics` (label-anchored hidden
+- `c2a.experiments.dynamics.run_labeled_hidden_dynamics` (label-anchored hidden
   state experiment)
 
 The CSV is annotated against the original 30 fps videos (500 frames per
@@ -255,8 +255,8 @@ code-sequence ordering, generalization, KID/FID, gait dynamics, hidden-state
 dynamics). See [`docs/experiments.md`](docs/experiments.md).
 
 ```bash
-python -m c2a.experiments.run_inference
-python -m c2a.experiments.run_generalization_kid
+python -m c2a.experiments.behavior.run_inference
+python -m c2a.experiments.fidelity.run_generalization_kid
 ```
 
 ## Repository layout

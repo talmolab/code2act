@@ -36,7 +36,7 @@ from c2a.rendering_utils import add_multi_line_overlay
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-CODE_GEN_DIR = MOSEQ_DIR / "outputs" / "moseq_code_generation"
+CODE_GEN_DIR = get_repo_root() / "outputs" / "tokenizer" / "moseq_code_generation"
 
 # ── Triptych configurations ─────────────────────────────────────────────────
 

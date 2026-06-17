@@ -5,6 +5,8 @@ propel/
 Code2Act-website/
 venv/
 env/
+_pyrun.py
+paper/
 
 # Python
 __pycache__/
@@ -58,3 +60,4 @@ sessions/
 .propel/
 .claude/
 image.png
+ideas.pdf

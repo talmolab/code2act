@@ -31,7 +31,7 @@ from sklearn.decomposition import PCA
 
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = get_repo_root() / "outputs" / "hidden_trajectory"
+OUTPUT_DIR = get_repo_root() / "outputs" / "dynamics" / "hidden_trajectory"
 
 # ── Code color palette ───────────────────────────────────────────────────────
 # Top N codes get distinct tab10 colors; rest are grey

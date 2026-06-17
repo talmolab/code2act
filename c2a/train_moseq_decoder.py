@@ -15,12 +15,10 @@ import os
 os.environ["MUJOCO_GL"] = "egl"
 os.environ["PYOPENGL_PLATFORM"] = "egl"
 
-import dataclasses
 import functools
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 import hydra
 import jax
@@ -50,13 +48,8 @@ from c2a.moseq_ppo_networks import (
 )
 from c2a.moseq_ppo import train as moseq_train
 from c2a.moseq_env_wrapper import MoSeqImitation
-from c2a.codegen.code_sources import load_codes
-from c2a.codegen.code_sources import SOURCE_VQVAE as _SOURCE_VQVAE
-from c2a.e2e_vqvae import (
-    E2EVQVAEContext,
-    assign_vqvae_to_policy_params,
-    build_motion_norm_padded,
-    load_pretrained_vqvae,
+from c2a.codegen.code_sources import (
+    SOURCE_KINEMATICS_VAE, SOURCE_PS_VQVAE, SOURCE_VQVAE, load_codes,
 )
 
 
@@ -83,15 +76,15 @@ def _run_eval_rollouts(
     """Run eval rollouts and return raw data (no logging).
 
     Returns:
-        ``(all_indices, all_states, all_rewards, all_live_indices, final_key)``
-        where ``all_live_indices`` mirrors ``all_indices`` but holds the live
-        VQ-VAE codes pulled from ``extras["live_code_idx"]`` (empty arrays
-        when e2e_mode is off).
+        ``(all_indices, all_states, all_rewards, final_key)``.
     """
     all_rollout_indices: list[np.ndarray] = []
     all_rollout_states: list[list] = []
     all_rollout_rewards: list[list] = []
-    all_rollout_live_indices: list[np.ndarray] = []
+    # Per-frame "reconstructed" codes — what the frozen tokenizer's
+    # argmin says about the agent's actual motion at each step. Empty
+    # array per rollout when c2c is off (info field absent).
+    all_rollout_reconstructed: list[np.ndarray] = []
 
     for rollout_i in range(n_rollouts):
         key, subkey = jax.random.split(key)
@@ -100,7 +93,7 @@ def _run_eval_rollouts(
         rollout_states = [state]
         rollout_indices = []
         rollout_rewards = []
-        rollout_live_indices = []
+        rollout_reconstructed: list[int] = []
 
         if use_rnn and ppo_network is not None:
             hidden = ppo_network.policy_network.init_hidden(1)
@@ -128,12 +121,18 @@ def _run_eval_rollouts(
                 rollout_indices.append(int(extras["code_idx"]))
             elif "indices" in extras:
                 rollout_indices.append(int(extras["indices"]))
-            if "live_code_idx" in extras:
-                rollout_live_indices.append(int(extras["live_code_idx"]))
 
             state = jit_step(state, action)
             rollout_states.append(state)
             rollout_rewards.append(float(state.reward))
+            # When c2c is active the env writes ``c2c_reconstructed_code``
+            # — the frozen tokenizer's nearest codebook entry for the
+            # agent's actual motion at this step. Capture aligned with
+            # ``rollout_indices`` for the side-by-side timeline bar.
+            if "c2c_reconstructed_code" in state.info:
+                rollout_reconstructed.append(
+                    int(state.info["c2c_reconstructed_code"])
+                )
 
             if state.done:
                 if hidden is not None and ppo_network is not None:
@@ -143,13 +142,13 @@ def _run_eval_rollouts(
         all_rollout_indices.append(np.array(rollout_indices))
         all_rollout_states.append(rollout_states)
         all_rollout_rewards.append(rollout_rewards)
-        all_rollout_live_indices.append(
-            np.array(rollout_live_indices) if rollout_live_indices else np.array([], dtype=np.int32)
+        all_rollout_reconstructed.append(
+            np.array(rollout_reconstructed, dtype=np.int64)
         )
 
     return (
         all_rollout_indices, all_rollout_states, all_rollout_rewards,
-        all_rollout_live_indices, key,
+        all_rollout_reconstructed, key,
     )
 
 
@@ -165,7 +164,7 @@ def _log_eval_metrics(
     render_video,
     metric_prefix="moseq",
     video_prefix="videos",
-    all_rollout_live_indices=None,
+    all_reconstructed=None,
 ):
     """Log metrics, code plots, and videos from eval rollouts.
 
@@ -259,6 +258,25 @@ def _log_eval_metrics(
                 n_rollouts,
             )
 
+            # Designed-segmenter override: tier-colored bar + code-name
+            # text overlay so the viewer can read which scale/granularity
+            # is currently active.  No-op for other code sources.
+            _code_colors_override = None
+            _code_names = None
+            if str(cfg.kpms_config.get("code_source", "")) == "designed":
+                pattern_yaml = cfg.kpms_config.get("pattern_yaml", None)
+                if pattern_yaml is not None:
+                    try:
+                        from c2a.codegen.designed_segmenter import (
+                            load_tier_color_map, load_code_name_map,
+                        )
+                        _code_colors_override = load_tier_color_map(pattern_yaml)
+                        _code_names = load_code_name_map(pattern_yaml)
+                    except Exception as e:
+                        logging.warning(
+                            "designed-segmenter overlay disabled: %s", e,
+                        )
+
             for vid_i in range(num_videos):
                 vid_states = all_rollout_states[vid_i]
                 vid_indices = (
@@ -266,54 +284,78 @@ def _log_eval_metrics(
                     if vid_i < len(all_rollout_indices)
                     else None
                 )
-                vid_live = (
-                    all_rollout_live_indices[vid_i]
-                    if (all_rollout_live_indices is not None
-                        and vid_i < len(all_rollout_live_indices))
+                vid_reconstructed = (
+                    all_reconstructed[vid_i]
+                    if (
+                        all_reconstructed is not None
+                        and vid_i < len(all_reconstructed)
+                        and len(all_reconstructed[vid_i]) > 0
+                    )
                     else None
                 )
                 video_path = (
                     f"{model_path}/{current_step}_{metric_prefix}_vid{vid_i}.mp4"
                 )
 
-                # e2e mode adds a second bar (live VQ-VAE codes) below the
-                # pretrained-code bar; shared colormap = same color means same
-                # discrete code index across rows.
-                use_two_bars = (
-                    vid_live is not None and len(vid_live) > 0
-                    and vid_indices is not None and len(vid_indices) > 0
-                )
-                if use_two_bars:
-                    n_min = min(len(vid_indices), len(vid_live))
-                    indices_per_depth = [
-                        vid_indices[:n_min],
-                        vid_live[:n_min],
-                    ]
+                # When the c2c env is active we have BOTH the target
+                # code per frame (vid_indices, from the policy's obs)
+                # AND the reconstructed code per frame (vid_reconstructed,
+                # the frozen tokenizer's nearest entry for the agent's
+                # actual motion). Pass both as stacked bars so the
+                # rendered video shows the per-step alignment / mismatch
+                # between what was asked and what was produced.
+                if vid_reconstructed is not None and vid_indices is not None:
+                    # Align lengths (rollout may terminate before the
+                    # full episode_length; trim to the shorter).
+                    n_aligned = min(len(vid_indices), len(vid_reconstructed))
+                    # Recompute num_codes to span BOTH bars so the color
+                    # palette is consistent across them.
+                    nc_for_bars = max(
+                        int(num_codes) if num_codes is not None else 1,
+                        int(np.max(vid_indices[:n_aligned])) + 1
+                        if n_aligned > 0 else 1,
+                        int(np.max(vid_reconstructed[:n_aligned])) + 1
+                        if n_aligned > 0 and (vid_reconstructed[:n_aligned] >= 0).any()
+                        else 1,
+                    )
+                    # Replace sentinel -1 (no-code-yet) with 0 so the
+                    # color modulo math doesn't wrap to a wrong color.
+                    rec_clean = np.where(
+                        vid_reconstructed[:n_aligned] < 0, 0,
+                        vid_reconstructed[:n_aligned],
+                    ).astype(vid_indices.dtype)
                     render_rollout_to_video(
                         env=env,
                         rollout_states=vid_states,
                         output_path=video_path,
-                        camera=f"{cfg.render_config.render_camera_name}{env._suffix}",
+                        camera=f"{cfg.render_config.render_camera_name}"
+                               f"{env._suffix}",
                         width=640,
                         height=480,
                         fps=render_fps,
-                        indices_per_depth=indices_per_depth,
-                        num_codes=num_codes,
+                        indices_per_depth=[
+                            np.asarray(vid_indices[:n_aligned]),
+                            rec_clean,
+                        ],
+                        bar_row_labels=("target", "reconstructed"),
+                        num_codes=nc_for_bars,
                         code_bar_height=30,
-                        bar_row_labels=("Pretrained", "Live"),
                     )
                 else:
                     render_rollout_to_video(
                         env=env,
                         rollout_states=vid_states,
                         output_path=video_path,
-                        camera=f"{cfg.render_config.render_camera_name}{env._suffix}",
+                        camera=f"{cfg.render_config.render_camera_name}"
+                               f"{env._suffix}",
                         width=640,
                         height=480,
                         fps=render_fps,
                         indices=vid_indices,
                         num_codes=num_codes,
                         code_bar_height=30,
+                        code_colors_override=_code_colors_override,
+                        code_names=_code_names,
                     )
 
                 wandb.log(
@@ -371,7 +413,7 @@ def moseq_rollout_logging_fn(
 
     # --- Full eval (z_e=1.0) ---
     (
-        all_indices, all_states, all_rewards, all_live_indices, key,
+        all_indices, all_states, all_rewards, all_reconstructed, key,
     ) = _run_eval_rollouts(
         env,
         jit_reset,
@@ -396,13 +438,13 @@ def moseq_rollout_logging_fn(
         render_video,
         metric_prefix="moseq",
         video_prefix="videos",
-        all_rollout_live_indices=all_live_indices,
+        all_reconstructed=all_reconstructed,
     )
 
     # --- Decoder-only eval (z_e=0.0) ---
     if jit_decoder_only_inference_fn is not None:
         (
-            do_indices, do_states, do_rewards, do_live_indices, key,
+            do_indices, do_states, do_rewards, do_reconstructed, key,
         ) = _run_eval_rollouts(
             env,
             jit_reset,
@@ -427,7 +469,7 @@ def moseq_rollout_logging_fn(
             render_video,
             metric_prefix="decoder_only",
             video_prefix="videos",
-            all_rollout_live_indices=do_live_indices,
+            all_reconstructed=do_reconstructed,
         )
 
         # Reward gap: how much performance is lost without z_e
@@ -435,6 +477,279 @@ def moseq_rollout_logging_fn(
             {"decoder_only/reward_gap": full_reward - decoder_only_reward},
             commit=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# code2code reward-mode plumbing
+# ---------------------------------------------------------------------------
+
+
+def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
+    """Build the c2c_* kwargs for :class:`MoSeqImitation`.
+
+    Loads the configured tokenizer adapter, validates code-source
+    compatibility, auto-calibrates τ if requested, and returns a dict
+    of kwargs to splat into ``MoSeqImitation(**c2c_kwargs)``. When
+    ``code2code.reward_mode == "off"``, returns an empty dict — env
+    behavior is bit-equivalent to the pre-c2c default.
+
+    Args:
+        cfg: Full Hydra cfg.
+        payload: ``CodesPayload`` from :func:`load_codes`.
+        codes_path: Resolved path to the codes npz (for PS-VQVAE
+            group-size lookup).
+
+    Returns:
+        Dict of c2c_* kwargs. Empty when c2c is disabled.
+
+    Raises:
+        ValueError: incompatible code source for c2c, missing tokenizer
+            ckpt, codebook-size mismatch.
+        NotImplementedError: tokenizer_kind not in
+            {vae, vqvae, ps_vqvae}.
+    """
+    c2c_cfg = cfg.get("code2code", None)
+    if c2c_cfg is None:
+        return {}
+    reward_mode = str(c2c_cfg.get("reward_mode", "off"))
+    if reward_mode not in ("off", "additive"):
+        # Common pitfall: YAML/Hydra parses unquoted `on`/`true` as the
+        # boolean True; str(True) -> "True" silently passes through.  Reject
+        # at the config-load site rather than letting the env constructor
+        # raise a less-informative error.
+        raise ValueError(
+            f"code2code.reward_mode must be 'off' or 'additive'; "
+            f"got {reward_mode!r}. If you wrote `reward_mode=on` on the "
+            f"CLI, quote it: `code2code.reward_mode=additive` or "
+            f"`code2code.reward_mode='\"off\"'`."
+        )
+    if reward_mode == "off":
+        return {}
+
+    # code2code only supports neural tokenizers (VAE / VQVAE / PS-VQVAE).
+    # KPMS / gt_directional_turn can't run inside the env step
+    # (see scratch/2026-05-26-code2code-mode/README.md §5).
+    if payload.code_source not in (
+        SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE,
+    ):
+        raise ValueError(
+            f"code2code.reward_mode={reward_mode!r} requires a neural "
+            f"tokenizer code source (kinematics_vae / vqvae / ps_vqvae). "
+            f"Got code_source={payload.code_source!r}. Either set "
+            f"code2code.reward_mode: off or switch to a neural code source."
+        )
+
+    tokenizer_kind = c2c_cfg.get("tokenizer_kind", None)
+    if tokenizer_kind is None:
+        raise ValueError(
+            "code2code.reward_mode != 'off' requires "
+            "code2code.tokenizer_kind to be one of 'vae'/'vqvae'/'ps_vqvae'."
+        )
+    tokenizer_ckpt = c2c_cfg.get("tokenizer_ckpt", None)
+    if tokenizer_ckpt is None:
+        raise ValueError(
+            "code2code.reward_mode != 'off' requires "
+            "code2code.tokenizer_ckpt to point to the tokenizer step dir."
+        )
+    ckpt_p = Path(str(tokenizer_ckpt))
+    if not ckpt_p.is_absolute():
+        ckpt_p = get_repo_root() / ckpt_p
+    if not ckpt_p.exists():
+        raise FileNotFoundError(
+            f"code2code.tokenizer_ckpt={tokenizer_ckpt} does not resolve "
+            f"to an existing directory (tried {ckpt_p})."
+        )
+
+    arch_cfg = c2c_cfg.get("vqvae_arch", {})
+    arch_kwargs = dict(
+        n_joints=int(arch_cfg.get("n_joints", 67)),
+        use_qvel=bool(arch_cfg.get("use_qvel", False)),
+        window_len=int(arch_cfg.get("window_len", 10)),
+        horizon=int(arch_cfg.get("horizon", 5)),
+        conv_channels=tuple(arch_cfg.get("conv_channels", [64, 128, 256])),
+        conv_kernel_size=int(arch_cfg.get("conv_kernel_size", 3)),
+        conv_head_layers=tuple(arch_cfg.get("conv_head_layers", [256])),
+        decoder_layer_sizes=tuple(arch_cfg.get("decoder_layer_sizes", [256, 256, 256])),
+    )
+
+    if tokenizer_kind == "vqvae":
+        from c2a.code2code import VQVAEAdapter
+        adapter = VQVAEAdapter.from_ckpt_dir(ckpt_p, **arch_kwargs)
+
+    elif tokenizer_kind == "ps_vqvae":
+        from c2a.code2code import PSVQVAEAdapter
+        # Group sizes can come from the config OR from the codes npz.
+        gd = c2c_cfg.get("ps_group_dims", None)
+        gks = c2c_cfg.get("ps_group_codebook_sizes", None)
+        if gd is None or gks is None:
+            if codes_path is None:
+                raise ValueError(
+                    "PS-VQ-VAE c2c adapter requires ps_group_dims and "
+                    "ps_group_codebook_sizes either set in cfg.code2code "
+                    "or available in the codes npz; neither was found."
+                )
+            data = np.load(str(codes_path), allow_pickle=False)
+            if "ps_group_dims" not in data or "ps_group_codebook_sizes" not in data:
+                raise RuntimeError(
+                    f"PS-VQ-VAE codes npz at {codes_path} is missing "
+                    f"ps_group_dims or ps_group_codebook_sizes; cannot "
+                    f"build PS-VQ-VAE c2c adapter without them."
+                )
+            gd = tuple(int(d) for d in data["ps_group_dims"])
+            gks = tuple(int(k) for k in data["ps_group_codebook_sizes"])
+        else:
+            gd = tuple(int(d) for d in gd)
+            gks = tuple(int(k) for k in gks)
+        adapter = PSVQVAEAdapter.from_ckpt_dir(
+            ckpt_p, group_dims=gd, group_codebook_sizes=gks, **arch_kwargs,
+        )
+
+    elif tokenizer_kind == "vae":
+        from c2a.code2code import VAEAdapter
+        vae_pkl = c2c_cfg.get("vae_tokenizer_pkl", None)
+        if vae_pkl is None:
+            raise ValueError(
+                "code2code.tokenizer_kind='vae' requires "
+                "code2code.vae_tokenizer_pkl to be set."
+            )
+        vae_pkl_p = Path(str(vae_pkl))
+        if not vae_pkl_p.is_absolute():
+            vae_pkl_p = get_repo_root() / vae_pkl_p
+        if not vae_pkl_p.exists():
+            raise FileNotFoundError(
+                f"code2code.vae_tokenizer_pkl={vae_pkl} does not resolve "
+                f"(tried {vae_pkl_p})."
+            )
+        adapter = VAEAdapter.from_ckpt_dir(
+            ckpt_p, tokenizer_pkl=vae_pkl_p, **arch_kwargs,
+        )
+
+    else:
+        raise NotImplementedError(
+            f"code2code.tokenizer_kind={tokenizer_kind!r} not implemented; "
+            f"expected one of: vae, vqvae, ps_vqvae"
+        )
+
+    # Codebook-size consistency: the tokenizer's K must match what the
+    # codes npz reports (silent mismatch = garbage targets).
+    if adapter.codebook_size != int(payload.num_codes):
+        raise RuntimeError(
+            f"code2code adapter codebook_size={adapter.codebook_size} "
+            f"!= payload.num_codes={payload.num_codes}. The tokenizer "
+            f"ckpt and codes_path must come from the same training run."
+        )
+
+    # Load cal_qpos/cal_codes always — needed both for optional temperature
+    # auto-calibration AND for the integrity check below.  (Previously only
+    # set inside the auto-calibration branch, which caused an UnboundLocalError
+    # when temperature was set to a fixed float — Phase 3 config bump exposed
+    # this latent bug.)
+    temp_cfg = c2c_cfg.get("temperature", "auto")
+    distance_form = str(c2c_cfg.get("distance_form", "cosine"))
+    ref_h5 = cfg.env_config.reference_data_path
+    clip_length = int(cfg.env_config.clip_length)
+    import h5py
+
+    with h5py.File(ref_h5, "r") as f:
+        qpos_flat = f["qpos"][:]
+    n_total = qpos_flat.shape[0] // clip_length
+    clipped = qpos_flat[: n_total * clip_length].reshape(
+        n_total, clip_length, -1,
+    ).astype(np.float32)
+    # payload.train_codes is aligned to train_clips row order; we
+    # can use it directly. clipped is in original H5 order, so we
+    # need to subset by train_indices to align.
+    try:
+        with open(cfg.env_config.balanced_split_path) as f:
+            splits = json.load(f)
+        train_inds = np.array(
+            splits["balanced"]["train_indices"], dtype=np.int64,
+        )
+    except Exception:
+        train_inds = np.arange(payload.train_codes.shape[0])
+    cal_qpos = clipped[train_inds[: int(c2c_cfg.get("calibrate_n_clips", 50))]]
+    cal_codes = payload.train_codes[
+        : int(c2c_cfg.get("calibrate_n_clips", 50))
+    ]
+
+    # Temperature: auto-calibrate, or use the user-specified scalar.
+    if str(temp_cfg) == "auto":
+        from c2a.code2code.calibrate import calibrate_temperature
+
+        _, tau = calibrate_temperature(
+            adapter,
+            ref_qpos=cal_qpos,
+            target_codes=cal_codes,
+            distance_form=distance_form,  # type: ignore[arg-type]
+            target_initial_reward=float(
+                c2c_cfg.get("calibrate_target_reward", 0.3)
+            ),
+            n_clips_sample=int(c2c_cfg.get("calibrate_n_clips", 50)),
+            n_windows_per_clip=int(c2c_cfg.get("calibrate_n_windows_per_clip", 8)),
+        )
+        temperature = float(tau)
+    else:
+        temperature = float(temp_cfg)
+
+    # ─── Reference-data round-trip integrity check ─────────────────────────
+    # Verify that the runtime encode/lookup pipeline reproduces the
+    # calibration on reference data. Catches: wrong normalizer loaded,
+    # mis-indexed codebook, wrong window-len/rate convention, wrong
+    # encoder weights, etc. This is fail-fast: a misaligned pipeline
+    # cannot be detected during PPO (rewards just look noisy), so we
+    # gate startup on it.
+    #
+    # The check assumes auto-calibrated temperature → expected reward of
+    # `calibrate_target_reward` (default 0.3). When the user sets a
+    # manual temperature (Phase 3 soft-basin bump), expected reward
+    # shifts so we skip the check with a warning rather than failing
+    # spuriously.
+    from c2a.code2code.calibrate import validate_reference_round_trip
+
+    if str(temp_cfg) == "auto":
+        validate_reference_round_trip(
+            adapter,
+            ref_qpos=cal_qpos,
+            target_codes=cal_codes,
+            tau=temperature,
+            distance_form=distance_form,  # type: ignore[arg-type]
+            reward_form=str(c2c_cfg.get("reward_form", "exp_neg_distance")),
+            expected_reward=float(c2c_cfg.get("calibrate_target_reward", 0.3)),
+            tolerance=float(c2c_cfg.get("integrity_check_tolerance", 0.08)),
+            n_clips_sample=int(c2c_cfg.get("calibrate_n_clips", 50)),
+            n_windows_per_clip=int(c2c_cfg.get("calibrate_n_windows_per_clip", 8)),
+        )
+    else:
+        logging.warning(
+            "Skipping c2c reference round-trip integrity check because "
+            "code2code.temperature is manually set (%.4f rather than 'auto'). "
+            "The check expects auto-calibrated reward ≈ %.3f and would trip "
+            "on the soft-basin temperature bump.",
+            temperature,
+            float(c2c_cfg.get("calibrate_target_reward", 0.3)),
+        )
+
+    logging.info(
+        "code2code reward mode: %s, tokenizer_kind=%s, ckpt=%s, "
+        "K=%d, code_dim=%d, distance=%s, reward_form=%s, tau=%.4f, "
+        "alpha=%.3f, track_weight=%.3f",
+        reward_mode, tokenizer_kind, ckpt_p,
+        adapter.codebook_size, adapter.code_dim,
+        distance_form, str(c2c_cfg.get("reward_form", "exp_neg_distance")),
+        temperature,
+        float(c2c_cfg.get("alpha", 0.5)),
+        float(c2c_cfg.get("track_weight", 1.0)),
+    )
+
+    return dict(
+        c2c_adapter=adapter,
+        c2c_alpha=float(c2c_cfg.get("alpha", 0.5)),
+        c2c_track_weight=float(c2c_cfg.get("track_weight", 1.0)),
+        c2c_temperature=temperature,
+        c2c_distance_form=distance_form,  # type: ignore[arg-type]
+        c2c_reward_form=str(c2c_cfg.get("reward_form", "exp_neg_distance")),  # type: ignore[arg-type]
+        c2c_reward_mode=reward_mode,  # type: ignore[arg-type]
+    )
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="moseq_decoder")
@@ -558,106 +873,29 @@ def main(cfg: DictConfig) -> None:
     code_stack_size = int(cfg.network_config.get("code_stack_size", 1))
 
     # ------------------------------------------------------------------
-    # End-to-end VQ-VAE: optional live tokenizer folded into the policy
+    # code2code reward mode: optional frozen-tokenizer reward shaping
     # ------------------------------------------------------------------
-    e2e_cfg = cfg.get("e2e_config", None)
-    e2e_mode = bool(e2e_cfg.get("e2e_mode", False)) if e2e_cfg is not None else False
-    e2e_ctx: E2EVQVAEContext | None = None
-    train_motion_padded = None
-    test_motion_padded = None
-    e2e_w_recon = 0.0
-    e2e_w_commit = 0.0
-    e2e_w_codebook = 0.0
-    e2e_log_split_grads_at_eval = False
-    e2e_anneal_schedule = "none"
-    e2e_anneal_start_mul = 1.0
-    e2e_anneal_end_mul = 1.0
-    e2e_anneal_end_frac = 0.3
-
-    if e2e_mode:
-        if payload.code_source != _SOURCE_VQVAE:
-            raise ValueError(
-                f"e2e_config.e2e_mode=True requires kpms_config.code_source="
-                f"'vqvae' so the live tokenizer matches the precomputed codes. "
-                f"Got code_source={payload.code_source!r}. Either turn off "
-                f"e2e_mode or switch to a VQ-VAE codes_path."
-            )
-
-        ckpt_path = e2e_cfg.pretrained_vqvae_ckpt
-        ckpt_p = Path(ckpt_path)
-        if not ckpt_p.is_absolute():
-            ckpt_p = get_repo_root() / ckpt_p
-        arch_cfg = e2e_cfg.get("vqvae_arch", {})
-        e2e_ctx = load_pretrained_vqvae(
-            ckpt_dir=ckpt_p,
-            n_joints=int(arch_cfg.get("n_joints", 67)),
-            use_qvel=bool(arch_cfg.get("use_qvel", False)),
-            window_len=int(arch_cfg.get("window_len", 10)),
-            horizon=int(arch_cfg.get("horizon", 5)),
-            code_stack_size=code_stack_size,
-            conv_channels=tuple(arch_cfg.get("conv_channels", [64, 128, 256])),
-            conv_kernel_size=int(arch_cfg.get("conv_kernel_size", 3)),
-            conv_head_layers=tuple(arch_cfg.get("conv_head_layers", [256])),
-            decoder_layer_sizes=tuple(arch_cfg.get("decoder_layer_sizes", [256, 256, 256])),
-        )
-
-        if e2e_ctx.codebook_size != num_codes:
-            raise RuntimeError(
-                f"VQ-VAE ckpt codebook_size={e2e_ctx.codebook_size} but "
-                f"loaded codes report num_codes={num_codes}. The ckpt and "
-                f"the codes_path must come from the same training run."
-            )
-
-        # Build per-clip padded motion buffers aligned to the ReferenceClips
-        # row order — same order as ``train_codes``/``test_codes``.
-        train_qpos = np.asarray(train_clips.qpos, dtype=np.float32)
-        test_qpos = np.asarray(test_clips.qpos, dtype=np.float32)
-        train_qvel = (
-            np.asarray(train_clips.qvel, dtype=np.float32)
-            if e2e_ctx.use_qvel else None
-        )
-        test_qvel = (
-            np.asarray(test_clips.qvel, dtype=np.float32)
-            if e2e_ctx.use_qvel else None
-        )
-        train_motion_padded = build_motion_norm_padded(train_qpos, train_qvel, e2e_ctx)
-        test_motion_padded = build_motion_norm_padded(test_qpos, test_qvel, e2e_ctx)
-        logging.info(
-            "e2e_mode ON: VQ-VAE ckpt=%s, codebook=%d, feat_dim=%d, "
-            "train motion buffer=%s, test=%s",
-            e2e_ctx.ckpt_dir, e2e_ctx.codebook_size, e2e_ctx.feat_dim,
-            tuple(train_motion_padded.shape), tuple(test_motion_padded.shape),
-        )
-
-        lw = e2e_cfg.loss_weights
-        e2e_w_recon = float(lw.get("recon", 0.05))
-        e2e_w_commit = float(lw.get("commit", 0.25))
-        e2e_w_codebook = float(lw.get("codebook", 1.0))
-        e2e_log_split_grads_at_eval = bool(
-            e2e_cfg.get("log_split_grads_at_eval", True)
-        )
-        _anneal_cfg = e2e_cfg.get("anneal", {})
-        e2e_anneal_schedule = str(_anneal_cfg.get("schedule", "none"))
-        e2e_anneal_start_mul = float(_anneal_cfg.get("start_multiplier", 1.0))
-        e2e_anneal_end_mul = float(_anneal_cfg.get("end_multiplier", 1.0))
-        e2e_anneal_end_frac = float(_anneal_cfg.get("end_frac", 0.3))
+    # When enabled, an instance of c2a.code2code.C2CTokenizerAdapter is
+    # constructed from the configured tokenizer ckpt and threaded into
+    # MoSeqImitation. The env computes the code-match reward at every
+    # step. The adapter is NEVER part of the policy params and PPO
+    # never updates it — see scratch/2026-05-26-code2code-mode/
+    # design-A-reward-shaping.md for the architectural rationale.
+    c2c_kwargs = _build_c2c_env_kwargs(cfg, payload, codes_path)
 
     # MoSeqImitation overrides _get_obs to inject kpms_code, flatten nested
     # obs, and strip the "state" hierarchy — all inline. No wrapper chain
     # needed, since BraxDomainRandomizationVmapWrapper bypasses wrappers
-    # via env.unwrapped. Under e2e_mode the env additionally injects
-    # ``motion_window_stack`` (the live-VQ-VAE encoder input).
+    # via env.unwrapped.
     env = MoSeqImitation(
         config=env_cfg_ml, clips=train_clips, kpms_codes=train_codes,
         code_stack_size=code_stack_size,
-        e2e_motion_norm_padded=train_motion_padded,
-        e2e_window_len=(e2e_ctx.window_len if e2e_ctx is not None else 10),
+        **c2c_kwargs,
     )
     test_env = MoSeqImitation(
         config=env_cfg_ml, clips=test_clips, kpms_codes=test_codes,
         code_stack_size=code_stack_size,
-        e2e_motion_norm_padded=test_motion_padded,
-        e2e_window_len=(e2e_ctx.window_len if e2e_ctx is not None else 10),
+        **c2c_kwargs,
     )
 
     logging.info(f"Environment config: {cfg.env_config}")
@@ -798,50 +1036,6 @@ def main(cfg: DictConfig) -> None:
         else:
             logging.warning(f"Unknown kl_schedule '{kl_schedule}', using constant kl_weight")
 
-    # e2e weight anneal: returns a per-step multiplier applied to all three
-    # e2e weights (recon, commit, codebook). Linear ramp from start_multiplier
-    # to end_multiplier over [0, end_frac * num_evals_total]. After end_frac,
-    # multiplier stays at end_multiplier.
-    e2e_weight_fn = None
-    if e2e_mode and e2e_anneal_schedule == "ramp":
-        _e2e_end = e2e_anneal_end_frac * num_evals_total
-        _e2e_range = max(_e2e_end, 1.0)
-        _e2e_sm = e2e_anneal_start_mul
-        _e2e_em = e2e_anneal_end_mul
-
-        def e2e_weight_fn(step, _r=_e2e_range, _e=_e2e_end, sm=_e2e_sm, em=_e2e_em):
-            frac = jnp.clip(step / _r, 0.0, 1.0)
-            mul = sm + (em - sm) * frac
-            return jnp.where(step >= _e, em, mul)
-
-        logging.info(
-            f"e2e weight anneal: multiplier {_e2e_sm}->{_e2e_em} over steps "
-            f"0-{_e2e_end:.0f} (of {num_evals_total} evals); base weights "
-            f"recon={e2e_w_recon}, commit={e2e_w_commit}, codebook={e2e_w_codebook}"
-        )
-    elif e2e_mode and e2e_anneal_schedule != "none":
-        logging.warning(
-            f"Unknown e2e anneal schedule '{e2e_anneal_schedule}', "
-            f"using constant base weights"
-        )
-
-    # e2e network-factory kwargs (empty when e2e_mode is off — backward compat)
-    _e2e_factory_kwargs: dict[str, Any] = {"e2e_mode": e2e_mode}
-    if e2e_mode and e2e_ctx is not None:
-        _e2e_factory_kwargs.update({
-            "e2e_motion_window_shape": (
-                e2e_ctx.code_stack_size, e2e_ctx.window_len, e2e_ctx.feat_dim,
-            ),
-            "vqvae_branch_input_indices": e2e_ctx.branch_input_indices,
-            "vqvae_branch_latent_dims": e2e_ctx.branch_latent_dims,
-            "vqvae_codebook_size": e2e_ctx.codebook_size,
-            "vqvae_code_dim": e2e_ctx.code_dim,
-            "vqvae_conv_channels": e2e_ctx.conv_channels,
-            "vqvae_conv_kernel_size": e2e_ctx.conv_kernel_size,
-            "vqvae_conv_head_layers": e2e_ctx.conv_head_layers,
-            "vqvae_decoder_layer_sizes": e2e_ctx.decoder_layer_sizes,
-        })
-
     # Network factory
     if use_rnn_decoder:
         network_factory = functools.partial(
@@ -865,15 +1059,13 @@ def main(cfg: DictConfig) -> None:
             use_pretrained_decoder=use_pretrained_decoder,
             decoder_layer_sizes_vae=decoder_layer_sizes_vae,
             encoder_uses_proprio=encoder_uses_proprio,
-            **_e2e_factory_kwargs,
         )
         logging.info(
             f"Using RNN decoder: cell={rnn_cell_type}, hidden={rnn_hidden_sizes}, "
             f"z_e_at_action_head={z_e_at_action_head}, reinit_hidden={reinit_hidden_on_code}, "
             f"learned_init={learned_hidden_init}, "
             f"distillation_head={use_distillation_head}, "
-            f"encoder_uses_proprio={encoder_uses_proprio}, "
-            f"e2e_mode={e2e_mode}"
+            f"encoder_uses_proprio={encoder_uses_proprio}"
         )
     else:
         network_factory = functools.partial(
@@ -887,7 +1079,6 @@ def main(cfg: DictConfig) -> None:
             continuous_latent_dim=continuous_latent_dim,
             z_e_dropout_rate=z_e_dropout_rate,
             encoder_uses_proprio=encoder_uses_proprio,
-            **_e2e_factory_kwargs,
         )
 
     # Encoder loading: inject pre-trained encoder params from a VAE
@@ -903,6 +1094,7 @@ def main(cfg: DictConfig) -> None:
     # We therefore skip both subtree assignments on resume (the resumed
     # checkpoint already carries the correct current values for both).
     _resume_in_progress = cfg.train_setup.get("checkpoint_to_restore", None) is not None
+
     _post_init_params_fn = None
     if use_distillation_head and distillation_encoder_checkpoint is not None:
         # Orbax requires absolute paths. Resolve relatives against the repo
@@ -964,38 +1156,6 @@ def main(cfg: DictConfig) -> None:
                     f"Loaded decoder from {distillation_encoder_checkpoint}"
                 )
 
-            # e2e mode: overwrite the freshly-init'd VQ-VAE subtrees with the
-            # pretrained values. Composes with the distillation load above so
-            # both encoder paths (IntentionEncoder for z_e, VQ-VAE for z_q)
-            # start from their respective pretrained checkpoints. Skipped on
-            # resume (handled by the early return at the top of this function).
-            if e2e_mode and e2e_ctx is not None:
-                assign_vqvae_to_policy_params(
-                    training_state.params.policy, e2e_ctx,
-                )
-                logging.info(
-                    f"Loaded pretrained VQ-VAE subtrees from {e2e_ctx.ckpt_dir}"
-                )
-
-            return training_state
-
-    # When only e2e_mode is on (no distillation), the post_init still needs
-    # to drop the pretrained VQ-VAE subtrees into the freshly-init'd policy.
-    # Same resume guard as the distillation+e2e branch above.
-    if _post_init_params_fn is None and e2e_mode and e2e_ctx is not None:
-        def _post_init_params_fn(training_state):
-            if _resume_in_progress:
-                logging.info(
-                    "Resume detected — skipping pretrained VQ-VAE assignment; "
-                    "restored training_state already has the current values."
-                )
-                return training_state
-            assign_vqvae_to_policy_params(
-                training_state.params.policy, e2e_ctx,
-            )
-            logging.info(
-                f"Loaded pretrained VQ-VAE subtrees from {e2e_ctx.ckpt_dir}"
-            )
             return training_state
 
     # WandB
@@ -1139,11 +1299,6 @@ def main(cfg: DictConfig) -> None:
         kl_weight_fn=kl_weight_fn,
         distill_kl_weight=distill_kl_weight if use_distillation_head else 0.0,
         post_init_params_fn=_post_init_params_fn,
-        e2e_mode=e2e_mode,
-        e2e_w_recon=e2e_w_recon,
-        e2e_w_commit=e2e_w_commit,
-        e2e_w_codebook=e2e_w_codebook,
-        e2e_weight_fn=e2e_weight_fn,
     )
 
     # Rollout env for logging
@@ -1152,8 +1307,7 @@ def main(cfg: DictConfig) -> None:
     rollout_env = MoSeqImitation(
         config=rollout_cfg, clips=test_clips, kpms_codes=test_codes,
         code_stack_size=code_stack_size,
-        e2e_motion_norm_padded=test_motion_padded,
-        e2e_window_len=(e2e_ctx.window_len if e2e_ctx is not None else 10),
+        **c2c_kwargs,
     )
 
     jit_reset = jax.jit(rollout_env.reset)
@@ -1209,23 +1363,56 @@ def main(cfg: DictConfig) -> None:
             num_codes=int(num_codes),
         )
 
-    # Wrap wandb_progress to add `/`-prefixed metric groups for WandB panels
+    # Wrap wandb_progress to add `/`-prefixed metric groups for WandB panels.
+    # Six grouping panels:
+    #   losses/         PPO scalar losses
+    #   z_e/            encoder (μ, log σ) magnitudes + KL
+    #   codes/          codebook utilization / perplexity / transition rate
+    #   rnn/            RNN-decoder hidden state norm
+    #   distillation/   distillation head KL
+    #   c2c/            code2code reward composition + diagnostics
+    # The `training/` prefix from track-mjx's ppo.train is stripped before
+    # branch matching; the original `training/*` key is preserved at the
+    # end of the loop for any consumer that reads it directly.
     def _grouped_wandb_progress(num_steps: int, metrics: dict) -> None:
         grouped = {}
         for k, v in metrics.items():
-            if k in ("total_loss", "policy_loss", "v_loss", "entropy_loss"):
-                grouped[f"losses/{k}"] = v
-            elif k in ("kl_loss", "scaled_kl_loss", "z_e_norm", "z_e_std", "z_e_scale"):
-                grouped[f"z_e/{k}"] = v
-            elif k in ("transition_rate", "perplexity", "codebook_utilization", "codes_used"):
-                grouped[f"codes/{k}"] = v
-            elif k in ("hidden_state_norm",):
-                grouped[f"rnn/{k}"] = v
-            elif k in (
+            leaf = k.split("/", 1)[1] if k.startswith("training/") else k
+
+            if leaf in ("total_loss", "policy_loss", "v_loss", "entropy_loss"):
+                grouped[f"losses/{leaf}"] = v
+            elif leaf in ("kl_loss", "scaled_kl_loss", "z_e_norm", "z_e_std", "z_e_scale"):
+                grouped[f"z_e/{leaf}"] = v
+            elif leaf in ("transition_rate", "perplexity", "codebook_utilization", "codes_used"):
+                grouped[f"codes/{leaf}"] = v
+            elif leaf in ("hidden_state_norm",):
+                grouped[f"rnn/{leaf}"] = v
+            elif leaf in (
                 "distill_kl_loss", "scaled_distill_kl_loss",
                 "distill_mean_norm", "distill_logvar_mean",
             ):
-                grouped[f"distillation/{k}"] = v
+                grouped[f"distillation/{leaf}"] = v
+            elif (
+                k.startswith("c2c_")
+                or k.startswith("c2c/")
+                or "episode_c2c_" in k
+            ):
+                # code2code reward diagnostics: the env writes c2c_* into
+                # state.metrics and the eval aggregator surfaces them as
+                # eval/episode_c2c_* (train rollouts) and
+                # eval/test_set/episode_c2c_* (test rollouts).  All route
+                # into the single c2c/ panel.
+                if "episode_c2c_" in k:
+                    short = k.split("episode_c2c_", 1)[1]
+                    if k.startswith("eval/test_set/"):
+                        key = f"c2c/eval_test/{short}"
+                    elif k.startswith("eval/"):
+                        key = f"c2c/eval/{short}"
+                    else:
+                        key = f"c2c/{short}"
+                else:
+                    key = k if k.startswith("c2c/") else f"c2c/{k[4:]}"
+                grouped[key] = v
             # Keep originals for backward compat with shared code
             grouped[k] = v
         wandb_logging.wandb_progress(num_steps, grouped)
