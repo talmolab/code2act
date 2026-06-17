@@ -1,0 +1,61 @@
+# =============================================================================
+# Initial-Condition Contraction Experiment
+# =============================================================================
+# Tests the paper's central "one-to-many" claim: distilling the imitation
+# encoder forces a single held code to realize the SAME motif from ANY initial
+# condition.  We re-use the held-code rollouts already produced by
+# `run_code_grid_rollouts` (100 bodies started from diverse poses, code held
+# constant, decoder-only) and measure whether bodies CONVERGE over time.
+#
+# No environment / GPU needed — pure post-processing of saved npz.
+#
+# Metrics, per code, in both pose space (root-stripped qpos) and GRU hidden
+# space:
+#   * sigma_inst(t)  — RMS cross-body dispersion at each timestep.
+#   * d_manifold(t)  — phase-invariant distance to the shared late-time motif
+#                      manifold (leave-half-out kNN); handles limit cycles.
+#   * attractor_spread — RMS spread of the late-time attractor cloud (the
+#                      phase-desync floor sigma_inst can reach for a cycle).
+#   * contraction ratios rho = median(late) / median(early).
+# A cross-code null (bodies pooled across DIFFERENT codes) is the control that
+# should NOT contract.
+# =============================================================================
+
+seed: 0
+
+# Directory holding the per-condition run subdirs from run_code_grid_rollouts.
+rollouts_base: ${oc.env:C2A_ROOT,.}/outputs/code_grid/code_grid_rollouts
+
+# Each condition is one tokenizer's held-code rollout run.  `poses: null`
+# auto-detects and pools every available pose tag (e.g. ["random"], or
+# ["walk","rear"] pooled = even more diverse initial conditions).
+conditions:
+  - name: kpms
+    display: "Keypoint-MoSeq (K=100)"
+    group: random
+  - name: multiscale
+    display: "Multi-scale designed (K=26)"
+    group: random
+  - name: best_vae
+    display: "Kinematics VAE + k-means"
+    group: random
+
+# Which state spaces to analyze.
+spaces: [pose, hidden]
+
+# null -> auto-detect & pool every pose tag found on disk for the condition.
+poses: null
+
+analysis:
+  early_frac: 0.05          # window for the "initial / diverse" baseline
+  late_frac: 0.33           # window for the "converged" state
+  max_bodies: 100           # cap bodies per condition (after pose pooling)
+  zscore_stride: 5          # stride over time when estimating z-score stats
+  manifold_pca_dim: 10      # PCA dim for the phase-invariant manifold distance
+  manifold_knn: 5           # kNN for distance-to-manifold
+  manifold_time_points: 75  # number of time grid points for d_manifold(t)
+  manifold_subsample: 3000  # cap on manifold reference points
+
+output:
+  base_dir: ./outputs/ic_contraction
+  run_name: default

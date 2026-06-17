@@ -635,6 +635,45 @@ def _scent_proximity_reward(env, data, info, metrics, weight) -> float:
     return weighted_reward
 
 
+@_named_reward("rear_transit_cost")
+def _rear_transit_cost(env, data, info, metrics, weight) -> float:
+    """Per-step penalty for being reared when NOT in XY range of any active HIGH patch.
+
+    Forces the agent to drop the rear after a harvest and walk on all fours to
+    the next patch, instead of constantly rearing-and-walking. Combined with
+    ``dwell_occupancy`` (which only fires inside a patch with the right posture),
+    the optimal strategy becomes:
+
+        walk → arrive at patch → rear (high) / crouch-still (low) → sustain
+        for dwell_steps → harvest → drop → walk to next patch.
+
+    Note: ``weight`` here is a per-step COST; the returned value is negative.
+    Set weight=0 to disable. Sensible range: 0.1–1.0 against
+    ``occupancy_weight=1.0`` and ``harvest_weight=10.0`` with
+    ``high_treat_reward_mult=4.0``.
+    """
+    skull_pos = env._get_skull_pos(data)
+    reared = skull_pos[2] > env._config.rear_height_thresh
+    treat_positions = info["treat_positions"]
+    treat_collected = info["treat_collected"]
+    heights = treat_positions[:, 2]
+    thresh = 0.5 * (env._config.treat_height + env._config.high_treat_height)
+    is_high_treat = heights > thresh
+    active_high = jp.logical_not(treat_collected) & is_high_treat
+    xy_dists = jp.linalg.norm(
+        skull_pos[:2] - treat_positions[:, :2], axis=-1
+    )
+    near_active_high = jp.any(
+        active_high & (xy_dists < env._config.treat_sphere_radius)
+    )
+    # Cost only when reared AND not near any active high patch
+    cost = -weight * jp.where(
+        reared & jp.logical_not(near_active_high), 1.0, 0.0
+    )
+    metrics["rewards/rear_transit_cost"] = cost
+    return cost
+
+
 # --- Termination Functions ---
 
 

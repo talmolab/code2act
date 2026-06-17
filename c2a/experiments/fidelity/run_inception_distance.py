@@ -939,13 +939,34 @@ def main(cfg: DictConfig) -> None:
     c2a_params = (norm_state, policy_params)
 
     codes_data = np.load(cfg.data.codes_path)
-    all_codes = codes_data["all_codes"]  # (N_balanced, 250)
 
     with open(cfg.data.balanced_split_path) as f:
         splits = json.load(f)
     balanced_indices = np.array(
         splits["balanced"]["train_indices"] + splits["balanced"]["test_indices"]
     )
+
+    if "all_codes" in codes_data.files:
+        all_codes = codes_data["all_codes"]  # (N_balanced, 250)
+    else:
+        # Designed / hand-built codebooks store per-clip train/test code
+        # sequences plus their clip indices rather than a single all_codes
+        # array; assemble the per-frame code stream aligned to balanced_indices.
+        idx2seq: dict[int, np.ndarray] = {}
+        for ck, ik in (("train_codes", "train_indices"),
+                       ("test_codes", "test_indices")):
+            for ind, seq in zip(codes_data[ik], codes_data[ck]):
+                idx2seq[int(ind)] = seq
+        missing = [int(b) for b in balanced_indices if int(b) not in idx2seq]
+        if missing:
+            raise KeyError(
+                f"codes_path {cfg.data.codes_path} lacks 'all_codes' and is "
+                f"missing codes for {len(missing)} balanced clip(s) "
+                f"(e.g. {missing[:5]}); cannot assemble the code stream."
+            )
+        all_codes = np.array([idx2seq[int(b)] for b in balanced_indices])
+        log.info(f"Assembled all_codes {all_codes.shape} from per-clip "
+                 f"train/test sequences (no 'all_codes' key in npz).")
 
     clip_length = int(ckpt_cfg.env_config.clip_length)
     ctrl_dt = float(ckpt_cfg.env_config.ctrl_dt)

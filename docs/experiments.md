@@ -12,6 +12,24 @@ own co-located `configs/` directory:
 | `dynamics/` | `run_hidden_dynamics`, `run_hidden_trajectory`, `run_labeled_hidden_dynamics`, `run_labeled_hidden_dynamics_controlled` | GRU hidden-state dynamical-systems analyses |
 | `code_grid/` | `run_code_grid_rollouts`, `run_code_grid_dynamics`, `run_code_grid_behavior_mmd` | Code-grid pipeline (rollouts → merge → dynamics → MMD) |
 | `population/` | `run_population_intention_dynamics`, `run_population_held_codes`, `run_population_label_patterns`, `render_population_*` | Multi-walker population rollouts + renderers |
+| `ic_contraction/` | `run_ic_contraction` | **Standalone** — initial-condition contraction / the one-to-many test |
+
+`ic_contraction/` is a standalone analysis (its own folder + `outputs/ic_contraction/`,
+not under any theme): pure post-processing (no GPU) of the `run_code_grid_rollouts`
+held-code rollouts (100 bodies from diverse poses, code held constant,
+decoder-only). Per code, in pose space (root-stripped, yaw-removed qpos) **and**
+GRU hidden space, it measures whether bodies *converge*: `σ_inst(t)`
+(phase-sensitive cross-body dispersion), `d_manifold(t)` (phase-**invariant**
+distance to the shared late-time motif manifold, leave-half-out PCA+kNN), and
+contraction ratios `ρ=median(late)/median(early)`, with a **cross-code null**
+control. Conditions = the three featured tokenizers on the diverse-IC protocol
+(KPMS, multiscale-designed, kinematics-VAE). Result: every condition contracts
+(phase-invariant ρ≈0.22–0.37≪1) in both spaces while the null diverges (ρ>1);
+Immobile/Rear → fixed points, Walk/Turn → limit cycles (manifold collapses,
+instantaneous plateaus on phase). Run:
+`python -m c2a.experiments.ic_contraction.run_ic_contraction`. Outputs
+`ratio_matrix_*`, `overview_*`, `curves_*`, `summary_*` + `contraction_summary.json`
++ `FINDINGS.md` under `outputs/ic_contraction/default/`.
 
 Invoke a script with its theme in the module path:
 `python -m c2a.experiments.<theme>.<script>` (e.g.

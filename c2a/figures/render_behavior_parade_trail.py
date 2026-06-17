@@ -46,8 +46,16 @@ from c2a.rendering_utils import _disable_lights_recursive
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-PARADE_DATA = MOSEQ_DIR / "outputs" / "moseq_behavior_parade" / "data" / "parade_rollouts.npz"
-PARADE_META = MOSEQ_DIR / "outputs" / "moseq_behavior_parade" / "code_selection.json"
+# Behavior-parade rollouts live under the repo-root outputs/ tree (never
+# c2a/outputs), one subdir per behavior sequence written by
+# run_behavior_parade. Select the sequence to render here.
+PARADE_SEQUENCE = "walk_groom_rear"
+_PARADE_DIR = (
+    get_repo_root() / "outputs" / "behavior" / "moseq_behavior_parade"
+    / PARADE_SEQUENCE
+)
+PARADE_DATA = _PARADE_DIR / "data" / "parade_rollouts.npz"
+PARADE_META = _PARADE_DIR / "code_selection.json"
 
 BEHAVIOR_ORDER = ["rear", "walk", "groom"]
 BEHAVIOR_LABELS = {"walk": "Walk", "groom": "Immobility", "rear": "Rear"}
@@ -191,6 +199,12 @@ def build_parade_trail_model(
     all_positions = np.concatenate([p for p, _ in trace_segments], axis=0)
     if camera_lookat is None:
         camera_lookat = all_positions.mean(axis=0)
+        # center horizontally on the content span (not the point-density mean,
+        # which is pulled toward the dense walk trace -> off-center framing)
+        camera_lookat[0] = 0.5 * (all_positions[:, 0].min()
+                                  + all_positions[:, 0].max())
+        camera_lookat[1] = 0.5 * (all_positions[:, 1].min()
+                                  + all_positions[:, 1].max())
         camera_lookat[2] = max(camera_lookat[2], 0.06)
 
     el_rad = np.radians(camera_elevation)
@@ -387,6 +401,23 @@ def main():
             copy_qpos[k][0] += phase_dx[copy_phase[k]]
         for trace_pos, _rgba, pi in raw_trace:
             trace_pos[:, 0] += phase_dx[pi]
+        # Bridge the gaps between offset phases so the trace reads as one
+        # continuous line (walk -> immobile -> rear), not just within walk.
+        # Each bridge is a colour gradient from the previous phase's colour to
+        # the next phase's, drawn as several short sub-segments.
+        bridges = []
+        n_sub = 10
+        for pi in range(len(raw_trace) - 1):
+            end_pt = raw_trace[pi][0][-1].copy()
+            start_pt = raw_trace[pi + 1][0][0].copy()
+            c0 = np.array(BEHAVIOR_RGB[boundaries[pi][0]])
+            c1 = np.array(BEHAVIOR_RGB[boundaries[pi + 1][0]])
+            pts = np.linspace(end_pt, start_pt, n_sub + 1)
+            for s in range(n_sub):
+                frac = (s + 0.5) / n_sub
+                col = ((1 - frac) * c0 + frac * c1).tolist()
+                bridges.append((pts[s:s + 2], [*col, 0.85], -1))
+        raw_trace.extend(bridges)
         log.info(f"  phase x-offsets: "
                  f"{[round(phase_dx[pi], 3) for pi in range(len(boundaries))]}")
     trace_segments = [(tp, rgba) for tp, rgba, _pi in raw_trace]

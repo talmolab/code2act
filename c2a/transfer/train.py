@@ -59,7 +59,8 @@ def make_env(decoder_ckpt: str, prior_kind: str, dwell: int, repo: Path,
              head_dense_weight: float = 5.0, task: str = "rearing",
              scent_weight: float = 1.0, forage_overrides: dict | None = None,
              occupancy_weight: float = 1.0, harvest_weight: float = 10.0,
-             mamba_path: str | None = None):
+             mamba_path: str | None = None,
+             rear_transit_cost: float = 0.0):
     from vnl_playground.tasks.rodent import consts
 
     frozen = load_frozen_decoder(str(repo / decoder_ckpt))
@@ -106,6 +107,8 @@ def make_env(decoder_ckpt: str, prior_kind: str, dwell: int, repo: Path,
             "dwell_harvest": {"weight": float(harvest_weight)},
             "scent_proximity": {"weight": float(scent_weight)},
         }
+        if rear_transit_cost > 0:
+            cfg.reward_terms["rear_transit_cost"] = {"weight": float(rear_transit_cost)}
         for k, v in (forage_overrides or {}).items():
             if k == "treat_weight":
                 continue  # not used in dwell mode
@@ -144,6 +147,9 @@ def main():
     p.add_argument("--immobile_thresh", type=float, default=0.06, help="torso speed below which = immobile (low patches)")
     p.add_argument("--occupancy_weight", type=float, default=1.0, help="dwell: per-step sustain reward")
     p.add_argument("--harvest_weight", type=float, default=10.0, help="dwell: harvest-completion bonus")
+    p.add_argument("--rear_transit_cost", type=float, default=0.0,
+                   help="dwell: per-step cost when reared but not in range of any active high patch "
+                        "(forces drop-after-harvest pattern; 0=off, 0.5 sensible)")
     p.add_argument("--scent_weight", type=float, default=1.0)
     # forage TRAIN arena
     p.add_argument("--treat_radius", type=float, default=0.08)
@@ -202,7 +208,8 @@ def main():
     mk = lambda ov: make_env(args.decoder_ckpt, args.prior, args.dwell, repo,
                              args.head_dense_weight, args.task, args.scent_weight, ov,
                              args.occupancy_weight, args.harvest_weight,
-                             mamba_path=args.mamba_path)
+                             mamba_path=args.mamba_path,
+                             rear_transit_cost=args.rear_transit_cost)
     env, frozen, prior = mk(train_forage)
     eval_env, _, _ = mk(train_forage)
 
