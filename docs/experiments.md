@@ -13,6 +13,7 @@ own co-located `configs/` directory:
 | `code_grid/` | `run_code_grid_rollouts`, `run_code_grid_dynamics`, `run_code_grid_behavior_mmd` | Code-grid pipeline (rollouts → merge → dynamics → MMD) |
 | `population/` | `run_population_intention_dynamics`, `run_population_held_codes`, `run_population_label_patterns`, `render_population_*` | Multi-walker population rollouts + renderers |
 | `ic_contraction/` | `run_ic_contraction` | **Standalone** — initial-condition contraction / the one-to-many test |
+| `perturbation/` | `run_perturbation_recovery` | **Standalone** — perturbation→recovery / codes as *defended* attractors (the interventional test) |
 
 `ic_contraction/` is a standalone analysis (its own folder + `outputs/ic_contraction/`,
 not under any theme): pure post-processing (no GPU) of the `run_code_grid_rollouts`
@@ -30,6 +31,35 @@ instantaneous plateaus on phase). Run:
 `python -m c2a.experiments.ic_contraction.run_ic_contraction`. Outputs
 `ratio_matrix_*`, `overview_*`, `curves_*`, `summary_*` + `contraction_summary.json`
 + `FINDINGS.md` under `outputs/ic_contraction/default/`.
+
+`perturbation/` is a standalone GPU experiment (its own folder +
+`outputs/perturbation/`). It is the *interventional* counterpart to
+`ic_contraction`: instead of only varying the initial condition, it lets bodies
+converge under a held code and then **injects an external velocity impulse**
+(a "shove") mid-rollout, measuring whether the controller drives the body back
+onto the code-specific attractor. Two properties make it the experiment the
+paper's "executable code" thesis needs. (1) It is a genuine *intervention* —
+a descriptive token cannot be perturbed; an executable one can. (2) It is
+**non-circular**: the goal pose is defined from the UNPERTURBED (amp=0)
+rollouts, independently of the perturbed trajectory, so the body is pushed
+*away* from a pre-defined target and must return (IC-contraction, by contrast,
+defines the goal from the same rollouts it scores). Decoder-only
+(`z_e_scale=0`, deterministic), so recovery is attributable to the code's
+learned dynamics. Per (code, amplitude) it rolls out `K` bodies from diverse
+poses, applies the impulse at `t_perturb` (after convergence), and measures the
+phase-invariant distance `d(t)` to the amp=0 attractor cloud (kNN-to-cloud in
+PCA pose space and GRU-hidden space). Controls: an **amplitude sweep** (recovery
+vs. shove magnitude maps the basin) and a **wrong-code control** (distance of
+the perturbed bodies to a *different* code's attractor stays high — recovery is
+code-specific, not a generic righting reflex). Outputs `recovery_curves_*`,
+`basin_*` figures + `perturbation_summary.json` (per-code floor / peak / final /
+recovery-fraction / recovery-time) under
+`outputs/perturbation/perturbation_recovery/<run>/`. Run:
+`python -m c2a.experiments.perturbation.run_perturbation_recovery`. The featured
+controller is the K=100 Keypoint-MoSeq checkpoint `260611_073323_750085` (the
+same controller behind the code-grid / IC-contraction results). `codes=null`
+auto-picks the highest-usage code per rollout-derived behavior from the
+`labels_run` code-grid run.
 
 Invoke a script with its theme in the module path:
 `python -m c2a.experiments.<theme>.<script>` (e.g.
@@ -460,6 +490,30 @@ python -m c2a.figures.render_behavior_triptych
 python -m c2a.figures.plot_hidden_trajectory
 python -m c2a.figures.render_single_code_categories
 # ...
+```
+
+### Codebook atlases (medoid body selection)
+
+`render_codebook_atlas` (hand-designed codebook) and `render_code_atlas_grouped`
+(data-discovered tokenizers) both render each code held constant as a
+frozen-ghost motion trail, reusing the `run_code_grid_rollouts` held-code
+rollouts (no new rollouts). Both pick the **medoid** body — the walker whose
+late-window poses sit most densely inside the pooled attractor cloud
+(root-stripped, yaw-removed pose space, the IC-contraction features) — i.e. the
+body that *actually resembles* what the code produces, rather than the
+single best-reward body (which can be an idiosyncratic outlier). Use
+`--select best_reward` on `render_codebook_atlas` to restore the old behavior.
+`render_code_atlas_grouped` lays out the top-N most-used codes **grouped by modal
+behavior** (Fig 6b ordering), making the redundancy visible — one behavior is
+realized by several codes (e.g. ~10 Immobile codes). Outputs to
+`outputs/codebook_atlas/`.
+
+```bash
+python -m c2a.figures.render_codebook_atlas --select medoid          # designed (Fig 10)
+python -m c2a.figures.render_code_atlas_grouped --run kpms --top 15 \
+    --checkpoint model_checkpoints/260611_073323_750085
+python -m c2a.figures.render_code_atlas_grouped --run best_vae --top 15 \
+    --checkpoint model_checkpoints/260603_180852_140475
 ```
 
 ### Hidden-state visualization + analysis scripts
