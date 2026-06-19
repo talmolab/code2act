@@ -47,9 +47,69 @@ from c2a.figures.render_codebook_atlas import (
     render_one_code,
     select_representative_body,
 )
+from c2a.experiments.ic_contraction.run_ic_contraction import pose_features
+from sklearn.decomposition import PCA
+from sklearn.neighbors import NearestNeighbors
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+
+def _quat_to_yaw(quat: np.ndarray) -> np.ndarray:
+    """Yaw (heading) from a (w,x,y,z) quaternion array ``(..., 4)``."""
+    w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+    return np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def select_behavior_exemplar(qpos: np.ndarray, behavior: str, hold: int,
+                             central_frac: float = 0.6) -> int:
+    """Pick the body that most clearly *performs* the code's modal behavior.
+
+    The medoid is the most typical body, but a typical body need not display
+    the behavior strongly (a weak walker, a low rear). Here we first keep the
+    ``central_frac`` of bodies that sit closest to the shared attractor cloud
+    (stable, on-motif; excludes fallers/sliders), then among those pick the one
+    that maximizes a behavior-discriminative kinematic: root height for Rear,
+    planar speed for Walk, yaw rate for Turn, and stillness for Immobile.
+    Falls back to the medoid for unlabeled behaviors."""
+    B = qpos.shape[0]
+    hold = min(hold, qpos.shape[1])
+    if B <= 1:
+        return 0
+    q = np.asarray(qpos[:, :hold], dtype=np.float64)
+    n_late = max(2, int(round(0.33 * hold)))
+    late = slice(hold - n_late, hold)
+
+    # --- attractor-closeness (same features as the medoid) for the central filter
+    feat = pose_features(q.astype(np.float32))
+    flat = feat.reshape(-1, feat.shape[-1])
+    mean = flat.mean(0)
+    std = np.where(flat.std(0) < 1e-6, 1.0, flat.std(0))
+    fz = (feat - mean) / std
+    M = fz[:, late].reshape(-1, fz.shape[-1])
+    rng = np.random.RandomState(0)
+    if M.shape[0] > 2500:
+        M = M[rng.choice(M.shape[0], 2500, replace=False)]
+    dim = min(10, M.shape[1], M.shape[0] - 1)
+    pca = PCA(n_components=dim).fit(M)
+    nn = NearestNeighbors(n_neighbors=min(5, M.shape[0])).fit(pca.transform(M))
+    close = np.array([nn.kneighbors(pca.transform(fz[b, late]))[0].mean()
+                      for b in range(B)])
+    n_keep = max(1, int(round(central_frac * B)))
+    central = np.argsort(close)[:n_keep]
+
+    # --- behavior-discriminative kinematics
+    speed = np.linalg.norm(np.diff(q[:, :, :2], axis=1), axis=2).mean(1)
+    height = q[:, late, 2].mean(1)
+    yaw = np.unwrap(_quat_to_yaw(q[:, :, 3:7]), axis=1)
+    yaw_rate = np.abs(np.diff(yaw, axis=1)).mean(1)
+    motion = speed + 0.1 * q[:, :, 7:].std(1).mean(1)
+    score = {"Walk": speed, "Rear": height, "Turn": yaw_rate,
+             "Immobile": -motion}.get(behavior)
+    if score is None:
+        return select_representative_body(qpos, hold)
+    best = central[int(np.argmax(score[central]))]
+    return int(best)
 
 # Behavior row order (matches the paper's matrices / Fig 6b ordering).
 BEHAVIOR_ORDER = ["Immobile", "Walk", "Rear", "Turn"]
@@ -118,8 +178,8 @@ def main():
         d = np.load(f, allow_pickle=True)
         q = np.asarray(d["qpos"])
         hold = min(args.hold, q.shape[1])
-        body = select_representative_body(q, hold)
         beh = code_beh.get(cid, "Other")
+        body = select_behavior_exemplar(q, beh, hold)
         color = GROUP_COLORS_RGB.get(beh, (0.5, 0.5, 0.5))
         frames[cid] = render_one_code(
             env, q[body, :hold], args.n_copies, color,

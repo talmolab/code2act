@@ -1,0 +1,48 @@
+# =============================================================================
+# Auto-generated multi-scale codebook (K=19 + UNL = 20 slots)
+# =============================================================================
+# Built by c2a.codegen.auto_codebook_generator.
+# Source CSV : data/rodent/rodent_labels.csv
+# Rule       : ngram_orders=[1, 2, 3]
+#              min_component_frames=30 (H5 frames; CSV is 2x)
+#              min_pattern_instances=10
+# Tier       : T1 if valid>=50, T2 if 20..49, T3 if 10..19 (auto-assigned).
+
+priority_rule: type_then_length
+
+codebook:
+  - {id: 0, name: fine.Walk, type: fine, tier: T1, color: [0.7, 0.7, 0.7], label: Walk}
+  - {id: 1, name: fine.Rear, type: fine, tier: T1, color: [0.7, 0.7, 0.7], label: Rear}
+  - {id: 2, name: fine.Turn, type: fine, tier: T1, color: [0.7, 0.7, 0.7], label: Turn}
+  - {id: 3, name: fine.Immobile, type: fine, tier: T1, color: [0.7, 0.7, 0.7], label: Immobile}
+  - {id: 4, name: n2.Turn_Imm, type: n2, tier: T1, color: [0.5, 0.85, 0.5], labels: [
+    Turn, Immobile]}
+  - {id: 5, name: n2.Imm_Turn, type: n2, tier: T1, color: [0.5, 0.85, 0.5], labels: [
+    Immobile, Turn]}
+  - {id: 6, name: n2.Imm_Rear, type: n2, tier: T1, color: [0.5, 0.85, 0.5], labels: [
+    Immobile, Rear]}
+  - {id: 7, name: n2.Rear_Imm, type: n2, tier: T1, color: [0.5, 0.85, 0.5], labels: [
+    Rear, Immobile]}
+  - {id: 8, name: n2.Rear_Turn, type: n2, tier: T2, color: [0.5, 0.85, 0.5], labels: [
+    Rear, Turn]}
+  - {id: 9, name: n2.Walk_Turn, type: n2, tier: T3, color: [0.5, 0.85, 0.5], labels: [
+    Walk, Turn]}
+  - {id: 10, name: n2.Imm_Walk, type: n2, tier: T3, color: [0.5, 0.85, 0.5], labels: [
+    Immobile, Walk]}
+  - {id: 11, name: n2.Walk_Imm, type: n2, tier: T3, color: [0.5, 0.85, 0.5], labels: [
+    Walk, Immobile]}
+  - {id: 12, name: n3.Imm_Turn_Imm, type: n3, tier: T1, color: [0.2, 0.65, 0.3], labels: [
+    Immobile, Turn, Immobile]}
+  - {id: 13, name: n3.Imm_Rear_Imm, type: n3, tier: T2, color: [0.2, 0.65, 0.3], labels: [
+    Immobile, Rear, Immobile]}
+  - {id: 14, name: n3.Rear_Turn_Imm, type: n3, tier: T3, color: [0.2, 0.65, 0.3], labels: [
+    Rear, Turn, Immobile]}
+  - {id: 15, name: n3.Turn_Imm_Rear, type: n3, tier: T3, color: [0.2, 0.65, 0.3], labels: [
+    Turn, Immobile, Rear]}
+  - {id: 16, name: n3.Turn_Imm_Turn, type: n3, tier: T3, color: [0.2, 0.65, 0.3], labels: [
+    Turn, Immobile, Turn]}
+  - {id: 17, name: n3.Walk_Turn_Imm, type: n3, tier: T3, color: [0.2, 0.65, 0.3], labels: [
+    Walk, Turn, Immobile]}
+  - {id: 18, name: n3.Rear_Imm_Turn, type: n3, tier: T3, color: [0.2, 0.65, 0.3], labels: [
+    Rear, Immobile, Turn]}
+  - {id: 19, name: UNL, type: sentinel, tier: UNL, color: [0.3, 0.3, 0.3]}

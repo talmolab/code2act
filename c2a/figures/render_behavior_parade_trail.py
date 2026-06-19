@@ -60,6 +60,50 @@ PARADE_META = _PARADE_DIR / "code_selection.json"
 BEHAVIOR_ORDER = ["rear", "walk", "groom"]
 BEHAVIOR_LABELS = {"walk": "Walk", "groom": "Immobility", "rear": "Rear"}
 
+
+def _quat_to_yaw(quat):
+    """Yaw from a (w,x,y,z) quaternion array (..., 4)."""
+    w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+    return np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def select_parade_exemplar(qpos_all, boundaries):
+    """Pick the body that best performs the whole parade sequence.
+
+    Each phase contributes a z-scored behavior-discriminative kinematic (planar
+    speed for walk, root height for rear, yaw rate for turn, stillness for
+    groom/immobile); the body with the highest summed score across phases is the
+    clearest exemplar of the full walk/groom/rear sequence.
+    """
+    K = qpos_all.shape[0]
+    if K <= 1:
+        return 0
+
+    def _z(a):
+        s = a.std()
+        return (a - a.mean()) / s if s > 1e-9 else a * 0.0
+
+    total = np.zeros(K)
+    for beh, s, e in boundaries:
+        if e <= s:
+            continue
+        seg = qpos_all[:, s:e]
+        speed = np.linalg.norm(np.diff(seg[:, :, :2], axis=1), axis=2).mean(1)
+        height = seg[:, :, 2].mean(1)
+        yaw = np.unwrap(_quat_to_yaw(seg[:, :, 3:7]), axis=1)
+        yaw_rate = np.abs(np.diff(yaw, axis=1)).mean(1)
+        motion = speed + 0.1 * seg[:, :, 7:].std(1).mean(1)
+        b = beh.lower()
+        if "walk" in b:
+            total += _z(speed)
+        elif "rear" in b:
+            total += _z(height)
+        elif "turn" in b:
+            total += _z(yaw_rate)
+        else:  # groom / immobile
+            total += _z(-motion)
+    return int(np.argmax(total))
+
 # Behavior colors (matching experiments/shared/plotting.py)
 BEHAVIOR_RGB = {
     "walk": (0.836, 0.369, 0.0),      # #D55E00 orange
@@ -283,8 +327,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Render behavior transition parade as motion trail"
     )
-    parser.add_argument("--body-idx", type=int, default=0,
-                        help="Which body from the parade to use (default: 0)")
+    parser.add_argument("--body-idx", type=int, default=-1,
+                        help="Which body from the parade to use; -1 (default) "
+                             "auto-selects the body that best performs the "
+                             "whole sequence")
     parser.add_argument("--n-copies-per-beh", type=int, default=4,
                         help="Frozen copies per behavior phase")
     parser.add_argument("--phase-spacing", type=float, default=0.0,
@@ -341,8 +387,7 @@ def main():
 
     # ── Load parade data ─────────────────────────────────────────────
     d = np.load(PARADE_DATA, allow_pickle=True)
-    qpos = np.asarray(d["qpos"][args.body_idx], dtype=np.float64)
-    log.info(f"Parade body {args.body_idx}: {qpos.shape}")
+    qpos_all = np.asarray(d["qpos"], dtype=np.float64)  # (K, T, nq)
 
     with open(PARADE_META) as f:
         selection = json.load(f)
@@ -363,6 +408,14 @@ def main():
                 beh_len = len(selection[beh]["code_sequence"])
                 boundaries.append((beh, offset, offset + beh_len))
                 offset += beh_len
+
+    # Pick the body that best performs the full sequence unless overridden.
+    if args.body_idx is not None and args.body_idx >= 0:
+        body_idx = int(args.body_idx)
+    else:
+        body_idx = select_parade_exemplar(qpos_all, boundaries)
+    qpos = qpos_all[body_idx]
+    log.info(f"Parade body {body_idx} of {qpos_all.shape[0]}: {qpos.shape}")
 
     for beh, start, end in boundaries:
         log.info(f"  {beh}: frames {start}-{end}")

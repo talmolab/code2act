@@ -57,14 +57,15 @@ GROUP_COLORS_RGB = {
     "Turn": (0.506, 0.447, 0.702),
     "Walk": (0.333, 0.659, 0.408),
 }
-SCALE_ORDER = ["fine", "p3", "d3", "n4", "n5", "long"]
+SCALE_ORDER = ["fine", "n2", "p3", "d3", "n3", "n4", "n5"]
 SCALE_TITLE = {
     "fine": "Fine (single behavior)",
+    "n2": "2-gram",
     "p3": "Palindromic 3-gram",
     "d3": "Directed 3-gram",
+    "n3": "3-gram",
     "n4": "4-gram",
     "n5": "5-gram",
-    "long": "Long (sustained)",
 }
 _TOK = {"Walk": "Walk", "Rear": "Rear", "Turn": "Turn", "Imm": "Immobile"}
 

@@ -87,13 +87,13 @@ def load_codebook(yaml_path: str | Path) -> dict[str, Any]:
                     f"codebook entry id={e['id']} type=long requires "
                     f"'min_csv_frames'"
                 )
-        elif e["type"] in ("p3", "d3", "n4", "n5"):
+        elif e["type"] in ("n2", "p3", "d3", "n3", "n4", "n5"):
             if "labels" not in e:
                 raise ValueError(
                     f"codebook entry id={e['id']} type={e['type']} requires "
                     f"'labels' list"
                 )
-            n = {"p3": 3, "d3": 3, "n4": 4, "n5": 5}[e["type"]]
+            n = {"n2": 2, "p3": 3, "d3": 3, "n3": 3, "n4": 4, "n5": 5}[e["type"]]
             if len(e["labels"]) != n:
                 raise ValueError(
                     f"codebook entry id={e['id']} type={e['type']} expects "
@@ -229,7 +229,7 @@ def _enumerate_matches(
             for lab, s, e in chain:
                 if lab == target and (e - s) >= min_d:
                     matches.append((s, e, entry["id"], e - s))
-        elif t in ("p3", "d3", "n4", "n5"):
+        elif t in ("n2", "p3", "d3", "n3", "n4", "n5"):
             seq = entry["labels"]
             n = len(seq)
             for i in range(n_segs - n + 1):
@@ -255,6 +255,8 @@ _TYPE_PRIORITY: dict[str, int] = {
     "n4":   4,
     "p3":   3,
     "d3":   3,
+    "n3":   3,
+    "n2":   2,
     "long": 2,
     "fine": 1,
     "sentinel": 0,
