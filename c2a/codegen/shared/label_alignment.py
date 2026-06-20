@@ -70,9 +70,8 @@ BEHAVIOR_TO_INT: dict[str, int] = {b: i for i, b in enumerate(BEHAVIORS)}
 DIRECTION_TO_INT: dict[str, int] = {d: i for i, d in enumerate(DIRECTIONS)}
 COMBINED_TO_INT: dict[str, int] = {c: i for i, c in enumerate(COMBINED_LABELS)}
 
-# 5-class scheme used by ``c2a.codegen.code_sources.SOURCE_GT_DIRECTIONAL_TURN``
-# and by ``c2a.experiments.dynamics.run_labeled_hidden_dynamics`` when configured
-# for a 5-class breakdown. Direction is collapsed for non-Turn behaviors:
+# 5-class scheme used by ``c2a.codegen.code_sources.SOURCE_GT_DIRECTIONAL_TURN``.
+# Direction is collapsed for non-Turn behaviors:
 #
 #   Immobile (any direction) -> 0
 #   Rear     (any direction) -> 1

@@ -9,9 +9,9 @@ own co-located `configs/` directory:
 | `tokenizer/` | `run_tokenizer_diagnostics`, `run_tokenizer_videos`, `run_roundtrip`, `run_code_distinctness`, `run_code_generation` | Segmenter / code quality (no RL decoder) |
 | `behavior/` | `run_inference`, `run_code_sequence`, `run_single_code`, `run_behavior_parade`, `run_generalization` | Decoder rollouts & motion-imitation behavior |
 | `fidelity/` | `run_inception_distance`, `run_generalization_kid`, `run_gait_dynamics` | Distribution-quality metrics (FID / KID / PSD) |
-| `dynamics/` | `run_hidden_dynamics`, `run_hidden_trajectory`, `run_labeled_hidden_dynamics`, `run_labeled_hidden_dynamics_controlled` | GRU hidden-state dynamical-systems analyses |
-| `code_grid/` | `run_code_grid_rollouts`, `run_code_grid_dynamics`, `run_code_grid_behavior_mmd` | Code-grid pipeline (rollouts → merge → dynamics → MMD) |
-| `population/` | `run_population_intention_dynamics`, `run_population_held_codes`, `run_population_label_patterns`, `render_population_*` | Multi-walker population rollouts + renderers |
+| `dynamics/` | `run_hidden_dynamics`, `run_labeled_hidden_dynamics_controlled` | GRU hidden-state helpers (now imported as libraries by the `code_grid/` pipeline; no longer standalone paper analyses) |
+| `code_grid/` | `run_code_grid_rollouts`, `run_code_grid_dynamics`, `run_code_grid_behavior_mmd` | Code-grid pipeline (rollouts → merge → dynamics → MMD) — the per-code hidden-dynamics hub |
+| `ensemble_manifold/` | `run_population_intention_dynamics`, `run_population_held_codes`, `run_population_label_patterns`, `render_population_*` | Multi-walker ensemble rollouts in (hidden, intention) space + renderers (not in the current paper) |
 | `ic_contraction/` | `run_ic_contraction` | **Standalone** — initial-condition contraction / the one-to-many test |
 | `perturbation/` | `run_perturbation_recovery` | **Standalone** — perturbation→recovery / codes as *defended* attractors (the interventional test) |
 
@@ -79,11 +79,9 @@ with the venv active.
 | 7 | `run_behavior_parade` | `behavior_parade_exp.yaml` | Behavior transition parade — walk→groom→rear |
 | 9 | `run_inception_distance` | `inception_distance_exp.yaml` | FID/KID — generative distribution quality vs real mocap |
 | 10 | `run_gait_dynamics` | `gait_dynamics_exp.yaml` | Gait PSD — Code2Act vs MIMIC-MJX walking frequency |
-| 11 | `run_hidden_dynamics` | `hidden_dynamics_exp.yaml` | RNN hidden state dynamics — PCA of GRU hidden states per sustained code (kinematic-heuristic-derived 3-class labels: walk / immobility / rear) |
-| 12 | `run_hidden_trajectory` | `hidden_trajectory_exp.yaml` | Natural hidden trajectories colored by code |
-| 13 | `run_generalization_kid` | `generalization_kid_exp.yaml` | Generalization KID — MIMIC vs C2A distribution quality on unseen data |
-| 14 | `run_labeled_hidden_dynamics` | `labeled_hidden_dynamics_exp.yaml` | RNN hidden state dynamics anchored on **manual** behavior + direction labels from `data/rodent/rodent_labels.csv` (TopoMimic-annotation). Replays actual KPMS code sequences from labeled segments — no kinematic heuristic, no sustained-constant-code regime. Three label granularities saved: behavior (4) / direction (3) / combined (up to 12). |
-| 15 | `run_labeled_hidden_dynamics_controlled` | `labeled_hidden_dynamics_controlled_exp.yaml` | Controlled 2-pose × 3-sequence diagnostic. Holds each of the 5 directional-turn codes for a fixed duration in a fixed order, from two controlled starting poses (walking / rearing), in **decoder-only mode** (`z_e_scale=0` bypasses the continuous encoder). Produces 6 side-by-side videos with rotating-PCA panel + phase banner. |
+| 11 | `run_hidden_dynamics` | `hidden_dynamics_exp.yaml` | **Helper library** (no longer a standalone analysis): exposes `run_rollout_with_hidden`, imported by the `code_grid/` pipeline. Originally PCA of GRU hidden states per sustained code. |
+| 13 | `run_generalization_kid` | `generalization_kid_exp.yaml` | Generalization KID — MIMIC vs C2A distribution quality on unseen data (not in the current paper) |
+| 15 | `run_labeled_hidden_dynamics_controlled` | `labeled_hidden_dynamics_controlled_exp.yaml` | **Helper library** + controlled 2-pose × 3-sequence diagnostic. Exposes `_pick_start_clips` / `_build_pose_env`, imported by the `code_grid/` pipeline and `run_code_distinctness`. Holds each of the 5 directional-turn codes for a fixed duration, from two controlled starting poses, in **decoder-only mode** (`z_e_scale=0`). |
 | 16 | `run_code_grid_rollouts` | `code_grid_rollouts_exp.yaml` | Per-code 5x5 grid videos from controlled poses + MMD merge + label merge + per-code majority-label tagging. See "Code-grid pipeline" below. |
 | 17 | `run_code_grid_dynamics` | `code_grid_rollouts_exp.yaml` | DSA + rSLDS over the merged-cluster hidden trajectories from experiment 16. Runs both MMD-merge and label-merge strategies in one pass; cluster tick labels and regime-trace bands carry the majority-label string. |
 | 18 | `run_code_grid_behavior_mmd` | `code_grid_behavior_mmd.yaml` | Per-cluster MMD² (RBF) + KID (poly) between each merged cluster's pooled rollout qpos and each canonical labeled GT behavior class (the 12-cell behavior×direction grid). Runs for **both** MMD-merged and label-merged clusters — the labels now come from the TopoMimic auto-labeler over the rollouts (a separate signal from qpos-MMD), so MMD-merge clusters carry a meaningful label hypothesis and the comparison is no longer tautological. Mirrors the TopoVNL `feature_analysis/mmd_kid` flow. |
@@ -226,83 +224,17 @@ set `C2A_GENERALIZATION_H5` env var if the file lives elsewhere.
 Computes root-trajectory PSD for Code2Act walking rollouts and compares
 with MIMIC-MJX baselines — the main gait-fidelity metric.
 
-### 11, 12. `run_hidden_dynamics`, `run_hidden_trajectory`
-Record GRU hidden states during rollouts, run PCA, and visualize how
-different codes activate different manifolds of hidden space. Used in the
-paper's internal-dynamics analysis.
+### 11. `run_hidden_dynamics` (helper library)
+No longer a standalone analysis. It exposes `run_rollout_with_hidden`
+(sustain a code, record GRU hidden states), imported by
+`code_grid/run_code_grid_rollouts`. The per-code hidden-dynamics analysis
+that fed the paper now lives in the **`code_grid/` pipeline** (exp 16–18),
+which supersedes the old `run_hidden_trajectory` /
+`run_labeled_hidden_dynamics` standalone scripts (both removed) and their
+`plot_hidden_*` / `render_hidden_dynamics_*` plotters (removed; only
+`plot_hidden_rslds.fit_rslds` survives, imported by `run_code_grid_dynamics`).
 
-`run_hidden_dynamics` picks **one representative KPMS code per behavior**
-by kinematic heuristic (z_rise / xy_disp / xyz_disp) and *sustains it for
-250 frames*. This is fast and gives a clean PCA picture but conflates
-"what the GRU does in syllable k" with "what the GRU does when the input
-is held constant at the embedding of code k". The companion experiment
-below (`run_labeled_hidden_dynamics`) uses manual labels and natural
-code sequences to address this.
-
-### 14. `run_labeled_hidden_dynamics`
-Counterpart to `run_hidden_dynamics` that uses the manual behavior +
-direction labels in `data/rodent/rodent_labels.csv` (sourced from
-[KevinBian107/TopoMimic-annotation](https://github.com/KevinBian107/TopoMimic-annotation))
-instead of kinematic heuristics. For each populated directional-turn
-label, the script picks the **agreement KPMS code** (mode of the code
-histogram across the label's frames) and sustains that code for
-`target_steps` control steps × `K_per_label` starting body positions,
-capturing hidden / qpos / proprio / codes per timestep.
-
-Label scheme (5 classes, mirrors `c2a.codegen.code_sources.gt_directional_turn`):
-
-* `Immobile`   (any direction collapsed)
-* `Rear`       (any direction collapsed)
-* `Walk`       (any direction collapsed)
-* `Turn_Left`  (Turn × Left)
-* `Turn_Right` (Turn × Right)
-
-`Turn_Straight` is absent in the current CSV and stays UNLABELED.
-
-The downstream plotting scripts (`plot_hidden_dsa.py`,
-`plot_hidden_rslds.py`, `plot_hidden_dynamics.py`) read the
-experiment's npz directly. They auto-detect "legacy mode" (single
-underscores, no level prefix) so the 5-class output works without any
-flags beyond `--npz` and `--output_suffix`. The `--level` flag still
-exists on `plot_hidden_dsa.py` and `plot_hidden_rslds.py` for the
-deprecated 12-class `hidden_<level>__<label>` schema; it is **not**
-needed for the current 5-class output and should be omitted.
-
-Outputs:
-
-* `outputs/dynamics/labeled_hidden_dynamics/data/hidden_dynamics_labeled.npz` —
-  per-label hidden / qpos / proprio / codes / rewards arrays, keyed
-  `hidden_<L>` / `qpos_<L>` / ... for `L` in the 5-class set above.
-* `outputs/dynamics/labeled_hidden_dynamics/data/labeled_<L>.mp4` — one
-  ghost-rendered verification clip per populated label.
-* Mirror of the npz at `c2a/figures/data/hidden_dynamics_labeled.npz`
-  so the plotting scripts find it without `--npz`.
-
-```bash
-# Run the experiment (requires GPU).
-python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics
-
-# Run DSA / InputDSA + rSLDS on the labeled output. The --npz flag is
-# required because c2a/figures/data/ may also contain a legacy
-# hidden_dynamics.npz from run_hidden_dynamics; without --npz the
-# plotters would silently prefer that older file. --output_suffix
-# isolates the new outputs so they do not overwrite earlier 3-class
-# figures.
-python -m c2a.figures.plot_hidden_dsa \
-    --npz c2a/figures/data/hidden_dynamics_labeled.npz \
-    --output_suffix 5class
-
-python -m c2a.figures.plot_hidden_rslds \
-    --npz c2a/figures/data/hidden_dynamics_labeled.npz \
-    --output_suffix 5class --K 5
-
-# PCA-3D scatter / trajectory plots (same npz, same suffix conventions):
-python -m c2a.figures.plot_hidden_dynamics \
-    --npz c2a/figures/data/hidden_dynamics_labeled.npz \
-    --output_suffix 5class
-```
-
-### 15. `run_labeled_hidden_dynamics_controlled`
+### 15. `run_labeled_hidden_dynamics_controlled` (helper library + diagnostic)
 Controlled diagnostic. For each pair of (starting pose, code sequence),
 hold each code for a fixed duration (default 5 s × 5 codes = 25 s per
 rollout) with K=10 bodies starting from the same pose-type, in
@@ -486,11 +418,24 @@ computation, and ghost rendering. Defaults point at
 via `--args` where supported.
 
 ```bash
-python -m c2a.figures.render_behavior_triptych
-python -m c2a.figures.plot_hidden_trajectory
-python -m c2a.figures.render_single_code_categories
+python -m c2a.figures.render_behavior_parade_trail
+python -m c2a.figures.render_code_atlas_grouped --run kpms
+python -m c2a.figures.visualize_moseq_pipeline
 # ...
 ```
+
+The surviving figure scripts (paper producers) are
+`render_paper_figures` + `render_ic_contraction_figure` (under
+`c2a/figures/paper/`), `render_behavior_parade_trail`,
+`render_codebook_atlas`, `render_code_atlas_grouped`,
+`render_perturbation_recovery`, `plot_psd_overlay`,
+`plot_kinematic_signatures`, `visualize_moseq_pipeline`, plus
+`plot_hidden_rslds` (imported by `run_code_grid_dynamics` for its
+`fit_rslds`). The earlier exploratory plotters
+(`plot_hidden_{dsa,dynamics,trajectory}`, `render_hidden_dynamics_*`,
+`render_behavior_triptych*`, `render_single_code_categories`,
+`plot_kid_*`, `plot_roundtrip_accuracy`, `render_generalization_comparison`,
+…) were removed once the `code_grid/` pipeline replaced them.
 
 ### Codebook atlases (medoid body selection)
 
@@ -516,36 +461,17 @@ python -m c2a.figures.render_code_atlas_grouped --run best_vae --top 15 \
     --checkpoint model_checkpoints/260603_180852_140475
 ```
 
-### Hidden-state visualization + analysis scripts
+### Hidden-state dynamics analysis
 
-These four read the npz produced by experiment 11
-(`run_hidden_dynamics`) or experiment 14 (`run_labeled_hidden_dynamics`).
-All accept `--npz` and `--output_suffix`; for the labeled-experiment
-output, pass `--npz c2a/figures/data/hidden_dynamics_labeled.npz`
-explicitly so the loader does not silently prefer a legacy
-`hidden_dynamics.npz` if both exist.
-
-* `plot_hidden_dynamics.py` — PCA-3D scatter + trajectory plots of the
-  hidden state per label. Outputs `hidden_scatter_pca3d{,_combined}*`
-  and `hidden_trajectories_pca3d{,_combined}*`. The cheapest
-  visualization; useful as a sanity check before the heavier DSA / rSLDS
-  fits.
-* `plot_hidden_trajectory.py` — single-trial trajectory walkthrough in
-  PCA-3D with code colour-coding. Outputs `hidden_trajectory_pca3d*`.
-* `plot_hidden_dsa.py` — DSA + per-trial-centered DSA + InputDSA
-  (qpos as control). Outputs `dsa_vanilla_heatmap*`,
-  `dsa_centered_heatmap*`, `dsa_inputdsa_heatmap*`,
-  `dsa_within_between*`, `dsa_rank_sweep*`. **Requires the optional
-  `[analysis]` deps** (see README "Analysis dependencies").
-* `plot_hidden_rslds.py` — recurrent SLDS fit with K discrete regimes
-  on the pooled hidden trajectories. Outputs `rslds_confusion*`,
-  `rslds_regime_traces*`, `rslds_summary*`. Default K=5 matches the
-  current directional-turn label scheme. Also needs the `[analysis]`
-  deps.
-
-The `--level` flag on `plot_hidden_dsa.py` and `plot_hidden_rslds.py`
-is for the deprecated 12-class `hidden_<level>__<label>` npz schema
-and should **not** be passed for the current 5-class output.
+The per-code GRU hidden-state dynamics (DSA, jPCA, rSLDS) are produced by
+the **`code_grid/` pipeline** (exp 16–18), not by standalone plotters. The
+DSA / jPCA figures in the paper come from `run_code_grid_dynamics` →
+`c2a/figures/paper/render_paper_figures.py`. The rSLDS fit reuses
+`plot_hidden_rslds.fit_rslds` as a library (the only surviving
+`plot_hidden_*` module); it needs the optional `[analysis]` deps (DSA +
+`ssm`, see [`installation.md`](installation.md)). The earlier standalone
+`plot_hidden_{dsa,dynamics,trajectory}` / `render_hidden_dynamics_*`
+scripts were removed.
 
 ## Known issues
 
