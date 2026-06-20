@@ -7,6 +7,7 @@ venv/
 env/
 _pyrun.py
 paper/
+logs/
 
 # Python
 __pycache__/

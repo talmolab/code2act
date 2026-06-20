@@ -69,6 +69,16 @@ DEFAULT_CONFIG: Dict[str, float] = {
     # (0.003, then 0.005) sat far above the real boundary and mislabeled
     # walking as Turn / Immobile. See scratch/measure_walk_threshold.py.
     "walk_xy": 0.0015,
+    # Intermittent-locomotion criterion. A body whose single longest segment is
+    # still can nonetheless be a slow/exploratory *walker*: it pauses, lunges,
+    # pauses, so no single contiguous walk block dominates yet it locomotes for
+    # a substantial fraction of the rollout and accrues real net translation. If
+    # the per-frame Walk fraction (the per-frame classifier already excludes
+    # rear/turn frames) reaches this threshold, an Immobile-labeled body is
+    # promoted to Walk. Promotion only; rear/turn are never affected. Calibrated
+    # so true-immobile codes (Walk fraction <~0.15) stay Immobile while drift
+    # codes (>~0.2) become Walk.
+    "walk_frac_thresh": 0.20,
     # Immobile is the default fall-through — but a stricter standard means
     # a frame-by-frame lull is not enough; the still spell must last a
     # minimum duration to qualify. Shorter Immobile segments are absorbed

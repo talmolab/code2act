@@ -9,7 +9,7 @@ renders a stacked band figure for each of three selected labeled clips:
 Produces one tall figure per clip plus a combined 3-column side-by-side.
 The shared figure/video plumbing (skeleton filmstrip, animated 3D
 skeleton, behavior-band coloring) lives in
-:mod:`c2a.render.topk_bands_render`.
+:mod:`c2a.codegen.shared.topk_bands_render`.
 
 Usage::
 
@@ -37,7 +37,7 @@ import numpy as np
 from c2a.codegen.shared.label_alignment import load_behavior_frames
 from c2a.codegen.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
 from c2a.paths import get_repo_root
-from c2a.render.topk_bands_render import (
+from c2a.codegen.shared.topk_bands_render import (
     auto_select_clips,
     render_clip_figure,
     render_clip_video,

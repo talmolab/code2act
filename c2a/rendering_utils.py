@@ -687,7 +687,7 @@ def render_rollout_to_video(
             # Designed-segmenter mode: use tier-derived colors so the
             # bar visually encodes which scale/granularity is currently
             # active (fine = pale gray, p3/d3 = green/cyan, n4 = blue,
-            # n5 = purple, long = orange, UNL = dark gray).
+            # n5 = purple, UNL = dark gray).
             code_colors = np.asarray(code_colors_override, dtype=np.uint8)
             if code_colors.shape[0] < int(num_codes):
                 # Pad with mid-gray if codes outnumber the override (shouldn't

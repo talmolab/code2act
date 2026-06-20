@@ -197,6 +197,21 @@ def label_rollout_body(
     longest = max(beh_segments, key=lambda seg: (seg[2] - seg[1], -seg[1]))
     b_name, b_start, b_end = longest
 
+    # Intermittent-locomotion override: an Immobile body that nonetheless walks
+    # for a substantial per-frame fraction (slow drift/explore: pause, lunge,
+    # pause) is promoted to Walk. The per-frame classifier already excludes
+    # rear/turn frames, so this never fires for rearing or turning; it only
+    # rescues slow walkers whose longest contiguous block is a pause. The Walk
+    # span used for the direction vote is the longest Walk segment.
+    walk_frac_thresh = float(cfg.get("walk_frac_thresh", 0.20))
+    if b_name == "Immobile" and beh_per_frame:
+        walk_frac = sum(1 for f in beh_per_frame if f == "Walk") / len(beh_per_frame)
+        if walk_frac >= walk_frac_thresh:
+            walk_segs = [(s, e) for lbl, s, e in beh_segments if lbl == "Walk"]
+            if walk_segs:
+                ws, we = max(walk_segs, key=lambda se: (se[1] - se[0]))
+                b_name, b_start, b_end = "Walk", ws, we
+
     # --- Direction pipeline ---
     dir_per_frame, _signed_rate = _per_frame_direction(qpos_rs, cfg)
     dir_segments_raw = _group_and_smooth(dir_per_frame, _signed_rate, cfg)

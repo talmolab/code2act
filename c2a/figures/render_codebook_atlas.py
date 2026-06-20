@@ -42,6 +42,10 @@ from c2a.figures.render_behavior_parade_trail import (
     render_trail_frame,
 )
 from c2a.figures.paper.render_paper_figures import behavior_sequence
+from c2a.experiments.ic_contraction.run_ic_contraction import pose_features
+
+from sklearn.decomposition import PCA
+from sklearn.neighbors import NearestNeighbors
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -53,14 +57,15 @@ GROUP_COLORS_RGB = {
     "Turn": (0.506, 0.447, 0.702),
     "Walk": (0.333, 0.659, 0.408),
 }
-SCALE_ORDER = ["fine", "p3", "d3", "n4", "n5", "long"]
+SCALE_ORDER = ["fine", "n2", "p3", "d3", "n3", "n4", "n5"]
 SCALE_TITLE = {
     "fine": "Fine (single behavior)",
+    "n2": "2-gram",
     "p3": "Palindromic 3-gram",
     "d3": "Directed 3-gram",
+    "n3": "3-gram",
     "n4": "4-gram",
     "n5": "5-gram",
-    "long": "Long (sustained)",
 }
 _TOK = {"Walk": "Walk", "Rear": "Rear", "Turn": "Turn", "Imm": "Immobile"}
 
@@ -82,6 +87,56 @@ def designed_meta(codes_path: Path) -> dict[int, dict]:
             "behavior": _TOK.get(body.split("_")[0], body.split("_")[0]),
         }
     return meta
+
+
+def select_representative_body(
+    qpos: np.ndarray, hold: int, late_frac: float = 0.33,
+    knn: int = 5, subsample: int = 2500, pca_dim: int = 10, seed: int = 0,
+) -> int:
+    """Pick the body whose motion best *represents* the code's attractor.
+
+    The held-code rollout drives ``B`` bodies from diverse initial poses; they
+    converge onto a shared per-code goal pose (the one-to-many / IC-contraction
+    result). The old atlas rendered the single best-*reward* body, which can be
+    an idiosyncratic outlier that does not look like what the code actually does.
+    Instead we render the *medoid*: the body whose late-window poses sit most
+    densely inside the pooled late-window attractor cloud (root-stripped,
+    yaw-removed pose space — the same features used for IC-contraction). This is,
+    by construction, the body that "actually resembles the walker" the code
+    produces.
+
+    Args:
+        qpos: ``(B, T, nq)`` held-code rollout.
+        hold: number of leading frames considered (matches what is rendered).
+        late_frac: trailing fraction defining the converged window.
+
+    Returns:
+        Index of the representative body.
+    """
+    B = qpos.shape[0]
+    hold = min(hold, qpos.shape[1])
+    if B <= 1:
+        return 0
+    feat = pose_features(qpos[:, :hold].astype(np.float32))   # (B, hold, F)
+    flat = feat.reshape(-1, feat.shape[-1])
+    mean = flat.mean(0)
+    std = flat.std(0)
+    std = np.where(std < 1e-6, 1.0, std)
+    featz = (feat - mean) / std
+    n_late = max(2, int(round(late_frac * hold)))
+    late = np.arange(hold - n_late, hold)
+    rng = np.random.RandomState(seed)
+    M = featz[:, late].reshape(-1, featz.shape[-1])
+    if M.shape[0] > subsample:
+        M = M[rng.choice(M.shape[0], subsample, replace=False)]
+    dim = min(pca_dim, M.shape[1], M.shape[0] - 1)
+    pca = PCA(n_components=dim).fit(M)
+    nn = NearestNeighbors(n_neighbors=min(knn, M.shape[0])).fit(pca.transform(M))
+    scores = np.empty(B)
+    for b in range(B):
+        dist, _ = nn.kneighbors(pca.transform(featz[b, late]))
+        scores[b] = float(dist.mean())
+    return int(np.argmin(scores))
 
 
 def build_env(ckpt_path: str):
@@ -145,6 +200,9 @@ def main():
     ap.add_argument("--checkpoint",
                     default="model_checkpoints/260606_083446_639090")
     ap.add_argument("--hold", type=int, default=1000)
+    ap.add_argument("--select", default="medoid",
+                    choices=["medoid", "best_reward"],
+                    help="how to pick the body to render per code")
     ap.add_argument("--n-copies", type=int, default=7)
     ap.add_argument("--cam-elev", type=float, default=-22.0)
     ap.add_argument("--cam-azim", type=float, default=-130.0)
@@ -173,7 +231,10 @@ def main():
         q = np.asarray(d["qpos"])           # (bodies, T, nq)
         r = np.asarray(d["rewards"])        # (bodies, T)
         hold = min(args.hold, q.shape[1])
-        best = int(np.argmax(r[:, :hold].mean(axis=1)))
+        if args.select == "medoid":
+            best = select_representative_body(q, hold)
+        else:
+            best = int(np.argmax(r[:, :hold].mean(axis=1)))
         color = GROUP_COLORS_RGB.get(meta[cid]["behavior"], (0.5, 0.5, 0.5))
         frames[cid] = render_one_code(
             env, q[best, :hold], args.n_copies, color,
@@ -182,28 +243,34 @@ def main():
         log.info(f"  code {cid:2d} {meta[cid]['name']:28s} "
                  f"[{meta[cid]['scale']}/{meta[cid]['behavior']}] body {best}")
 
-    # ---- montage: rows = scale, columns = codes within that scale ----
+    # ---- montage: rows = scale; codes within a scale wrap to the next line
+    # after MAXCOL so panels (and text) stay large. Title is in the LaTeX
+    # caption, not the image. ----
+    from matplotlib.patches import Rectangle
+    MAXCOL = 5
     by_scale = {s: [c for c in sorted(meta) if meta[c]["scale"] == s and c in frames]
                 for s in SCALE_ORDER}
     by_scale = {s: cs for s, cs in by_scale.items() if cs}
-    ncol = max(len(cs) for cs in by_scale.values())
-    nrow = len(by_scale)
-    fig, axes = plt.subplots(nrow, ncol, figsize=(2.7 * ncol, 2.2 * nrow),
+    layout: list[tuple[str, list[int]]] = []
+    for scale, cs in by_scale.items():
+        for i in range(0, len(cs), MAXCOL):
+            layout.append((SCALE_TITLE.get(scale, scale) if i == 0 else "",
+                           cs[i:i + MAXCOL]))
+    nrow, ncol = len(layout), MAXCOL
+    fig, axes = plt.subplots(nrow, ncol, figsize=(3.0 * ncol, 2.5 * nrow),
                              squeeze=False)
-    for ri, (scale, cs) in enumerate(by_scale.items()):
+    for ri, (label, chunk) in enumerate(layout):
         for ci in range(ncol):
             ax = axes[ri][ci]
             ax.set_axis_off()
-            if ci >= len(cs):
+            if ci >= len(chunk):
                 continue
-            cid = cs[ci]
+            cid = chunk[ci]
             ax.imshow(frames[cid])
             beh = meta[cid]["behavior"]
             ax.set_title(meta[cid]["name"].split(".", 1)[1],
-                         fontsize=9, color=GROUP_COLORS_RGB.get(beh, "black"),
-                         pad=2)
-            # defined behavior-composition bar beneath the trail
-            from matplotlib.patches import Rectangle
+                         fontsize=13, color=GROUP_COLORS_RGB.get(beh, "black"),
+                         pad=4)
             seq = behavior_sequence(meta[cid]["name"]) or [beh]
             w = 1.0 / len(seq)
             for k, b in enumerate(seq):
@@ -211,13 +278,12 @@ def main():
                     (k * w, -0.10), w, 0.06, transform=ax.transAxes,
                     color=GROUP_COLORS_RGB.get(b, (0.5, 0.5, 0.5)),
                     ec="white", lw=0.4, clip_on=False))
-        # scale row label on the far left
-        axes[ri][0].text(-0.06, 0.5, SCALE_TITLE.get(scale, scale),
-                         transform=axes[ri][0].transAxes, rotation=90,
-                         ha="right", va="center", fontsize=11, fontweight="bold")
-    fig.suptitle("Designed codebook atlas: each code held for "
-                 f"{args.hold} frames (color = defined behavior)", fontsize=13)
-    fig.tight_layout(rect=[0.03, 0, 1, 0.98])
+        if label:
+            axes[ri][0].text(-0.07, 0.5, label,
+                             transform=axes[ri][0].transAxes, rotation=90,
+                             ha="right", va="center", fontsize=15,
+                             fontweight="bold")
+    fig.tight_layout()
 
     out_dir = root / "outputs" / "codebook_atlas"
     out_dir.mkdir(parents=True, exist_ok=True)

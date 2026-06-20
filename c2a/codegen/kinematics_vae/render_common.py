@@ -6,7 +6,7 @@ All three variants (VAE / VQVAE / PS-VQVAE) emit the same
 that supplies its own ``model_rows`` factory.
 
 The actual figure / video drawing is delegated to
-:mod:`c2a.render.topk_bands_render`, which is the same module
+:mod:`c2a.codegen.shared.topk_bands_render`, which is the same module
 :mod:`c2a.codegen.kpms.render_topk_bands` uses. That keeps the output
 PNG/MP4 visually identical to kpms so figures are comparable across
 tokenizer families.
@@ -24,7 +24,7 @@ import numpy as np
 from c2a.codegen.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
 from c2a.codegen.shared.label_alignment import load_label_frames
 from c2a.paths import get_repo_root
-from c2a.render.topk_bands_render import (
+from c2a.codegen.shared.topk_bands_render import (
     auto_select_clips,
     render_clip_figure,
     render_clip_video,
@@ -84,7 +84,7 @@ def load_fk_keypoints(
     if balanced_split_path is None:
         balanced_split_path = repo / "data" / "rodent" / "rodent_balanced_splits.json"
 
-    from c2a.render.topk_bands_render import _resolve_skeleton_edges
+    from c2a.codegen.shared.topk_bands_render import _resolve_skeleton_edges
     keypoints, kp_names = _load_keypoints(
         str(reference_data_path), str(stac_xml_path), str(balanced_split_path),
     )

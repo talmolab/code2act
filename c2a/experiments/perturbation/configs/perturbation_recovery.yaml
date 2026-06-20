@@ -1,0 +1,70 @@
+# =============================================================================
+# Perturbation–Recovery Experiment
+# =============================================================================
+# Makes the paper's "executable code" thesis interventional: a held code is not
+# merely reproducible from diverse initial conditions (the IC-contraction
+# result) — it is an *attractor the controller actively defends*. We let bodies
+# converge under a held code, then INJECT an external velocity impulse mid-
+# rollout (a "shove") and measure whether the controller drives the body back
+# onto the code-specific attractor.
+#
+# This is a genuine intervention (descriptive tokens cannot be perturbed) and it
+# breaks the circularity of IC-contraction: the goal pose is defined from the
+# UNPERTURBED (amp=0) rollouts, independently of the perturbed trajectory, and
+# the body is pushed AWAY from it and must return.
+#
+# Decoder-only (z_e_scale=0, deterministic): the discrete code is the only
+# time-varying input, so any recovery is attributable to the code's learned
+# dynamics, not the continuous encoder.
+# =============================================================================
+
+seed: 0
+
+checkpoint:
+  # Featured Keypoint-MoSeq controller (K=100, distillation + pretrained
+  # decoder) — the same controller behind the code-grid / IC-contraction
+  # results, so code ids and rollout-derived labels align.
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260611_073323_750085/
+  codes_path_override: null
+
+data:
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+
+z_e_scale: 0.0          # decoder-only invariant (encoder severed)
+
+rollout:
+  K: 48                 # bodies (diverse initial conditions), per code
+  hold_frames: 1300     # total control steps (100 Hz -> 13 s)
+  t_perturb: 800        # step at which the impulse is applied (after convergence)
+  perturb_dur: 1        # number of steps the impulse is applied (1 = instantaneous)
+  probe_frame: 20       # env reset frame
+
+# Per-dim std (rad/s | m/s) of the generalized-velocity impulse added to qvel.
+# amp=0.0 is the unperturbed baseline that DEFINES the goal cloud. The same
+# per-body random direction is reused across amps (paired design), so amp only
+# scales the kick.
+amplitudes: [0.0, 0.6, 1.2, 2.4, 4.0]
+
+# Codes to perturb. null -> auto-pick the highest-usage code per rollout-derived
+# behavior (Immobile / Rear / Walk / Turn) from the code-grid run's labels.
+# Otherwise an explicit list of integer code ids.
+codes: null
+labels_run: kpms        # code-grid run whose labels/usage drive auto-pick
+rollouts_base: ${oc.env:C2A_ROOT,.}/outputs/code_grid/code_grid_rollouts
+
+analysis:
+  pca_dim: 10
+  knn: 5
+  manifold_subsample: 3000
+  settle_margin: 60       # frames after t_perturb to skip before "final" window
+  peak_window: 120        # frames after t_perturb to search for the peak
+  pre_window: 100         # frames before t_perturb defining the converged floor
+  recovery_tol: 0.20      # fraction of (peak-floor) defining "recovered"
+  spaces: [pose, hidden]
+
+reuse_rollouts: false
+
+output:
+  base_dir: ./outputs/perturbation/perturbation_recovery
+  run_name: kpms

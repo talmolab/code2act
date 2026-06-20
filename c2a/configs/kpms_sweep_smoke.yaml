@@ -1,7 +1,7 @@
 # Minimal smoke-test config for the KPMS sweep — 1 fit at ~30s total.
 # Verifies end-to-end: keypoint load, fit, metrics incl. coverage, reconstruction
 # plot, sweep_results.json. NOT for research; use kpms_sweep.yaml or
-# pipeline_sweep.yaml for real runs.
+# kpms_sweep_k100.yaml for real runs.
 
 data:
   reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
