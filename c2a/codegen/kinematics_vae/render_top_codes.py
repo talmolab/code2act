@@ -37,9 +37,9 @@ from matplotlib.animation import FFMpegWriter, FuncAnimation
 
 from c2a.codegen.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
 from c2a.paths import get_repo_root
-from c2a.render.topk_bands_render import _resolve_skeleton_edges
+from c2a.codegen.shared.topk_bands_render import _resolve_skeleton_edges
 
-# Same trick as c2a.render.topk_bands_render: matplotlib's animation
+# Same trick as c2a.codegen.shared.topk_bands_render: matplotlib's animation
 # system shells out to ``ffmpeg``, which isn't on PATH in this env;
 # point it at the bundled binary inside imageio_ffmpeg.
 plt.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()

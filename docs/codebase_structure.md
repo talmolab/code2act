@@ -15,11 +15,12 @@ code2act/
 │   ├── run_c2a.md             # single-run + sweep + tokenize + decoder
 │   ├── moseq_decoder_config.md# every yaml key explained
 │   └── experiments.md         # 18 analysis scripts
-├── bash_scripts/              # pipeline orchestration
-│   ├── README.md
-│   ├── run_pipeline.sh                    # KPMS × decoder grid
-│   ├── run_pipeline_best_kpms.sh          # fixed-KPMS decoder sweep
-│   └── run_pipeline_kinematics_vae.sh     # VAE/VQVAE/PS-VQVAE × decoder
+├── bash_scripts/              # pipeline orchestration (grouped into subfolders)
+│   ├── README.md  _pyrun.py
+│   ├── pipeline/              # run_kpms_effect_sweep.sh, run_vae_effect_sweep.sh
+│   ├── sweeps/                # KPMS / VAE / VQ-VAE tokenizer sweeps
+│   ├── training/              # kpms_baseline, c2c_additive, designed_segmenter
+│   └── transfer/              # foraging task-transfer
 ├── c2a/                       # pip-installable package — see below
 ├── Code2Act-website/          # Astro site (★ gitignored sibling)
 ├── track-mjx/                 # ★ user-cloned sibling, gitignored
@@ -110,13 +111,12 @@ c2a/
 │   ├── kpms_sweep_smoke.yaml
 │   ├── mimic_encoder.yaml
 │   ├── inference.yaml
-│   ├── pipeline_sweep.yaml
-│   └── pipeline_best_kpms.yaml
+│   └── kpms_effect_sweep.yaml
 │
 ├── ar_codegen/                # AR sequence-model code generators (HMM/GPT2-xs/Mamba)
 ├── experiments/               # evaluation scripts in 6 theme subfolders:
 │                              #   tokenizer/ behavior/ fidelity/ dynamics/
-│                              #   code_grid/ population/ — each with its own
+│                              #   code_grid/ ensemble_manifold/ — each with its own
 │                              #   configs/. Invoke c2a.experiments.<theme>.<script>
 │                              #   experiments/shared/: code_labels.py
 │                              #   (per-code majority-label helpers) +

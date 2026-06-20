@@ -1,0 +1,41 @@
+# @package _global_
+# =============================================================================
+# Override: ckpt 260603_180727_444190 (ps_vqvae stageA k_2_2_4)
+# =============================================================================
+# Tokenizer: ps_vqvae stageA → 12 codes used of 16-product space
+#
+# Per-(label×code) analysis:
+#   Walk     97.8% on code 0  (run-length ~26 frames)  — code 0 also
+#                              dominates Imm (46%) and Turn (64%);
+#                              policy cannot distinguish Walk-pose here.
+#   Rear     50% on code 10, 33% on code 8 (10↔8 oscillation, runs 77+34)
+#   Turn     64% code 0, 27% code 4, 8% code 7 (cycle, runs 13-19)
+#   Immobile 46% code 0, 33% code 4, 18% code 7 (slower cycle, runs 35-54)
+#
+# Note: Stage A of ps_vqvae is the coarsest hierarchical stage.  Without
+# stages B+C combined, Walk has no distinct code.  Rear is the only label
+# this ckpt can drive cleanly.
+# =============================================================================
+
+defaults:
+  - population_label_patterns
+  - _self_
+
+checkpoint:
+  path: ${oc.env:C2A_ROOT,.}/model_checkpoints/260603_180727_444190
+  step: null
+
+label_to_mode_code:
+  Immobile: 4
+  Rear:     10
+  Walk:     0
+  Turn:     0
+
+pattern_per_label:
+  Walk:     { mode: "hold",      codes: [0] }
+  Rear:     { mode: "oscillate", codes: [10, 8],   block_frames: 50 }
+  Turn:     { mode: "cycle",     codes: [0, 4, 7], block_frames: 15 }
+  Immobile: { mode: "cycle",     codes: [0, 4, 7], block_frames: 40 }
+
+output:
+  base_dir: ${paths.c2a_root}/outputs/ensemble_manifold/pop_label_180727_same_pos

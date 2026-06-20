@@ -50,8 +50,8 @@ Full config reference: [`moseq_decoder_config.md`](moseq_decoder_config.md).
 ## Multi-stage sweeps
 
 ```bash
-bash bash_scripts/run_pipeline.sh               # KPMS × decoder grid
-bash bash_scripts/run_pipeline_best_kpms.sh     # fixed-KPMS decoder sweep
+bash bash_scripts/pipeline/run_kpms_effect_sweep.sh           # fit 10 KPMS tokenizers, decoder per tokenizer
+bash bash_scripts/pipeline/run_vae_effect_sweep.sh           # kinematics-VAE effect sweep
 ```
 
 See [`../bash_scripts/README.md`](../bash_scripts/README.md) for options and
@@ -77,9 +77,9 @@ python -m c2a.codegen.kpms.generate_codes
 Per-setting codes (for sweep):
 ```bash
 python -m c2a.codegen.kpms.generate_all_codes \
-    --sweep-results c2a/outputs/pipeline_sweep/kpms/sweep_results.json \
+    --sweep-results outputs/tokenizer/kpms_effect_sweep/sweep_results.json \
     --balanced-split data/rodent/rodent_balanced_splits.json \
-    --output-dir c2a/outputs/pipeline_sweep/codes
+    --output-dir outputs/tokenizer/kpms_effect_sweep/codes
 ```
 
 Produces one `.npz` per `(num_states, kappa)` + `manifest.json`.
@@ -156,12 +156,10 @@ kinematics-VAE sources (would silently produce random codes whose
 codebook size doesn't match the tokenizer's). For smoke runs without a
 trained tokenizer use `code_source: kpms_raw` with `codes_path: null`.
 
-End-to-end orchestration (mirrors `run_pipeline.sh`):
+End-to-end orchestration:
 ```bash
-bash bash_scripts/run_pipeline_kinematics_vae.sh <variant> [num_steps]
-# e.g.
-bash bash_scripts/run_pipeline_kinematics_vae.sh vae
-bash bash_scripts/run_pipeline_kinematics_vae.sh ps_vqvae 5000
+bash bash_scripts/pipeline/run_vae_effect_sweep.sh            # train best VAE, 10 vocab sizes, decoder per tokenizer
+bash bash_scripts/pipeline/run_vae_effect_sweep.sh --launch   # ...and run the decoders sequentially
 ```
 
 ## Pre-training the distillation encoder

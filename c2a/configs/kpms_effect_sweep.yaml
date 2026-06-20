@@ -1,0 +1,54 @@
+# =============================================================================
+# KPMS-effect sweep — K=100, 10 log-spaced kappa (syllable stickiness)
+# =============================================================================
+# Fits 10 KPMS tokenizers that differ ONLY in kappa (dwell time), to study how
+# the tokenizer changes the downstream Code2Act controller. One decoder is then
+# trained per tokenizer with an IDENTICAL decoder config (only the code stream
+# varies), so any downstream difference is attributable to the tokenizer.
+#
+# Dwell ≈ kappa / (kappa + K). At K=100 the 10 values span ~0.33 (very choppy)
+# to ~0.998 (very sticky), bracketing the ~400 ms (kappa≈1500–3000) sweet spot.
+#
+# Driven by: bash_scripts/pipeline/run_kpms_effect_sweep.sh
+# Stage 1 consumer: python -m c2a.codegen.run_sweep --config <this file>
+# =============================================================================
+
+model: kpms
+
+data:
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  stac_xml_path: ${oc.env:C2A_ROOT,.}/c2a/assets/rodent.xml
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  labeled_clip_range: [0, 841]
+  csv_to_h5_subsample: 2
+
+sweep:
+  num_states: [100]
+  kappa: [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000]
+  latent_dim: [10]
+  # arhmm only — SLDS is ~26x worse MSE; one model family keeps the
+  # comparison about kappa, not about the tokenizer's generative model.
+  model_type: ["arhmm"]
+  # One seed per setting → exactly 10 tokenizers → 10 decoder runs.
+  seeds_per_setting: 1
+  ar_iters: 100
+  full_iters: 500
+
+selection:
+  target_duration_ms: 400
+  mocap_hz: 15
+  tolerance_frac: 0.3
+
+output:
+  base_dir: outputs/tokenizer/kpms_effect_sweep
+
+codegen:
+  sweep_results: outputs/tokenizer/kpms_effect_sweep/sweep_results.json
+  balanced_split: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  output: outputs/tokenizer/kpms_effect_sweep/codes
+
+auto_render:
+  rank: mse
+  top_k: 5
+  trajectory_plots: true

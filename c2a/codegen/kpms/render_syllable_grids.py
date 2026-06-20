@@ -53,7 +53,7 @@ from c2a.codegen.kpms.render_topk_bands import (
 )
 from c2a.codegen.kpms.sweep_impl import RODENT_SKELETON, _load_keypoints
 from c2a.paths import get_repo_root
-from c2a.render.topk_bands_render import _resolve_skeleton_edges
+from c2a.codegen.shared.topk_bands_render import _resolve_skeleton_edges
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
