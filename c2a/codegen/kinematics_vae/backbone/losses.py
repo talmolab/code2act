@@ -1,9 +1,9 @@
 """Bottleneck-agnostic pretraining loss for the kinematics-VAE family.
 
-The Scott v15 ELBO loss is generalized so the three c2a variants
-(``vae``, ``vqvae``, ``ps_vqvae``) share the same encoder / decoder /
-predictor stack and only diverge in the bottleneck. Each variant
-defines a ``Bottleneck`` Flax module with the following signature::
+The Scott v15 ELBO loss is bottleneck-agnostic: the kinematics-VAE
+plugs in its Gaussian bottleneck while sharing the encoder / decoder /
+predictor stack. A bottleneck is a ``Bottleneck`` Flax module with the
+following signature::
 
     bottleneck.apply(bn_params, mean, logvar, rng, deterministic=False)
         -> (z, aux_losses, aux_metrics)
@@ -11,9 +11,9 @@ defines a ``Bottleneck`` Flax module with the following signature::
 where:
     ``z``          : ``(B, latent_dim)`` the latent passed to the decoder
                      and predictor.
-    ``aux_losses`` : dict of named scalar losses (e.g. ``{"kl": ..., "sigma_pen":
-                     ...}`` for VAE; ``{"commit": ..., "codebook": ...}`` for
-                     VQVAE). Summed into the total via ``loss_weights``.
+    ``aux_losses`` : dict of named scalar losses (e.g. ``{"kl": ...,
+                     "sigma_pen": ...}`` for the VAE). Summed into the
+                     total via ``loss_weights``.
     ``aux_metrics``: dict of named scalars not added to the loss but
                      forwarded to the logger (e.g. ``{"perplexity": ...,
                      "codebook_utilization": ...}``).
@@ -130,11 +130,11 @@ def pretrain_loss(
     <jnp scalar>}`` for the VAE σ-cap schedule.
 
     ``bottleneck_mutable`` is the list of Flax variable collections the
-    bottleneck mutates per forward — e.g. ``["vq_state"]`` for the
-    EMA-VQ bottlenecks (PS-VQVAE). When provided, ``bn_variables``
-    must be a Flax variables dict (``{"params": ..., "vq_state": ...}``);
-    when ``None`` (default — VAE / VQVAE), ``bn_variables`` is the bare
-    params subtree as before.
+    bottleneck mutates per forward — e.g. ``["vq_state"]`` for bottlenecks
+    with EMA buffers. When provided, ``bn_variables`` must be a Flax
+    variables dict (``{"params": ..., "vq_state": ...}``); when ``None``
+    (default — the VAE), ``bn_variables`` is the bare params subtree as
+    before.
 
     Returns:
         ``(total_loss, (metrics, new_bn_variables))``. For the

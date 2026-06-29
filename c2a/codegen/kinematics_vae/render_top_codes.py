@@ -13,11 +13,8 @@ A coherent code makes the M overlaid rodents move together; an
 incoherent code makes them diverge. That's the intended diagnostic.
 
 The reader is **variant-agnostic** — it works on any
-``best_codes.npz`` written by the kinematics-VAE family (VAE / VQVAE
-/ PS-VQVAE), since all three share
-:data:`c2a.codegen.shared.npz_schema.CodesPayload`. For PS-VQVAE, the
-displayed code is the *folded* product index — matching the band
-renderer's default and the rest of the pipeline.
+``best_codes.npz`` written by the kinematics-VAE, since it uses
+:data:`c2a.codegen.shared.npz_schema.CodesPayload`.
 
 Standalone CLI not provided — call from a per-variant render script
 (see ``c2a/codegen/kinematics_vae/<variant>/render_topk_bands.py``).

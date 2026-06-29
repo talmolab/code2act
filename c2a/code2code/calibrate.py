@@ -179,7 +179,7 @@ def validate_reference_round_trip(
     (e.g., because tau is enormous) would never fail.
 
     Args:
-        adapter: Frozen c2c tokenizer adapter (vae/vqvae/ps_vqvae).
+        adapter: Frozen c2c tokenizer adapter (vae).
         ref_qpos: ``(n_clips, n_frames, nq)`` reference qpos at mocap rate.
         target_codes: ``(n_clips, n_frames)`` precomputed per-frame codes.
         tau: Temperature from calibrate_temperature.

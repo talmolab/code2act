@@ -16,14 +16,6 @@ network, or the PPO loop:
                                        trained vanilla kinematics-VAE's
                                        continuous latent (written by
                                        ``c2a.codegen.kinematics_vae.vae.tokenize``).
-        - ``"vqvae"``               — discrete codes from a trained
-                                       vanilla VQ-VAE (written by
-                                       ``c2a.codegen.kinematics_vae.vqvae.tokenize``).
-        - ``"ps_vqvae"``            — discrete codes from a trained
-                                       product-space VQ-VAE; per-branch
-                                       codes are factored into a single
-                                       product index (written by
-                                       ``c2a.codegen.kinematics_vae.ps_vqvae.tokenize``).
         - ``"gt_directional_turn"`` — 5-class ground-truth labels:
                                        Immobile, Rear, Walk, Turn_Left, Turn_Right.
 
@@ -59,8 +51,6 @@ log = logging.getLogger(__name__)
 SOURCE_KPMS_RAW = "kpms_raw"
 SOURCE_KPMS_MERGED = "kpms_merged"
 SOURCE_KINEMATICS_VAE = "kinematics_vae"
-SOURCE_VQVAE = "vqvae"
-SOURCE_PS_VQVAE = "ps_vqvae"
 SOURCE_GT_DIRECTIONAL_TURN = "gt_directional_turn"
 SOURCE_DESIGNED = "designed"  # hand-crafted multi-scale codebook (see
                               # c2a.codegen.designed_segmenter)
@@ -74,8 +64,6 @@ _NPZ_SCHEMA_SOURCES = frozenset({
     SOURCE_KPMS_RAW,
     SOURCE_KPMS_MERGED,
     SOURCE_KINEMATICS_VAE,
-    SOURCE_VQVAE,
-    SOURCE_PS_VQVAE,
     SOURCE_DESIGNED,
 })
 
@@ -83,8 +71,6 @@ VALID_SOURCES = {
     SOURCE_KPMS_RAW,
     SOURCE_KPMS_MERGED,
     SOURCE_KINEMATICS_VAE,
-    SOURCE_VQVAE,
-    SOURCE_PS_VQVAE,
     SOURCE_GT_DIRECTIONAL_TURN,
     SOURCE_DESIGNED,
 }
@@ -171,22 +157,21 @@ def load_codes(
     # ``cfg.network_config.num_codes``. We only honour this for the
     # KPMS-family sources (``kpms_raw`` / ``kpms_merged``) where the
     # random codebook size is consistent with how the user set
-    # ``num_codes`` in their decoder yaml. For the new
-    # kinematics_vae-family sources (``kinematics_vae`` / ``vqvae`` /
-    # ``ps_vqvae``) the codebook size is determined by the *tokenizer's*
-    # training config (latent-VAE K-means cluster count, VQ codebook K,
-    # PS-VQ per-group K product), NOT the decoder yaml's ``num_codes`` —
-    # silently falling back would train a working-but-semantically-random
-    # policy whose code distribution doesn't match the intended tokenizer.
-    # Refuse the fallback there and force the user to either point at a
-    # real tokenizer-output npz or switch to ``kpms_raw`` for smoke runs.
+    # ``num_codes`` in their decoder yaml. For the kinematics_vae source
+    # the codebook size is determined by the *tokenizer's* training config
+    # (latent-VAE K-means cluster count), NOT the decoder yaml's
+    # ``num_codes`` — silently falling back would train a
+    # working-but-semantically-random policy whose code distribution
+    # doesn't match the intended tokenizer. Refuse the fallback there and
+    # force the user to either point at a real tokenizer-output npz or
+    # switch to ``kpms_raw`` for smoke runs.
     _RANDOM_FALLBACK_SOURCES = frozenset({
         SOURCE_KPMS_RAW, SOURCE_KPMS_MERGED,
     })
     if codes_path is None and code_source in _RANDOM_FALLBACK_SOURCES:
         return _generate_random(cfg, n_train, n_test, n_frames)
     if codes_path is None and code_source in (
-        SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE,
+        SOURCE_KINEMATICS_VAE,
         SOURCE_DESIGNED,
     ):
         raise ValueError(
@@ -215,18 +200,6 @@ def load_codes(
         return _load_kpms_npz(
             codes_path, train_indices, test_indices, n_frames,
             require_merged=False, requested_source=SOURCE_KINEMATICS_VAE,
-        )
-
-    if code_source == SOURCE_VQVAE:
-        return _load_kpms_npz(
-            codes_path, train_indices, test_indices, n_frames,
-            require_merged=False, requested_source=SOURCE_VQVAE,
-        )
-
-    if code_source == SOURCE_PS_VQVAE:
-        return _load_kpms_npz(
-            codes_path, train_indices, test_indices, n_frames,
-            require_merged=False, requested_source=SOURCE_PS_VQVAE,
         )
 
     if code_source == SOURCE_DESIGNED:

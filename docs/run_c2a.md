@@ -91,29 +91,25 @@ python -m c2a.train_moseq_decoder \
     kpms_config.codes_path=c2a/outputs/kpms_sweep/best_codes.npz
 ```
 
-## Kinematics-VAE tokenizer family
+## Kinematics-VAE tokenizer
 
-Three offline tokenizers train an autoencoder over per-frame kinematic
-features (10-frame proprio windows: `(p, θ, q_active)`) and emit a
-per-frame discrete code in the same `CodesPayload` schema KPMS uses. All three share the **same Scott v15 conv1d encoder backbone**
-(3-way root/axial/limb split, latent_dim=24). Only the bottleneck
-varies:
+An offline tokenizer trains an autoencoder over per-frame kinematic
+features (10-frame proprio windows: `(p, θ, q_active)`) and emits a
+per-frame discrete code in the same `CodesPayload` schema KPMS uses. It
+uses the **Scott v15 conv1d encoder backbone** (3-way root/axial/limb
+split, latent_dim=24) with a Gaussian bottleneck:
 
 | Variant | Bottleneck | Discretization | Source ID |
 |---|---|---|---|
 | `vae` | Gaussian reparam | post-hoc K-Means (+ optional PCA) | `kinematics_vae` |
-| `vqvae` | Single VQ codebook, gradient (STE + commit) | built-in | `vqvae` |
-| `ps_vqvae` | Per-group EMA-VQ + dead-code reseed (VQ-MAP paper-aligned) | per-group + product fold | `ps_vqvae` |
 
-Stage 1 — **pretrain** (one of):
+Stage 1 — **pretrain**:
 ```bash
 python -m c2a.codegen.kinematics_vae.vae.train
-python -m c2a.codegen.kinematics_vae.vqvae.train
-python -m c2a.codegen.kinematics_vae.ps_vqvae.train
 ```
 
-Writes msgpack ckpts to `trained_kinematics_vae_ckpts/<variant>/step_*`.
-All three default to v15's recipe — 30k steps, batch 8192, AdamW with
+Writes msgpack ckpts to `trained_kinematics_vae_ckpts/vae/step_*`.
+Defaults to v15's recipe — 30k steps, batch 8192, AdamW with
 warmup-hold-cosine LR. Override on the CLI:
 
 ```bash
@@ -123,25 +119,12 @@ python -m c2a.codegen.kinematics_vae.vae.train \
     train.ckpt_dir=trained_kinematics_vae_ckpts/vae_smoke
 ```
 
-Stage 2 — **tokenize**:
+Stage 2 — **tokenize** (PCA → KMeans on the latent):
 ```bash
-# VAE: PCA → KMeans on the latent
 python -m c2a.codegen.kinematics_vae.vae.tokenize \
     --ckpt-dir trained_kinematics_vae_ckpts/vae/step_0030000 \
     --output trained_kinematics_vae_ckpts/vae/best_codes.npz \
     --num-codes 50 --pca-dim 8
-
-# VQVAE: codebook argmin
-python -m c2a.codegen.kinematics_vae.vqvae.tokenize \
-    --ckpt-dir trained_kinematics_vae_ckpts/vqvae/step_0030000 \
-    --output trained_kinematics_vae_ckpts/vqvae/best_codes.npz \
-    --codebook-size 128 --code-dim 24
-
-# PS-VQVAE: per-group → product fold
-python -m c2a.codegen.kinematics_vae.ps_vqvae.tokenize \
-    --ckpt-dir trained_kinematics_vae_ckpts/ps_vqvae/step_0030000 \
-    --output trained_kinematics_vae_ckpts/ps_vqvae/best_codes.npz \
-    --group-dims 4 8 12 --group-codebook-sizes 8 8 16
 ```
 
 Stage 3 — **decoder RL** (same trainer; `code_source` selects the family):
@@ -151,8 +134,8 @@ python -m c2a.train_moseq_decoder \
     kpms_config.codes_path=trained_kinematics_vae_ckpts/vae/best_codes.npz
 ```
 
-Note: `kpms_config.codes_path=null` is **rejected** for the three
-kinematics-VAE sources (would silently produce random codes whose
+Note: `kpms_config.codes_path=null` is **rejected** for the
+kinematics-VAE source (would silently produce random codes whose
 codebook size doesn't match the tokenizer's). For smoke runs without a
 trained tokenizer use `code_source: kpms_raw` with `codes_path: null`.
 

@@ -26,8 +26,7 @@ bash_scripts/
 │                             #   python3.12 bash_scripts/_pyrun.py <module>)
 ├── pipeline/                 # full multi-stage orchestration
 ├── sweeps/                   # tokenizer / KPMS hyperparameter sweeps
-├── training/                 # single decoder / controller trainers
-└── transfer/                 # downstream task-transfer (foraging)
+└── training/                 # single decoder / controller trainers
 ```
 
 > All scripts compute the repo root as two levels up from their own directory
@@ -40,7 +39,7 @@ bash_scripts/
 
 | Script | What it does |
 |---|---|
-| `run_vae_effect_sweep.sh` | **Kinematics-VAE counterpart of `run_kpms_effect_sweep.sh`.** Trains one kinematics-VAE with the best params (kl=0.001, from `best_vae` 260603_180852_140475), tokenizes at 10 vocabulary sizes K (`num_codes` — the VAE analog of KPMS kappa), then emits one **full-budget decoder job per tokenizer with the byte-identical production config** — only the code stream varies. `--launch` runs them sequentially; `--skip-train`/`--skip-tokenize` reuse cached artifacts. Only the `vae` variant; vqvae/ps_vqvae tokenizer sweeps live in `sweeps/`. |
+| `run_vae_effect_sweep.sh` | **Kinematics-VAE counterpart of `run_kpms_effect_sweep.sh`.** Trains one kinematics-VAE with the best params (kl=0.001, from `best_vae` 260603_180852_140475), tokenizes at 10 vocabulary sizes K (`num_codes` — the VAE analog of KPMS kappa), then emits one **full-budget decoder job per tokenizer with the byte-identical production config** — only the code stream varies. `--launch` runs them sequentially; `--skip-train`/`--skip-tokenize` reuse cached artifacts. |
 | `run_kpms_effect_sweep.sh` | **Controlled tokenizer comparison.** Fits 10 KPMS tokenizers (K=100, 10 log-spaced kappa, arhmm, 1 seed) via `c2a/configs/kpms_effect_sweep.yaml`, generates per-setting codes, then emits one **full-budget decoder job per tokenizer with a byte-identical decoder config** — only the code stream varies, isolating the tokenizer's downstream effect. Default prints the 10 job commands to `outputs/tokenizer/kpms_effect_sweep/decoder_jobs.sh` (submit each as a job); `--launch` runs them sequentially; `--skip-fit` reuses cached codes. |
 
 ```bash
@@ -55,9 +54,7 @@ bash bash_scripts/pipeline/run_kpms_effect_sweep.sh --launch           # ...and 
 |---|---|
 | `sweep_kpms_k100.sh` | KPMS K=100 sweep (kappa × model_type × seeds) via `c2a.codegen.run_sweep` with `kpms_sweep_k100.yaml`. Produces the K=100 ARHMM codes behind the **featured** controller. |
 | `sweep_vae.sh` | Kinematics-VAE tokenizer sweep (KL × post-hoc K) via `c2a.codegen.kinematics_vae.vae.{train,tokenize}`. |
-| `sweep_vqvae.sh` | VQ-VAE tokenizer sweep (K × commit-weight). **Exploratory — not in the current paper.** |
-| `sweep_psvqvae.sh` | PS-VQ-VAE 3-stage tokenizer sweep. **Exploratory — not in the current paper.** |
-| `sweep_all_tokenizers.sh` | Master orchestrator: launches the KPMS / VAE / VQ-VAE / PS-VQ-VAE sweeps in parallel `screen` sessions, then runs `c2a.experiments.tokenizer.run_tokenizer_diagnostics`. Calls the sibling sweep scripts via `$SCRIPT_DIR`. |
+| `sweep_all_tokenizers.sh` | Master orchestrator: launches the KPMS / VAE sweeps in parallel `screen` sessions, then runs `c2a.experiments.tokenizer.run_tokenizer_diagnostics`. Calls the sibling sweep scripts via `$SCRIPT_DIR`. |
 
 ## `training/` — single decoder / controller trainers
 
@@ -66,17 +63,6 @@ bash bash_scripts/pipeline/run_kpms_effect_sweep.sh --launch           # ...and 
 | `run_kpms_baseline.sh` | K=100 KPMS decoder, pure motion-tracking baseline (`reward_mode=off`). |
 | `run_c2c_additive.sh` | Decoder training with the **code-consistency (code2code)** additive reward. The featured controller uses this term. |
 | `run_train_designed_segmenter.sh` | Trains the controller on the **hand-designed multi-scale codebook** (`c2a.codegen.designed_segmenter` → `c2a.train_moseq_decoder`). Drives all `*_multiscale` paper figures. |
-
-## `transfer/` — downstream task transfer (active, separate from the paper)
-
-| Script | What it does |
-|---|---|
-| `run_forage_dwell.sh` | Foraging transfer task (dwell / sustained-posture harvesting) via `c2a.transfer.train`. |
-| `run_forage_height.sh` | Foraging transfer task (height / rearing bonus) via `c2a.transfer.train`. |
-
-These belong to the ongoing interpretable-task-transfer line (`c2a/transfer/`)
-and are **not** part of the current workshop paper; kept here because that work
-is live.
 
 ## WandB metrics (decoder runs)
 

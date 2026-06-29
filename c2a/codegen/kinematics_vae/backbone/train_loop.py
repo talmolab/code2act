@@ -1,8 +1,7 @@
 """Bottleneck-agnostic pretraining loop.
 
 One AdamW + cosine-with-warmup-hold schedule + msgpack/orbax checkpoint
-loop shared across the three c2a variants (``vae``, ``vqvae``,
-``ps_vqvae``). Variants call :func:`train` with their own bottleneck
+loop. The kinematics-VAE calls :func:`train` with its bottleneck
 module + loss-weight schedule + a config that selects which
 encoder/decoder/predictor flavor to use.
 
@@ -394,8 +393,8 @@ def _save_checkpoint(
     }
     for name, b in bytes_payload.items():
         (out / f"{name}.msgpack").write_bytes(b)
-    # Non-trainable bottleneck buffers (EMA state for PS-VQVAE) — save
-    # only when non-empty so VAE / VQVAE checkpoints stay compact.
+    # Non-trainable bottleneck buffers (e.g. EMA state) — save only when
+    # non-empty so VAE checkpoints stay compact.
     if bn_buffers:
         (out / "bottleneck_buffers.msgpack").write_bytes(
             flax.serialization.to_bytes(bn_buffers),
@@ -463,8 +462,7 @@ def train(
 
     ``loss_weights`` provides the base coefficient for every term the
     bottleneck emits (e.g. ``{"recon": 1.0, "pred": 0.3, "kl": 0.005,
-    "sigma_pen": 1.0}`` for VAE; ``{"recon": 1.0, "pred": 0.3, "commit":
-    0.25}`` for VQVAE).
+    "sigma_pen": 1.0}`` for the VAE).
 
     ``schedule_aux`` lets a variant override a weight on every step
     (e.g. linear-anneal ``kl`` from 0 → 0.005). Keys missing from
@@ -520,12 +518,10 @@ def train(
     #     including a (possibly empty) ``"params"`` key. Passed to
     #     ``apply`` as-is on the non-mutable fast path.
     #   ``bn_buffers``   — non-params collections (e.g. ``"vq_state"``
-    #     for PS-VQVAE). Threaded separately through the train step so
-    #     the optimizer doesn't see them.
+    #     for buffer-carrying bottlenecks). Threaded separately through
+    #     the train step so the optimizer doesn't see them.
     # ``bn_init_out`` may legitimately be missing either side:
     #   VAE  → ``{"params": {}}``               (no learnable, no buffers)
-    #   VQVAE → ``{"params": {...codebook...}}``
-    #   PS-VQVAE → ``{"vq_state": {...}}``      (no learnable, EMA buffers)
     bn_params_subtree = bn_init_out.get("params", {})
     bn_buffers = {k: v for k, v in bn_init_out.items() if k != "params"}
     # bn_params (the value stored under params["bottleneck"]) is the
@@ -576,7 +572,7 @@ def train(
     bn_mutable = list(getattr(bottleneck_mod, "mutable_collections", ()))
 
     def _loss_fn(params, buffers, inputs, targets, rng, weights, bn_kwargs):
-        # Both the non-mutable (VAE / VQVAE) and mutable (PS-VQVAE) paths
+        # Both the non-mutable (VAE) and mutable (buffer-carrying) paths
         # call bottleneck.apply with a full Flax variables dict. The only
         # difference is whether non-params collections come along.
         if bn_mutable:

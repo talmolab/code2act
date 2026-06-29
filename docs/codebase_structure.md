@@ -18,9 +18,8 @@ code2act/
 ├── bash_scripts/              # pipeline orchestration (grouped into subfolders)
 │   ├── README.md  _pyrun.py
 │   ├── pipeline/              # run_kpms_effect_sweep.sh, run_vae_effect_sweep.sh
-│   ├── sweeps/                # KPMS / VAE / VQ-VAE tokenizer sweeps
-│   ├── training/              # kpms_baseline, c2c_additive, designed_segmenter
-│   └── transfer/              # foraging task-transfer
+│   ├── sweeps/                # KPMS / VAE tokenizer sweeps
+│   └── training/              # kpms_baseline, c2c_additive, designed_segmenter
 ├── c2a/                       # pip-installable package — see below
 ├── Code2Act-website/          # Astro site (★ gitignored sibling)
 ├── track-mjx/                 # ★ user-cloned sibling, gitignored
@@ -51,8 +50,7 @@ c2a/
 │   ├── run_sweep.py           # sweep dispatcher (routes by model: kpms)
 │   ├── code_sources.py        # ★ chokepoint loader: CodesPayload + VALID_SOURCES
 │   │                          #   {kpms_raw, kpms_merged,
-│   │                          #    kinematics_vae, vqvae, ps_vqvae,
-│   │                          #    gt_directional_turn}
+│   │                          #    kinematics_vae, gt_directional_turn}
 │   ├── shared/
 │   │   ├── label_alignment.py # rodent_labels.csv loader; behavior+direction tracks
 │   │   ├── coverage_metrics.py# NMI, Hungarian-purity
@@ -70,7 +68,7 @@ c2a/
 │   │   ├── generate_codes.py  # best fit → CodesPayload .npz
 │   │   └── generate_all_codes.py # per-(K,κ) .npz files + manifest
 │   └── kinematics_vae/        # kinematics-feature VAE family
-│       ├── backbone/          # Scott v15 — shared across all 3 variants
+│       ├── backbone/          # Scott v15 — shared encoder/decoder/predictor
 │       │   ├── frame_features.py    # m_t = (p, θ, q_active); 3-way body split
 │       │   ├── window_dataset.py    # make_windows
 │       │   ├── normalizer.py        # per-feature z-score
@@ -80,30 +78,15 @@ c2a/
 │       │   ├── predictor.py         # MotionPredictorSplit (aux dynamics loss)
 │       │   ├── losses.py            # KL, masked MSE, σ-cap, pretrain_loss
 │       │   ├── train_loop.py        # AdamW + warmup-hold-cosine + ckpt
-│       │   │                        #   handles mutable bottleneck buffers
 │       │   └── codegen.py           # encode_balanced_clips + load_checkpoint
-│       ├── vae/                     # variant 1: VAE + post-hoc K-means
+│       ├── vae/                     # VAE + post-hoc K-means
 │       │   ├── bottleneck.py        # GaussianBottleneck (KL + σ-cap)
 │       │   ├── train.py             # Hydra entry
 │       │   ├── tokenize.py          # PCA → KMeans → codes npz
 │       │   └── configs/pretrain.yaml
-│       ├── vqvae/                   # variant 2: vanilla VQVAE (gradient codebook)
-│       │   ├── quantizer.py         # VectorQuantizer (STE + commit + codebook)
-│       │   ├── bottleneck.py        # single VQ over concat-24-D latent
-│       │   ├── train.py             # Hydra entry
-│       │   ├── tokenize.py          # codebook argmin → codes npz
-│       │   └── configs/pretrain.yaml
-│       ├── ps_vqvae/                # variant 3: product-space VQVAE (VQ-MAP)
-│       │   ├── quantizer.py         # QuantizeEMAReset + MultiGroupQuantizer
-│       │   │                        #   per-group EMA-VQ + dead-code reseed
-│       │   ├── bottleneck.py        # body-part split as product groups
-│       │   ├── train.py             # Hydra entry
-│       │   ├── tokenize.py          # per-group codes → product index → npz
-│       │   └── configs/pretrain.yaml
 │       └── viz/
 │           ├── projections.py       # PCA / t-SNE / UMAP wrappers
-│           └── plot_latent.py       # 3-cols × N-rows per-variant grid
-│                                    # + PS-VQVAE joint K_i×K_j heatmap
+│           └── plot_latent.py       # 3-cols × N-rows latent grid
 │
 ├── configs/                   # Hydra YAMLs (decoder + KPMS sweeps)
 │   ├── moseq_decoder.yaml
@@ -147,16 +130,8 @@ c2a/
   by sorted-union position, so a wrong-order array would silently
   misalign every cross-tokenizer plot.
 - **`c2a/codegen/kinematics_vae/backbone/`** is a Scott-v15 verbatim
-  port. Only the bottleneck differs across variants; encoder / decoder /
-  predictor / train_loop / codegen are shared.
-- **The body-part split (root=4, axial=8, limb=12) is the natural
-  product-space factorization** for PS-VQVAE. The branches Scott uses
-  for per-branch KL allocation in the VAE map 1:1 to the paper's
-  product-quantization groups.
-- **PS-VQVAE keeps EMA buffers in a Flax `"vq_state"` mutable
-  collection.** The train_loop reads `bottleneck.mutable_collections`
-  and threads `mutable=["vq_state"]` through `apply`; the optimizer
-  only sees the trainable subtree.
+  port. The encoder / decoder / predictor / train_loop / codegen are
+  shared; the VAE supplies its own Gaussian bottleneck.
 
 ## Output locations (all gitignored)
 
@@ -166,10 +141,6 @@ c2a/
 | KPMS codes | `c2a/outputs/kpms_sweep/best_codes.npz` | `c2a.codegen.kpms.generate_codes` |
 | VAE ckpts | `trained_kinematics_vae_ckpts/vae/step_*` | `c2a.codegen.kinematics_vae.vae.train` |
 | VAE codes | `trained_kinematics_vae_ckpts/vae/best_codes.npz` | `c2a.codegen.kinematics_vae.vae.tokenize` |
-| VQVAE ckpts | `trained_kinematics_vae_ckpts/vqvae/step_*` | `c2a.codegen.kinematics_vae.vqvae.train` |
-| VQVAE codes | `trained_kinematics_vae_ckpts/vqvae/best_codes.npz` | `c2a.codegen.kinematics_vae.vqvae.tokenize` |
-| PS-VQVAE ckpts | `trained_kinematics_vae_ckpts/ps_vqvae/step_*` | `c2a.codegen.kinematics_vae.ps_vqvae.train` |
-| PS-VQVAE codes | `trained_kinematics_vae_ckpts/ps_vqvae/best_codes.npz` | `c2a.codegen.kinematics_vae.ps_vqvae.tokenize` |
 | MIMIC encoder | `trained_mimic_ckpts/` | `c2a.train_mimic_encoder` |
 | Decoder RL | `model_checkpoints/` | `c2a.train_moseq_decoder` |
 | Figures | `outputs/figures/<figure_name>/` | every `c2a.figures.*` script (one subdir per script) |

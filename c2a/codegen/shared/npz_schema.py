@@ -18,7 +18,7 @@ Required fields (every tokenizer):
                                   ``nn.Embed(num_states, ...)``
     model_type    : scalar bytes string — short tokenizer tag, surfaces in
                                   WandB provenance (e.g. "arhmm_kpms",
-                                  "kin_vae_kmeans", "vqvae", "ps_vqvae")
+                                  "kin_vae_kmeans")
 
 Optional fields (write when meaningful; reader gracefully ignores unknown):
     all_codes      : (N_total, T) int32 — codes for every clip in the

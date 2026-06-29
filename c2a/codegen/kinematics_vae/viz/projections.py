@@ -1,8 +1,7 @@
 """Thin wrappers around sklearn PCA / t-SNE / umap-learn UMAP.
 
-Used by the per-variant viz scripts to project the high-dimensional
-latent (``z`` for VAE, ``z_e`` for VQVAE, per-branch ``μ`` for PS-VQVAE)
-into a 2D plane for ground-truth-label and code coloring.
+Used by the viz scripts to project the high-dimensional VAE latent
+(``z``) into a 2D plane for ground-truth-label and code coloring.
 
 All projections operate on ``(N, D)`` float32 arrays of latents and
 return ``(N, 2)``. The functions log their fit on a `transform` style

@@ -175,7 +175,7 @@ def test_writer_all_codes_ordering_enforced(tmp_path):
         train_indices=train_indices,
         test_indices=test_indices,
         num_states=40,
-        model_type="ps_vqvae",
+        model_type="kinematics_vae",
         all_codes=correct_all,
         all_indices=all_indices,
     )
@@ -193,7 +193,7 @@ def test_writer_all_codes_ordering_enforced(tmp_path):
             train_indices=train_indices,
             test_indices=test_indices,
             num_states=40,
-            model_type="ps_vqvae",
+            model_type="kinematics_vae",
             all_codes=wrong_all,
             all_indices=all_indices,
         )

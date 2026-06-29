@@ -49,7 +49,7 @@ from c2a.moseq_ppo_networks import (
 from c2a.moseq_ppo import train as moseq_train
 from c2a.moseq_env_wrapper import MoSeqImitation
 from c2a.codegen.code_sources import (
-    SOURCE_KINEMATICS_VAE, SOURCE_PS_VQVAE, SOURCE_VQVAE, load_codes,
+    SOURCE_KINEMATICS_VAE, load_codes,
 )
 
 
@@ -496,8 +496,7 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     Args:
         cfg: Full Hydra cfg.
         payload: ``CodesPayload`` from :func:`load_codes`.
-        codes_path: Resolved path to the codes npz (for PS-VQVAE
-            group-size lookup).
+        codes_path: Resolved path to the codes npz.
 
     Returns:
         Dict of c2c_* kwargs. Empty when c2c is disabled.
@@ -505,8 +504,7 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     Raises:
         ValueError: incompatible code source for c2c, missing tokenizer
             ckpt, codebook-size mismatch.
-        NotImplementedError: tokenizer_kind not in
-            {vae, vqvae, ps_vqvae}.
+        NotImplementedError: tokenizer_kind not in {vae}.
     """
     c2c_cfg = cfg.get("code2code", None)
     if c2c_cfg is None:
@@ -526,15 +524,13 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     if reward_mode == "off":
         return {}
 
-    # code2code only supports neural tokenizers (VAE / VQVAE / PS-VQVAE).
+    # code2code only supports the neural kinematics-VAE tokenizer.
     # KPMS / gt_directional_turn can't run inside the env step
     # (see scratch/2026-05-26-code2code-mode/README.md §5).
-    if payload.code_source not in (
-        SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE,
-    ):
+    if payload.code_source != SOURCE_KINEMATICS_VAE:
         raise ValueError(
-            f"code2code.reward_mode={reward_mode!r} requires a neural "
-            f"tokenizer code source (kinematics_vae / vqvae / ps_vqvae). "
+            f"code2code.reward_mode={reward_mode!r} requires the neural "
+            f"kinematics_vae tokenizer code source. "
             f"Got code_source={payload.code_source!r}. Either set "
             f"code2code.reward_mode: off or switch to a neural code source."
         )
@@ -543,7 +539,7 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     if tokenizer_kind is None:
         raise ValueError(
             "code2code.reward_mode != 'off' requires "
-            "code2code.tokenizer_kind to be one of 'vae'/'vqvae'/'ps_vqvae'."
+            "code2code.tokenizer_kind to be 'vae'."
         )
     tokenizer_ckpt = c2c_cfg.get("tokenizer_ckpt", None)
     if tokenizer_ckpt is None:
@@ -560,7 +556,7 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
             f"to an existing directory (tried {ckpt_p})."
         )
 
-    arch_cfg = c2c_cfg.get("vqvae_arch", {})
+    arch_cfg = c2c_cfg.get("tokenizer_arch", {})
     arch_kwargs = dict(
         n_joints=int(arch_cfg.get("n_joints", 67)),
         use_qvel=bool(arch_cfg.get("use_qvel", False)),
@@ -572,39 +568,7 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
         decoder_layer_sizes=tuple(arch_cfg.get("decoder_layer_sizes", [256, 256, 256])),
     )
 
-    if tokenizer_kind == "vqvae":
-        from c2a.code2code import VQVAEAdapter
-        adapter = VQVAEAdapter.from_ckpt_dir(ckpt_p, **arch_kwargs)
-
-    elif tokenizer_kind == "ps_vqvae":
-        from c2a.code2code import PSVQVAEAdapter
-        # Group sizes can come from the config OR from the codes npz.
-        gd = c2c_cfg.get("ps_group_dims", None)
-        gks = c2c_cfg.get("ps_group_codebook_sizes", None)
-        if gd is None or gks is None:
-            if codes_path is None:
-                raise ValueError(
-                    "PS-VQ-VAE c2c adapter requires ps_group_dims and "
-                    "ps_group_codebook_sizes either set in cfg.code2code "
-                    "or available in the codes npz; neither was found."
-                )
-            data = np.load(str(codes_path), allow_pickle=False)
-            if "ps_group_dims" not in data or "ps_group_codebook_sizes" not in data:
-                raise RuntimeError(
-                    f"PS-VQ-VAE codes npz at {codes_path} is missing "
-                    f"ps_group_dims or ps_group_codebook_sizes; cannot "
-                    f"build PS-VQ-VAE c2c adapter without them."
-                )
-            gd = tuple(int(d) for d in data["ps_group_dims"])
-            gks = tuple(int(k) for k in data["ps_group_codebook_sizes"])
-        else:
-            gd = tuple(int(d) for d in gd)
-            gks = tuple(int(k) for k in gks)
-        adapter = PSVQVAEAdapter.from_ckpt_dir(
-            ckpt_p, group_dims=gd, group_codebook_sizes=gks, **arch_kwargs,
-        )
-
-    elif tokenizer_kind == "vae":
+    if tokenizer_kind == "vae":
         from c2a.code2code import VAEAdapter
         vae_pkl = c2c_cfg.get("vae_tokenizer_pkl", None)
         if vae_pkl is None:
@@ -627,7 +591,7 @@ def _build_c2c_env_kwargs(cfg, payload, codes_path) -> dict:
     else:
         raise NotImplementedError(
             f"code2code.tokenizer_kind={tokenizer_kind!r} not implemented; "
-            f"expected one of: vae, vqvae, ps_vqvae"
+            f"expected: vae"
         )
 
     # Codebook-size consistency: the tokenizer's K must match what the

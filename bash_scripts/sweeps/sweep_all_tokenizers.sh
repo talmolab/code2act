@@ -2,7 +2,7 @@
 # Master orchestrator for the full tokenizer sweep.
 # Layout:
 #   - sweep_kpms  screen: KPMS (CPU, ~30h)
-#   - sweep_neural screen: VAE → VQ-VAE → PS-VQ-VAE sequentially (~41h GPU)
+#   - sweep_neural screen: VAE (GPU)
 #   - sweep_watcher screen: waits for both to complete, then runs the
 #       tokenizer-diagnostics pipeline on the new outputs.
 #
@@ -34,8 +34,6 @@ echo "Launching screen 'sweep_neural' …"
 screen -dmS sweep_neural bash -c "
   set -uo pipefail
   bash '$SCRIPT_DIR/sweep_vae.sh' 2>&1 | tee '$LOG_DIR/vae.log'
-  bash '$SCRIPT_DIR/sweep_vqvae.sh' 2>&1 | tee '$LOG_DIR/vqvae.log'
-  bash '$SCRIPT_DIR/sweep_psvqvae.sh' 2>&1 | tee '$LOG_DIR/psvqvae.log'
   touch '$C2A_ROOT/outputs/tokenizer/trained_kinematics_vae_ckpts/.neural_done'
   echo '=== sweep_neural exited at \$(date) ==='
   sleep 86400
@@ -71,7 +69,7 @@ echo ""
 echo "Log directory: $LOG_DIR"
 echo "To monitor:"
 echo "  tail -f $LOG_DIR/kpms.log"
-echo "  tail -f $LOG_DIR/vae.log  (then vqvae.log, then psvqvae.log)"
+echo "  tail -f $LOG_DIR/vae.log"
 echo "Or attach:"
 echo "  screen -r sweep_kpms"
 echo "  screen -r sweep_neural"

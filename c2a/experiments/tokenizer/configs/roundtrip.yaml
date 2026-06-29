@@ -38,7 +38,7 @@ clips:
   behaviors: [groom, walk, rear]
 
 # -----------------------------------------------------------------------------
-# The four segmenters (motion tokenizers)
+# The segmenters (motion tokenizers)
 # -----------------------------------------------------------------------------
 segmenters:
   vae:
@@ -48,23 +48,6 @@ segmenters:
     tokenizer_pkl: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vae/tokenizer.pkl
     codes_npz: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vae/best_codes.npz
     num_codes: 30
-
-  vqvae:
-    type: ae
-    kind: vqvae
-    ckpt_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/step_0030000
-    codes_npz: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae/best_codes.npz
-    num_codes: 30
-    code_dim: 24
-
-  ps_vqvae:
-    type: ae
-    kind: ps_vqvae
-    ckpt_dir: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae/step_0030000
-    codes_npz: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae/best_codes.npz
-    num_codes: 64
-    group_dims: [4, 8, 12]
-    group_codebook_sizes: [4, 4, 4]
 
   kpms:
     type: kpms
@@ -82,8 +65,6 @@ segmenters:
 # -----------------------------------------------------------------------------
 decoders:
   vae: ${oc.env:C2A_ROOT,.}/model_checkpoints/260513_062522_599062
-  vqvae: ${oc.env:C2A_ROOT,.}/model_checkpoints/260520_000018_732638
-  ps_vqvae: ${oc.env:C2A_ROOT,.}/model_checkpoints/260513_062217_282797
   kpms: ${oc.env:C2A_ROOT,.}/model_checkpoints/260417_161257_992409
 
 # -----------------------------------------------------------------------------
@@ -100,8 +81,6 @@ stage2:
   # own tokenizer. Off-diagonal pairs may be added here too.
   pairs:
     - {decoder: vae, segmenter: vae}
-    - {decoder: vqvae, segmenter: vqvae}
-    - {decoder: ps_vqvae, segmenter: ps_vqvae}
     - {decoder: kpms, segmenter: kpms}
   n_rollout_repeats: 3      # decoder rollouts have sim-chaos run-to-run variance
   transient_window: 3       # frames dropped after each code change (GRU settling)

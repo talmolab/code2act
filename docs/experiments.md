@@ -74,7 +74,7 @@ with the venv active.
 | 2 | `run_code_sequence` | `code_sequence_exp.yaml` | Temporal order of codes, killer demo (instructional/discriminative codes) |
 | 3 | `run_code_generation` | `code_generation_exp.yaml` | Generative models (empirical TM, dynamax HMM, ARHMM L2) + free-loop rollouts |
 | 4 | `run_generalization` | `generalization.yaml` | Generalization to unseen continuous data via KPMS re-inference |
-| 5 | `run_roundtrip` | `roundtrip.yaml` | Code round-trip reconstruction across all 4 segmenters (kpms, vae, vqvae, ps_vqvae). **Stage 1** — segmenter self-consistency: segment reference clips repeatedly, measure code agreement (accuracy / precision / recall / F1). The 3 autoencoders are deterministic (~100%); KPMS is Gibbs-sampled, run under `same_seed` / `diff_seed` conditions. **Stage 2** — generate-from-real-code round trip: roll out each decoder decoder-only (`z_e_scale=0`), re-segment the generated motion, compare `ĉ` vs `c` (all-frame + transition-masked, since the GRU needs a few frames to settle after a code change). KPMS FK + apply runs in a separate x64 subprocess. |
+| 5 | `run_roundtrip` | `roundtrip.yaml` | Code round-trip reconstruction across the segmenters (kpms, vae). **Stage 1** — segmenter self-consistency: segment reference clips repeatedly, measure code agreement (accuracy / precision / recall / F1). The vae autoencoder is deterministic (~100%); KPMS is Gibbs-sampled, run under `same_seed` / `diff_seed` conditions. **Stage 2** — generate-from-real-code round trip: roll out each decoder decoder-only (`z_e_scale=0`), re-segment the generated motion, compare `ĉ` vs `c` (all-frame + transition-masked, since the GRU needs a few frames to settle after a code change). KPMS FK + apply runs in a separate x64 subprocess. |
 | 6 | `run_single_code` | `single_code_exp.yaml` | Single-code sustain grid — each code held for K frames |
 | 7 | `run_behavior_parade` | `behavior_parade_exp.yaml` | Behavior transition parade — walk→groom→rear |
 | 9 | `run_inception_distance` | `inception_distance_exp.yaml` | FID/KID — generative distribution quality vs real mocap |
@@ -283,7 +283,7 @@ python -m c2a.experiments.dynamics.run_labeled_hidden_dynamics_controlled \
 ### 16, 17, 18. Code-grid pipeline (`run_code_grid_*`)
 
 Tokenizer-agnostic battery for any RNN-decoder checkpoint with a
-discrete code source (VAE + k-means, VQ-VAE, PS-VQ-VAE, etc).
+discrete code source (KPMS, VAE + k-means, etc).
 
 **Three stages, run in order:**
 
@@ -390,11 +390,11 @@ NPZ generation if cached, `reuse_merge=true` skips MMD distance compute,
 has no reuse flag — it always recomputes from the cached rollouts +
 clusters (fast since no environment build is needed).
 
-**Tokenizer compatibility.** The code source (KPMS, VAE+kmeans, VQ-VAE,
-PS-VQVAE) is read from the checkpoint's saved config. The number of
-codes is detected automatically. PS-VQVAE flattens its product code
-indices through `c2a.codegen.code_sources.load_codes` so the experiment
-sees a single integer code per frame regardless of the source.
+**Tokenizer compatibility.** The code source (KPMS, VAE+kmeans) is read
+from the checkpoint's saved config. The number of codes is detected
+automatically. All sources resolve through
+`c2a.codegen.code_sources.load_codes` so the experiment sees a single
+integer code per frame regardless of the source.
 
 ```bash
 # VAE checkpoint

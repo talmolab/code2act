@@ -5,10 +5,8 @@ latent_ppo/networks/encoder.py``. Default for c2a kinematics-VAE family
 is :class:`MotionEncoderConv1DSharedSplit` (v15 — one shared conv1d
 backbone, per-branch ``(μ, logvar)`` heads).
 
-All four variants emit the same ``(mean, logvar)`` interface — the
-downstream bottleneck (Gaussian reparam / VQ / product-space VQ) decides
-how to consume them. For VQ variants, only ``mean`` is used; ``logvar``
-is ignored.
+The encoder emits a ``(mean, logvar)`` interface — the downstream
+Gaussian-reparam bottleneck decides how to consume them.
 """
 
 from __future__ import annotations
