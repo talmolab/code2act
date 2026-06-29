@@ -62,10 +62,9 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 # Tokenizer paths (K=30 default kinematics VAE; sweep tokenizers override
 # by setting TOKENIZER_DIR / TOKENIZER_KIND before invocation).
 #
-# TOKENIZER_KIND ∈ {vae, vqvae, ps_vqvae}. It drives both
-# code2code.tokenizer_kind and kpms_config.code_source. Only `vae`
-# requires/uses a tokenizer.pkl (the K-Means centroids); VQVAE / PS-VQVAE
-# read their codebook from the ckpt directly.
+# TOKENIZER_KIND is `vae`. It drives both code2code.tokenizer_kind and
+# kpms_config.code_source. `vae` requires a tokenizer.pkl (the K-Means
+# centroids).
 # ---------------------------------------------------------------------------
 : "${TOKENIZER_KIND:=vae}"
 : "${TOKENIZER_DIR:=outputs/tokenizer/trained_kinematics_vae_ckpts/vae}"
@@ -75,9 +74,7 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 case "$TOKENIZER_KIND" in
     vae)      CODE_SOURCE="kinematics_vae" ;;
-    vqvae)    CODE_SOURCE="vqvae" ;;
-    ps_vqvae) CODE_SOURCE="ps_vqvae" ;;
-    *) echo "ERROR: TOKENIZER_KIND=$TOKENIZER_KIND not in {vae,vqvae,ps_vqvae}" >&2; exit 1 ;;
+    *) echo "ERROR: TOKENIZER_KIND=$TOKENIZER_KIND not in {vae}" >&2; exit 1 ;;
 esac
 
 REQUIRED=("$CODES_PATH" "$TOKENIZER_CKPT")

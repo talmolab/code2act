@@ -1,15 +1,13 @@
 """Unified segmenter abstraction for the round-trip experiment.
 
 A :class:`Segmenter` maps a kinematics trajectory (per-clip ``qpos``) to one
-discrete code per frame. Concrete segmenters wrap the project's four motion
-tokenizers — ``vae``, ``vqvae``, ``ps_vqvae`` (kinematics autoencoders) and
-``kpms`` (Keypoint-MoSeq).
+discrete code per frame. Concrete segmenters wrap the project's two motion
+tokenizers — ``vae`` (kinematics autoencoder) and ``kpms`` (Keypoint-MoSeq).
 
 Determinism
 -----------
-The three autoencoders are deterministic functions: ``vae`` discretizes the
-posterior mean ``μ`` with a frozen K-Means, ``vqvae``/``ps_vqvae`` do hard
-``argmin`` codebook lookup. KPMS applies via Gibbs sampling, so its ``encode``
+The ``vae`` autoencoder is deterministic: it discretizes the posterior mean
+``μ`` with a frozen K-Means. KPMS applies via Gibbs sampling, so its ``encode``
 is seed-dependent — stage 1 of the round-trip experiment measures exactly that.
 
 KPMS process isolation
@@ -43,7 +41,7 @@ class Segmenter:
     """Maps a kinematics trajectory to one discrete code per frame.
 
     Attributes:
-        name: Short identifier (``vae`` / ``vqvae`` / ``ps_vqvae`` / ``kpms``).
+        name: Short identifier (``vae`` / ``kpms``).
         num_codes: Size of the discrete code alphabet.
         boundary_pad: ``(left, right)`` count of per-frame codes at each clip
             edge that are *replicated* from the nearest window rather than
@@ -82,17 +80,17 @@ class Segmenter:
 
 
 # ---------------------------------------------------------------------------
-# Kinematics-autoencoder segmenters (vae / vqvae / ps_vqvae)
+# Kinematics-autoencoder segmenter (vae)
 # ---------------------------------------------------------------------------
 
 
 class AESegmenter(Segmenter):
     """Wraps a frozen kinematics autoencoder tokenizer.
 
-    Loads the encoder + bottleneck (+ for ``vae`` the frozen PCA/K-Means
-    ``tokenizer.pkl``) and never re-fits anything. ``encode`` reproduces the
-    code path of the matching ``c2a.codegen.kinematics_vae.<kind>.tokenize``
-    script via :func:`encode_motion_array`.
+    Loads the encoder + bottleneck + the frozen PCA/K-Means
+    ``tokenizer.pkl`` and never re-fits anything. ``encode`` reproduces the
+    code path of ``c2a.codegen.kinematics_vae.vae.tokenize`` via
+    :func:`encode_motion_array`.
     """
 
     def __init__(
@@ -106,9 +104,6 @@ class AESegmenter(Segmenter):
         use_qvel: bool = False,
         window_len: int = 10,
         horizon: int = 5,
-        code_dim: int | None = None,
-        group_dims: tuple[int, ...] | None = None,
-        group_codebook_sizes: tuple[int, ...] | None = None,
         tokenizer_pkl: str | Path | None = None,
     ) -> None:
         from c2a.codegen.kinematics_vae.backbone.codegen import load_checkpoint
@@ -130,32 +125,6 @@ class AESegmenter(Segmenter):
             )
 
             bottleneck = GaussianBottleneck()
-        elif kind == "vqvae":
-            from c2a.codegen.kinematics_vae.vqvae.bottleneck import (
-                VQVAEBottleneck,
-            )
-
-            if code_dim is None:
-                raise ValueError("vqvae requires code_dim.")
-            bottleneck = VQVAEBottleneck(
-                codebook_size=int(num_codes), code_dim=int(code_dim)
-            )
-        elif kind == "ps_vqvae":
-            from c2a.codegen.kinematics_vae.ps_vqvae.bottleneck import (
-                PSVQVAEBottleneck,
-            )
-
-            if group_dims is None or group_codebook_sizes is None:
-                raise ValueError(
-                    "ps_vqvae requires group_dims and group_codebook_sizes."
-                )
-            self.group_codebook_sizes = tuple(
-                int(k) for k in group_codebook_sizes
-            )
-            bottleneck = PSVQVAEBottleneck(
-                group_dims=tuple(int(d) for d in group_dims),
-                group_codebook_sizes=self.group_codebook_sizes,
-            )
         else:
             raise ValueError(f"unknown AE segmenter kind {kind!r}")
 
@@ -185,7 +154,7 @@ class AESegmenter(Segmenter):
 
         qpos = np.asarray(qpos, dtype=np.float32)
         # vae's GaussianBottleneck reparameterizes unless sigma is clamped;
-        # codegen pins sigma_max=0.0 so z == mean. VQ bottlenecks ignore it.
+        # codegen pins sigma_max=0.0 so z == mean.
         bn_kwargs = {"sigma_max": 0.0} if self.kind == "vae" else None
         encoded = encode_motion_array(
             qpos,
@@ -212,20 +181,8 @@ class AESegmenter(Segmenter):
             )
             codes = self._kmeans.predict(feat).astype(np.int32)
             codes = codes.reshape(n_clips, n_frames)
-        elif self.kind == "vqvae":
-            if "codes" not in encoded.aux:
-                raise RuntimeError("VQVAEBottleneck emitted no 'codes' aux.")
-            codes = encoded.aux["codes"].astype(np.int32)
-        else:  # ps_vqvae
-            from c2a.codegen.kinematics_vae.ps_vqvae.tokenize import (
-                fold_to_product_index,
-            )
-
-            if "codes" not in encoded.aux:
-                raise RuntimeError("PSVQVAEBottleneck emitted no 'codes' aux.")
-            codes = fold_to_product_index(
-                encoded.aux["codes"], self.group_codebook_sizes
-            )
+        else:
+            raise ValueError(f"unknown AE segmenter kind {self.kind!r}")
         return np.asarray(codes, dtype=np.int32)
 
 
@@ -359,9 +316,6 @@ def load_segmenter(
             use_qvel=bool(seg_cfg.get("use_qvel", False)),
             window_len=int(seg_cfg.get("window_len", 10)),
             horizon=int(seg_cfg.get("horizon", 5)),
-            code_dim=seg_cfg.get("code_dim"),
-            group_dims=seg_cfg.get("group_dims"),
-            group_codebook_sizes=seg_cfg.get("group_codebook_sizes"),
             tokenizer_pkl=seg_cfg.get("tokenizer_pkl"),
         )
     if seg_type == "kpms":

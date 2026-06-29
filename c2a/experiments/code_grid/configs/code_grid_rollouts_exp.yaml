@@ -27,7 +27,7 @@ checkpoint:
   #
   # WARNING: this MUST match the tokenizer that produced the codes the
   # checkpoint was trained with. Setting this to a different tokenizer
-  # (e.g. pointing PS-VQVAE checkpoint at the VAE codes file) silently
+  # (e.g. pointing a KPMS checkpoint at the VAE codes file) silently
   # rewrites top_codes + usage_rank.npz with the wrong codebook and can
   # clobber cached rollouts whose file names overlap. Default null —
   # specify per-checkpoint on CLI.

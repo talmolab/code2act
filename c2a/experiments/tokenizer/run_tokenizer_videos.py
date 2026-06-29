@@ -55,7 +55,7 @@ log = logging.getLogger("tokenizer_videos")
 
 
 FAMILY_TITLES = {
-    "kpms": "KPMS", "vae": "VAE", "vqvae": "VQ-VAE", "ps_vqvae": "PS-VQ-VAE",
+    "kpms": "KPMS", "vae": "VAE",
 }
 
 
@@ -642,7 +642,7 @@ def main(cfg: DictConfig) -> None:
     family_codes: dict[str, np.ndarray] = {}
     family_K: dict[str, int] = {}
     family_label: dict[str, str] = {}
-    for family in ("kpms", "vae", "vqvae", "ps_vqvae"):
+    for family in ("kpms", "vae"):
         entry = best_per_family.get(family)
         if entry is None:
             continue
@@ -703,7 +703,7 @@ def main(cfg: DictConfig) -> None:
                 clip_picks = sorted(
                     rng.choice(max_clip, size=5, replace=False).tolist()
                 )
-        family_order = [f for f in ("kpms", "vae", "vqvae", "ps_vqvae")
+        family_order = [f for f in ("kpms", "vae")
                         if f in family_codes]
         family_labels = [
             f"{FAMILY_TITLES.get(f, f)} ({family_label[f]})"

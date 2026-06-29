@@ -6,13 +6,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-_VQVAE_CKPT = Path(
+_VAE_CKPT = Path(
     "/home/jovyan/vast/kaiwen/code2act/outputs/tokenizer/"
-    "trained_kinematics_vae_ckpts/vqvae/step_0030000"
+    "trained_kinematics_vae_ckpts/vae/step_0030000"
 )
-_VQVAE_BEST_CODES = Path(
+_VAE_TOKENIZER_PKL = Path(
     "/home/jovyan/vast/kaiwen/code2act/outputs/tokenizer/"
-    "trained_kinematics_vae_ckpts/vqvae/best_codes.npz"
+    "trained_kinematics_vae_ckpts/vae/tokenizer.pkl"
+)
+_VAE_BEST_CODES = Path(
+    "/home/jovyan/vast/kaiwen/code2act/outputs/tokenizer/"
+    "trained_kinematics_vae_ckpts/vae/best_codes.npz"
 )
 _REF_H5 = Path(
     "/home/jovyan/vast/kaiwen/code2act/data/rodent/rodent_reference_clips.h5"
@@ -20,12 +24,23 @@ _REF_H5 = Path(
 
 
 def _require_artifacts():
-    if not _VQVAE_CKPT.exists():
-        pytest.skip(f"VQ-VAE ckpt not available: {_VQVAE_CKPT}")
-    if not _VQVAE_BEST_CODES.exists():
-        pytest.skip(f"VQ-VAE best_codes not available: {_VQVAE_BEST_CODES}")
+    if not _VAE_CKPT.exists():
+        pytest.skip(f"VAE ckpt not available: {_VAE_CKPT}")
+    if not _VAE_TOKENIZER_PKL.exists():
+        pytest.skip(f"VAE tokenizer.pkl not available: {_VAE_TOKENIZER_PKL}")
+    if not _VAE_BEST_CODES.exists():
+        pytest.skip(f"VAE best_codes not available: {_VAE_BEST_CODES}")
     if not _REF_H5.exists():
         pytest.skip(f"reference clips not available: {_REF_H5}")
+
+
+def _make_adapter():
+    from c2a.code2code import VAEAdapter
+
+    return VAEAdapter.from_ckpt_dir(
+        _VAE_CKPT, _VAE_TOKENIZER_PKL, n_joints=67, use_qvel=False,
+        window_len=10, horizon=5,
+    )
 
 
 def _load_ref_data(clip_length: int = 250) -> tuple[np.ndarray, np.ndarray]:
@@ -36,7 +51,7 @@ def _load_ref_data(clip_length: int = 250) -> tuple[np.ndarray, np.ndarray]:
     n_total = flat.shape[0] // clip_length
     qpos = flat[: n_total * clip_length].reshape(n_total, clip_length, -1).astype(np.float32)
 
-    data = np.load(_VQVAE_BEST_CODES, allow_pickle=False)
+    data = np.load(_VAE_BEST_CODES, allow_pickle=False)
     # all_codes: (n_total, clip_length) aligned to global clip ids in
     # sorted-union order. For the calibration test we need codes whose
     # row index matches `qpos` row index — that's exactly `all_codes`.
@@ -45,19 +60,15 @@ def _load_ref_data(clip_length: int = 250) -> tuple[np.ndarray, np.ndarray]:
 
 
 def test_calibrate_returns_sensible_tau():
-    """On VQ-VAE codes paired with their own reference clips, the
+    """On VAE codes paired with their own reference clips, the
     median in-clip distance should be small (the rollout IS the
     reference here, so the encoder lands close to its own codebook
     entries). τ at target_r=0.3 should be small but positive."""
     _require_artifacts()
-    from c2a.code2code import VQVAEAdapter
     from c2a.code2code.calibrate import calibrate_temperature
 
     qpos, all_codes = _load_ref_data(clip_length=250)
-    adapter = VQVAEAdapter.from_ckpt_dir(
-        _VQVAE_CKPT, n_joints=67, use_qvel=False,
-        window_len=10, horizon=5,
-    )
+    adapter = _make_adapter()
 
     # Use a smaller subset for a quick test.
     median_d, tau = calibrate_temperature(
@@ -84,14 +95,10 @@ def test_calibrate_returns_sensible_tau():
 def test_calibrate_target_reward_range():
     """target_initial_reward outside (0, 1) should raise."""
     _require_artifacts()
-    from c2a.code2code import VQVAEAdapter
     from c2a.code2code.calibrate import calibrate_temperature
 
     qpos, all_codes = _load_ref_data(clip_length=250)
-    adapter = VQVAEAdapter.from_ckpt_dir(
-        _VQVAE_CKPT, n_joints=67, use_qvel=False,
-        window_len=10, horizon=5,
-    )
+    adapter = _make_adapter()
 
     for bad in [0.0, 1.0, -0.1, 1.5]:
         with pytest.raises(ValueError, match="target_initial_reward"):
@@ -106,14 +113,10 @@ def test_calibrate_l2_distinct_from_cosine():
     """L2 and cosine return different median distances (sanity that
     the distance_form argument is plumbed through)."""
     _require_artifacts()
-    from c2a.code2code import VQVAEAdapter
     from c2a.code2code.calibrate import calibrate_temperature
 
     qpos, all_codes = _load_ref_data(clip_length=250)
-    adapter = VQVAEAdapter.from_ckpt_dir(
-        _VQVAE_CKPT, n_joints=67, use_qvel=False,
-        window_len=10, horizon=5,
-    )
+    adapter = _make_adapter()
 
     med_l2, _ = calibrate_temperature(
         adapter, qpos[:10], all_codes[:10],

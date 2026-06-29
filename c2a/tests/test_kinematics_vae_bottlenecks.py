@@ -1,14 +1,9 @@
-"""Tests for the VAE + VQVAE bottleneck variants.
+"""Tests for the VAE bottleneck variant.
 
-These guard the load-bearing invariants every variant must keep:
+These guard the load-bearing invariants the VAE must keep:
   * VAE: deterministic mode returns z=μ; KL=0 for unit posterior;
     σ_cap penalty respects ``sigma_max``.
-  * VQVAE: identity STE (forward = z_q, backward gradient w.r.t. z_e
-    = ones); commitment & codebook losses have the correct
-    stop_gradient direction so they push only their respective sides;
-    codebook param receives non-zero gradient through the codebook
-    loss term.
-  * Both: ``pretrain_loss`` total equals the weighted sum of recon +
+  * ``pretrain_loss`` total equals the weighted sum of recon +
     pred + bottleneck aux losses, with missing weights defaulting to 0.
 """
 
@@ -26,8 +21,6 @@ from c2a.codegen.kinematics_vae.backbone.encoder import (
 from c2a.codegen.kinematics_vae.backbone.losses import pretrain_loss
 from c2a.codegen.kinematics_vae.backbone.predictor import MotionPredictorSplit
 from c2a.codegen.kinematics_vae.vae.bottleneck import GaussianBottleneck
-from c2a.codegen.kinematics_vae.vqvae.bottleneck import VQVAEBottleneck
-from c2a.codegen.kinematics_vae.vqvae.quantizer import VectorQuantizer
 
 
 # ── shared scaffolding ────────────────────────────────────────────────────
@@ -93,94 +86,6 @@ def test_vae_sigma_pen_zero_when_sigma_max_zero():
     assert float(aux2["sigma_pen"]) == pytest.approx(0.0, abs=1e-5)
 
 
-# ── VQVAE quantizer / bottleneck ──────────────────────────────────────────
-
-
-def test_vq_forward_returns_z_q_numerically():
-    """In the forward pass, STE makes z_st numerically equal z_q
-    (the nearest codebook entry)."""
-    K, D, B = 4, 3, 5
-    q = VectorQuantizer(codebook_size=K, code_dim=D)
-    rng = jax.random.PRNGKey(0)
-    z_e = jax.random.normal(rng, (B, D))
-    params = q.init(rng, z_e)
-    codebook = params["params"]["codebook"]
-
-    z_st, _, aux = q.apply(params, z_e)
-    codes = aux["codes"]
-    expected = codebook[codes]
-    np.testing.assert_allclose(np.asarray(z_st), np.asarray(expected), atol=1e-6)
-
-
-def test_vq_ste_grad_passes_identity_to_z_e():
-    """d(z_st)/d(z_e) should be identity (forward through STE)."""
-    K, D, B = 4, 3, 2
-    q = VectorQuantizer(codebook_size=K, code_dim=D)
-    rng = jax.random.PRNGKey(0)
-    z_e = jax.random.normal(rng, (B, D))
-    params = q.init(rng, z_e)
-
-    def fn(z):
-        out, _, _ = q.apply(params, z)
-        return jnp.sum(out)
-    grad = jax.grad(fn)(z_e)
-    # d(sum(z_st))/d(z_e) should be ones (identity STE).
-    np.testing.assert_allclose(np.asarray(grad), np.ones_like(z_e), atol=1e-5)
-
-
-def test_vq_commitment_grad_only_to_encoder():
-    """Commitment loss = ||z_e - sg(z_q)||². d(commit)/d(z_e) is non-zero,
-    d(commit)/d(codebook) is zero (the codebook is wrapped in sg)."""
-    K, D, B = 4, 3, 2
-    q = VectorQuantizer(codebook_size=K, code_dim=D)
-    rng = jax.random.PRNGKey(0)
-    z_e = jax.random.normal(rng, (B, D))
-    params = q.init(rng, z_e)
-
-    def commit_only(z, p):
-        _, aux_losses, _ = q.apply(p, z)
-        return aux_losses["commit"]
-
-    g_z = jax.grad(commit_only, argnums=0)(z_e, params)
-    g_p = jax.grad(commit_only, argnums=1)(z_e, params)
-
-    # grad w.r.t. z_e should be non-zero (encoder gets pulled toward codebook).
-    assert float(jnp.linalg.norm(g_z)) > 0.0
-    # grad w.r.t. codebook param should be exactly zero (sg blocked it).
-    cb_grad = g_p["params"]["codebook"]
-    np.testing.assert_allclose(np.asarray(cb_grad), 0.0, atol=1e-6)
-
-
-def test_vq_codebook_grad_only_to_codebook():
-    """Codebook loss = ||sg(z_e) - z_q||². d(loss)/d(z_e) is zero,
-    d(loss)/d(codebook) is non-zero."""
-    K, D, B = 4, 3, 2
-    q = VectorQuantizer(codebook_size=K, code_dim=D)
-    rng = jax.random.PRNGKey(0)
-    z_e = jax.random.normal(rng, (B, D))
-    params = q.init(rng, z_e)
-
-    def codebook_only(z, p):
-        _, aux_losses, _ = q.apply(p, z)
-        return aux_losses["codebook"]
-
-    g_z = jax.grad(codebook_only, argnums=0)(z_e, params)
-    g_p = jax.grad(codebook_only, argnums=1)(z_e, params)
-    np.testing.assert_allclose(np.asarray(g_z), 0.0, atol=1e-6)
-    assert float(jnp.linalg.norm(g_p["params"]["codebook"])) > 0.0
-
-
-def test_vqvae_bottleneck_validates_code_dim():
-    """VQVAEBottleneck refuses a code_dim mismatch with the encoder."""
-    bn = VQVAEBottleneck(codebook_size=16, code_dim=24)
-    rng = jax.random.PRNGKey(0)
-    # mean.shape[-1]=10, code_dim=24 — must raise.
-    mean = jnp.zeros((3, 10))
-    logvar = jnp.zeros_like(mean)
-    with pytest.raises(ValueError, match="code_dim"):
-        bn.init(rng, mean, logvar, rng)
-
-
 # ── pretrain_loss assembly ────────────────────────────────────────────────
 
 
@@ -215,27 +120,29 @@ def test_pretrain_loss_weighted_sum_matches_metrics():
 def test_pretrain_loss_missing_weight_defaults_to_zero():
     """A weight that isn't in loss_weights must contribute 0 (ablation use)."""
     enc, dec, pred, inputs, targets = _build_backbone(B=2, w=10, feat=15)
-    bn = VQVAEBottleneck(codebook_size=8, code_dim=12)
+    bn = GaussianBottleneck()
     key = jax.random.PRNGKey(0)
     enc_p = enc.init(key, inputs)
     mu_dummy = jnp.zeros((2, 12))
-    bn_p = bn.init(key, mu_dummy, mu_dummy, key)
+    bn_p = bn.init(key, mu_dummy, mu_dummy, key, deterministic=True, sigma_max=0.1)
     dec_p = dec.init(key, mu_dummy)
     pred_p = pred.init(key, mu_dummy)
 
-    # Drop the codebook weight — the loss should ONLY include recon + pred + commit.
-    weights = {"recon": 1.0, "pred": 0.3, "commit": 0.25}
+    # Drop the sigma_pen weight — the loss should ONLY include recon + pred + kl.
+    weights = {"recon": 1.0, "pred": 0.3, "kl": 0.005}
     loss, (metrics, _) = pretrain_loss(
         enc, bn, dec, pred,
         enc_p, bn_p, dec_p, pred_p,
         inputs, targets, key,
         loss_weights=weights,
+        bottleneck_kwargs={"sigma_max": 0.1},
+        deterministic=True,
     )
     manual = (
         1.0 * float(metrics["recon"])
         + 0.3 * float(metrics["pred"])
-        + 0.25 * float(metrics["commit"])
+        + 0.005 * float(metrics["kl"])
     )
     np.testing.assert_allclose(float(loss), manual, atol=1e-5)
-    # codebook metric is still present (logging) but doesn't enter the loss.
-    assert "codebook" in metrics
+    # sigma_pen metric is still present (logging) but doesn't enter the loss.
+    assert "sigma_pen" in metrics

@@ -1,9 +1,8 @@
 """Shared helpers for the kinematics-VAE family's top-K band rendering.
 
-All three variants (VAE / VQVAE / PS-VQVAE) emit the same
-``best_codes.npz`` schema (``all_codes``, ``train_indices``,
-``num_states``, ...), so the orchestrator below works for any variant
-that supplies its own ``model_rows`` factory.
+The VAE emits the standard ``best_codes.npz`` schema (``all_codes``,
+``train_indices``, ``num_states``, ...), so the orchestrator below works
+for any variant that supplies its own ``model_rows`` factory.
 
 The actual figure / video drawing is delegated to
 :mod:`c2a.codegen.shared.topk_bands_render`, which is the same module
@@ -119,9 +118,9 @@ def render_topk_bands(
             of the variant's training output).
         model_rows_factory: Function mapping ``(per_clip_codes, npz_extras)``
             → list of ``ModelRow`` tuples. Each variant builds its own
-            band rows (single-band for VAE/VQVAE; multi-band for PS-VQVAE).
+            band rows (single-band for the VAE).
         variant_label: short string for the output filename prefix
-            (e.g. ``"kmeans"``, ``"vqvae"``, ``"ps_vqvae"``).
+            (e.g. ``"kmeans"``).
         output_dir: Where to drop the figures (typically next to the
             ``best_codes.npz``).
         clips: Override auto-selected clips with 3 explicit ids.

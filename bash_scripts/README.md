@@ -6,7 +6,6 @@ code generation → decoder RL), grouped into subfolders:
 - `pipeline/` — full multi-stage orchestration
 - `sweeps/` — tokenizer / KPMS hyperparameter sweeps
 - `training/` — single decoder / controller trainers
-- `transfer/` — downstream task-transfer (foraging)
 
 `_pyrun.py` (venv module launcher) and this README stay at the `bash_scripts/`
 root. Run every script from the `code2act/` repo root.

@@ -73,7 +73,8 @@ class EncodedClips:
             row order of ``z``.
         modules: Echo of the loaded backbone.
         aux: dict carrying variant-specific outputs (e.g.
-            ``{"codes": <(n_clips, n_frames) int>}`` for VQVAE).
+            ``{"codes": <(n_clips, n_frames) int>}`` for code-emitting
+            bottlenecks).
     """
 
     z: np.ndarray
@@ -167,11 +168,11 @@ def load_checkpoint(
     pred_params = flax.serialization.from_bytes(
         pred_template, (ckpt_dir / "predictor.msgpack").read_bytes(),
     )
-    # PS-VQVAE-style bottlenecks ship their EMA buffers in a separate
+    # Bottlenecks with mutable EMA buffers ship them in a separate
     # ``bottleneck_buffers.msgpack`` file (saved by
     # ``train_loop._save_checkpoint`` when ``bn_buffers`` is non-empty).
-    # For VAE / VQVAE that file doesn't exist and bn_params already
-    # carries everything.
+    # The VAE has no such buffers, so that file doesn't exist and
+    # bn_params already carries everything.
     buffers_path = ckpt_dir / "bottleneck_buffers.msgpack"
     if buffers_path.exists():
         buf_template = {k: v for k, v in bn_template.items() if k != "params"}
@@ -372,8 +373,8 @@ def _encode_clips_core(
     encoder = modules.encoder
     bottleneck_mod = modules.bottleneck
 
-    # PS-VQVAE-style bottlenecks ship buffers separately and need their
-    # variables dict reassembled for ``apply``. VAE / VQVAE just pass
+    # Bottlenecks with mutable buffers ship them separately and need their
+    # variables dict reassembled for ``apply``. The VAE just passes
     # bn_params unchanged.
     bn_uses_buffers = bool(bn_buffers)
 
@@ -382,7 +383,7 @@ def _encode_clips_core(
         # x_batch: (B, w, feat_dim)
         mean, logvar = encoder.apply(enc_p, x_batch)
         # bn_p is already a full ``{"params": ...}`` wrapper; merge in
-        # the (optional) buffer collections for PS-VQVAE-style bottlenecks.
+        # the (optional) buffer collections for buffer-carrying bottlenecks.
         if bn_uses_buffers:
             bn_variables = {**bn_p, **bn_buf}
         else:

@@ -1,5 +1,5 @@
 # Tokenizer diagnostics — produces the kappa-sweep EML curve plus
-# the four image.png metrics across KPMS + neural tokenizer families.
+# the four image.png metrics across the KPMS + kinematics-VAE tokenizers.
 #
 # Run::
 #
@@ -45,20 +45,6 @@ neural:
       ckpt_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/vae
       label: k=30 (default)
     sweep_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/vae_sweep
-
-  vqvae:
-    family: vqvae
-    standalone:
-      ckpt_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae
-      label: k=30 (default)
-    sweep_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/vqvae_sweep
-
-  ps_vqvae:
-    family: ps_vqvae
-    standalone:
-      ckpt_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae
-      label: (4,4,4) (default)
-    sweep_dir: ${paths.c2a_root}/outputs/tokenizer/trained_kinematics_vae_ckpts/ps_vqvae_sweep
 
 # ---------------------------------------------------------------------------
 # Purity metric — MMD between within-syllable and across-syllable kinematic

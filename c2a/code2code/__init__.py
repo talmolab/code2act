@@ -15,9 +15,8 @@ kinematic meaning instead of drifting into a private control basis.
 This package provides adapters that expose the in-loop interface:
 
 * :class:`C2CTokenizerAdapter` — abstract base.
-* :class:`VQVAEAdapter` — concrete adapter for vanilla VQ-VAE ckpts.
-
-PS-VQ-VAE and VAE adapters land in follow-up stages.
+* :class:`VAEAdapter` — concrete adapter for kinematics-VAE ckpts
+  (Gaussian bottleneck + post-hoc K-Means codebook).
 
 KPMS is not supported by code2code mode because it needs
 ``jax_enable_x64=True`` and runs Gibbs sampling in a separate process
@@ -27,8 +26,6 @@ caller sets ``code2code.reward_mode != "off"`` with a KPMS code source.
 """
 
 from c2a.code2code.adapter_base import C2CTokenizerAdapter
-from c2a.code2code.ps_vqvae_adapter import PSVQVAEAdapter
 from c2a.code2code.vae_adapter import VAEAdapter
-from c2a.code2code.vqvae_adapter import VQVAEAdapter
 
-__all__ = ["C2CTokenizerAdapter", "PSVQVAEAdapter", "VAEAdapter", "VQVAEAdapter"]
+__all__ = ["C2CTokenizerAdapter", "VAEAdapter"]

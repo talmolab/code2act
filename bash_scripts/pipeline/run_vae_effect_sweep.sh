@@ -23,9 +23,8 @@
 #   bash bash_scripts/pipeline/run_vae_effect_sweep.sh --launch    # train + run locally
 #   bash bash_scripts/pipeline/run_vae_effect_sweep.sh --skip-train --skip-tokenize  # reuse codes
 #
-# NOTE: only the `vae` variant is covered here (the paper's tokenizer family).
-# For vqvae/ps_vqvae, num_codes is a *training* param — their tokenizer sweeps
-# live in bash_scripts/sweeps/.
+# NOTE: the `vae` variant is the paper's learned-tokenizer family. Its
+# per-tokenizer hyperparameter sweep lives in bash_scripts/sweeps/sweep_vae.sh.
 # =============================================================================
 set -euo pipefail
 

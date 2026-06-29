@@ -2,12 +2,12 @@
 # MoSeq Decoder-Only RL Configuration (Pipeline A)
 # =============================================================================
 # Trains a decoder-only policy where behavioral codes come from Keypoint-MoSeq
-# instead of the VQ-VAE encoder. Compares pre-computed tokenizer (KPMS) against
-# the learned tokenizer (VQ-VAE) for motor control.
+# or the kinematics-VAE tokenizer. Compares the pre-computed tokenizer (KPMS)
+# against the learned tokenizer (kinematics-VAE) for motor control.
 # =============================================================================
 
 # =============================================================================
-# VNL Environment Configuration (same as vqvae_minimal.yaml)
+# VNL Environment Configuration
 # =============================================================================
 env_config:
   mujoco_impl: "jax"
@@ -141,7 +141,7 @@ network_config:
   code_embed_dim: 16
   code_stack_size: 5             # stack N consecutive codes [t, t+1, ..., t+N-1] (1 = current only)
 
-  # Decoder MLP (same sizes as VQ-VAE decoder)
+  # Decoder MLP
   decoder_layer_sizes: [512, 512, 256, 256]
   critic_layer_sizes: [512, 512, 256, 256]
 
@@ -247,7 +247,7 @@ train_setup:
 # which let PPO drift the codebook into a private control basis.
 #
 # Requirements:
-#   - kpms_config.code_source must be 'kinematics_vae' | 'vqvae' | 'ps_vqvae'.
+#   - kpms_config.code_source must be 'kinematics_vae'.
 #     KPMS / gt_directional_turn raise NotSupportedError.
 #   - The tokenizer_ckpt and kpms_config.codes_path MUST come from the
 #     same training run (codebook-size match is asserted at startup).
@@ -255,7 +255,7 @@ train_setup:
 # See scratch/2026-05-26-code2code-mode/design-A-reward-shaping.md.
 code2code:
   reward_mode: "off"            # "off" | "additive"  (additive: r = r_track + α·match)
-  tokenizer_kind: null          # vae | vqvae | ps_vqvae
+  tokenizer_kind: null          # vae
   tokenizer_ckpt: null          # path to the tokenizer step_NNNNN dir
 
   # Mix weights (literature: AMP convention is track=0.5, alpha=0.5;
@@ -279,10 +279,9 @@ code2code:
   # VAE-only: path to the tokenizer.pkl with K-Means centroids
   vae_tokenizer_pkl: null
 
-  # VQVAE / PS-VQVAE: encoder/decoder architecture knobs (must match
-  # the ckpt's training-time config). Same shape as the
-  # (now-removed) e2e_config.vqvae_arch.
-  vqvae_arch:
+  # Kinematics-VAE encoder/decoder architecture knobs (must match the
+  # ckpt's training-time config).
+  tokenizer_arch:
     n_joints: 67
     use_qvel: false
     window_len: 10
@@ -291,12 +290,6 @@ code2code:
     conv_kernel_size: 3
     conv_head_layers: [256]
     decoder_layer_sizes: [256, 256, 256]
-
-  # PS-VQVAE-only: per-group codebook structure. Pulled from the
-  # tokenizer's best_codes.npz (ps_group_dims +
-  # ps_group_codebook_sizes) when null.
-  ps_group_dims: null
-  ps_group_codebook_sizes: null
 
   log_diagnostics: true         # emit c2c/* WandB metrics every step
 
@@ -311,7 +304,7 @@ logging_config:
   model_path: ${oc.env:C2A_ROOT,.}/model_checkpoints
 
 # =============================================================================
-# Walker Configuration (same as vqvae_minimal.yaml)
+# Walker Configuration
 # =============================================================================
 walker_config:
   walker_name: "rodent"

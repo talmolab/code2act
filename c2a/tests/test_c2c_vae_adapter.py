@@ -82,7 +82,7 @@ def test_vae_adapter_rejects_missing_pkl():
 
 
 # ============================================================================
-# Encoder equivalence (same as VQVAE; encoder + bottleneck behavior identical
+# Encoder equivalence (encoder + bottleneck behavior identical
 # when deterministic and we read the mean directly)
 # ============================================================================
 

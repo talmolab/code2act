@@ -6,12 +6,11 @@ Does a discrete code sequence survive the round trip
 Two stages (stage 3 — unconditional generation — is a future extension):
 
 Stage 1 — segmenter self-consistency
-    Segment a few reference clips several times with each of the four
-    segmenters (kpms, vae, vqvae, ps_vqvae). The three autoencoders are
-    deterministic functions and should score ~100%. KPMS applies via Gibbs
-    sampling, so it is run under two conditions: ``same_seed`` (pinned PRNG
-    key — pure determinism) and ``diff_seed`` (the honest Gibbs-variance
-    number).
+    Segment a few reference clips several times with each segmenter
+    (kpms, vae). The vae autoencoder is a deterministic function and
+    should score ~100%. KPMS applies via Gibbs sampling, so it is run
+    under two conditions: ``same_seed`` (pinned PRNG key — pure
+    determinism) and ``diff_seed`` (the honest Gibbs-variance number).
 
 Stage 2 — generate-from-real-code round trip
     For each (decoder checkpoint, segmenter) pair: take real reference

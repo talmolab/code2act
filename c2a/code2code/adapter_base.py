@@ -1,7 +1,7 @@
 """Abstract base for code2code in-loop tokenizer adapters.
 
-Each concrete adapter wraps one frozen tokenizer family (VQ-VAE,
-PS-VQ-VAE, VAE) and exposes a JIT-friendly per-window interface used
+Each concrete adapter wraps one frozen tokenizer family (kinematics
+VAE) and exposes a JIT-friendly per-window interface used
 by :class:`c2a.moseq_env_wrapper.MoSeqImitation` to compute the
 code-match reward.
 
@@ -44,7 +44,7 @@ class C2CTokenizerAdapter(abc.ABC):
     Static attributes (set by ``__init__``):
 
     Attributes:
-        name: "vqvae" | "ps_vqvae" | "vae".
+        name: "vae".
         n_joints: Articulated-joint count from the tokenizer's
             training (must match the env's MuJoCo model).
         use_qvel: Whether motion features include velocity blocks.

@@ -218,38 +218,37 @@ def test_random_when_codes_path_null():
 
 
 def test_kinematics_vae_loads_via_npz_schema(tmp_path):
-    """kinematics_vae / vqvae / ps_vqvae all share the codes-npz schema
-    and load through the same _load_kpms_npz path; only the WandB-
-    provenance ``code_source`` differs."""
-    from c2a.codegen.code_sources import SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE
+    """kinematics_vae shares the codes-npz schema and loads through the
+    same _load_kpms_npz path; only the WandB-provenance ``code_source``
+    differs."""
+    from c2a.codegen.code_sources import SOURCE_KINEMATICS_VAE
     n_train, n_test, T = 3, 2, 10
     train_codes = np.random.RandomState(0).randint(0, 8, (n_train, T))
     test_codes = np.random.RandomState(1).randint(0, 8, (n_test, T))
     train_idx = np.array([0, 5, 9])
     test_idx = np.array([3, 8])
 
-    for src in (SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE):
-        p = _save_kpms_npz(
-            tmp_path / f"codes_{src}.npz",
-            train_codes, test_codes, train_idx, test_idx,
-            num_states=8,
-        )
-        cfg = _make_cfg(code_source=src, codes_path=str(p))
-        payload = load_codes(cfg, train_idx.tolist(), test_idx.tolist(), n_frames=T)
-        assert payload.code_source == src
-        assert payload.num_codes == 8
+    src = SOURCE_KINEMATICS_VAE
+    p = _save_kpms_npz(
+        tmp_path / f"codes_{src}.npz",
+        train_codes, test_codes, train_idx, test_idx,
+        num_states=8,
+    )
+    cfg = _make_cfg(code_source=src, codes_path=str(p))
+    payload = load_codes(cfg, train_idx.tolist(), test_idx.tolist(), n_frames=T)
+    assert payload.code_source == src
+    assert payload.num_codes == 8
 
 
 def test_kinematics_vae_null_path_raises_not_random():
-    """For kinematics_vae family sources, codes_path=null must FAIL —
-    random fallback would feed decoder codes unrelated to any real
+    """For the kinematics_vae source, codes_path=null must FAIL —
+    random fallback would feed decoder codes unrelated to the real
     tokenizer's codebook size, silently corrupting training. The
     pre-PR2 fallback for kpms_raw / kpms_merged is unchanged."""
-    from c2a.codegen.code_sources import SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE
-    for src in (SOURCE_KINEMATICS_VAE, SOURCE_VQVAE, SOURCE_PS_VQVAE):
-        cfg = _make_cfg(code_source=src, codes_path=None)
-        with pytest.raises(ValueError, match="codes_path to be set"):
-            load_codes(cfg, [0, 1], [2], n_frames=8)
+    from c2a.codegen.code_sources import SOURCE_KINEMATICS_VAE
+    cfg = _make_cfg(code_source=SOURCE_KINEMATICS_VAE, codes_path=None)
+    with pytest.raises(ValueError, match="codes_path to be set"):
+        load_codes(cfg, [0, 1], [2], n_frames=8)
 
 
 # ── gt_directional_turn ──────────────────────────────────────────────────────

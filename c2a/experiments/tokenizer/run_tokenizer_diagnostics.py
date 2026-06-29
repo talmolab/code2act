@@ -15,7 +15,7 @@ Reads:
 * KPMS: ``sweep_results.json`` (for EML curve + tables for all 240
   KPMS runs) plus per-(setting, seed=representative_seed) ``results.h5``
   for the frequency heatmap.
-* VAE / VQVAE / PS-VQVAE: ``best_codes.npz`` from each ckpt dir (the
+* VAE: ``best_codes.npz`` from each ckpt dir (the
   standalone + sweep). The npz already has the schema-compatible
   ``all_codes`` / ``train_codes`` / ``test_codes`` produced by the
   matching tokenizer's tokenize script.
@@ -75,7 +75,7 @@ class FamilyConfig:
 def _parse_neural_final_loss(ckpt_dir: Path) -> float | None:
     """Read the last reported training loss from a neural-tokenizer training log.
 
-    Each neural-family train script (vae/vqvae/ps_vqvae) writes lines of the
+    The kinematics-VAE train script writes lines of the
     form ``... step <N>  loss=<float>  ...`` into ``train.log`` in the ckpt
     directory. We return the final-step loss; ``None`` if not parseable.
     """
@@ -118,7 +118,7 @@ def extract_model_fit(
     * KPMS: mean EML across seeds for the (n_states, kappa, model_type)
       triple this FamilyConfig points to (already log-likelihood; higher
       is better natively).
-    * Neural (vae, vqvae, ps_vqvae): negative final training loss read
+    * Neural (vae): negative final training loss read
       from the matching ``train.log`` — so higher is still better.
     """
     if family == "kpms":
@@ -665,8 +665,6 @@ def plot_fit_vs_purity_scatter(
     family_title = {
         "kpms": "KPMS",
         "vae": "VAE",
-        "vqvae": "VQ-VAE",
-        "ps_vqvae": "PS-VQ-VAE",
     }
     for ax, family in zip(axes[0], families):
         fam_rows = [
@@ -748,8 +746,6 @@ def plot_purity_breakdown(
     family_title = {
         "kpms": "KPMS",
         "vae": "VAE",
-        "vqvae": "VQ-VAE",
-        "ps_vqvae": "PS-VQ-VAE",
     }
     for ax, family in zip(axes_flat, families):
         fam_rows = [r for r in rows if r["family"] == family]
@@ -917,7 +913,7 @@ def plot_duration_heatmap(
         panel_data.append((panel_tag, panel_configs, rows_data))
 
     # Choose column width: family-wide max active syllables, capped to a
-    # readable bound (large K=1024 PS-VQ-VAE would otherwise dominate).
+    # readable bound (a large-K tokenizer would otherwise dominate).
     max_K_family = max(c.num_codes for c in configs)
     max_K = max(min(max_active, max_K_family), 1)
 
@@ -935,7 +931,6 @@ def plot_duration_heatmap(
 
     family_title = {
         "kpms": "KPMS", "vae": "VAE",
-        "vqvae": "VQ-VAE", "ps_vqvae": "PS-VQ-VAE",
     }.get(family, family)
 
     # Shared color scale across panels for readability.
@@ -1015,39 +1010,6 @@ def _parse_vae_label(label: str) -> tuple[float, int] | None:
     return (kl, K)
 
 
-def _parse_vqvae_label(label: str) -> tuple[int, float] | None:
-    """``k8_commit0p1`` → (8, 0.1). ``k=30 (default)`` → None."""
-    import re
-
-    m = re.match(r"^k(\d+)_commit([0-9p]+)$", label)
-    if not m:
-        return None
-    K = int(m.group(1))
-    commit = float(m.group(2).replace("p", "."))
-    return (K, commit)
-
-
-def _parse_ps_vqvae_label(label: str) -> dict | None:
-    """Returns ``{"stage": "A"|"B"|"C", ...stage_params}`` or None."""
-    import re
-
-    m = re.match(r"^stageA_k(?:_(\d+))+$", label)
-    if m:
-        nums = [int(s) for s in re.findall(r"\d+", label[len("stageA_k_"):])]
-        return {"stage": "A", "group_sizes": tuple(nums),
-                "K_total": int(np.prod(nums))}
-    m = re.match(r"^stageB_decay([0-9p]+)_rt([0-9p]+)$", label)
-    if m:
-        decay = float(m.group(1).replace("p", "."))
-        rt = float(m.group(2).replace("p", "."))
-        return {"stage": "B", "decay": decay, "rt": rt}
-    m = re.match(r"^stageC_commit([0-9p]+)$", label)
-    if m:
-        commit = float(m.group(1).replace("p", "."))
-        return {"stage": "C", "commit": commit}
-    return None
-
-
 def plot_neural_hparam_curves(
     rows: list[dict], out_dir: Path, best_per_family: dict[str, dict],
 ) -> None:
@@ -1108,7 +1070,7 @@ def plot_neural_hparam_curves(
             ax.grid(True, alpha=0.3)
             ax.legend(fontsize=8, loc="best")
         family_title = {
-            "vae": "VAE", "vqvae": "VQ-VAE", "ps_vqvae": "PS-VQ-VAE",
+            "vae": "VAE",
         }.get(family, family)
         fig.suptitle(
             f"{family_title} — hyperparameter sweep "
@@ -1137,157 +1099,6 @@ def plot_neural_hparam_curves(
         out_dir / "vae_hparam_curve.png",
     )
 
-    # ---- VQ-VAE: x = commit, lines = K ----
-    vqvae_groups: dict[int, list] = {}
-    for r in rows:
-        if r["family"] != "vqvae":
-            continue
-        parsed = _parse_vqvae_label(r["config"])
-        if parsed is None:
-            continue
-        K, commit = parsed
-        vqvae_groups.setdefault(K, []).append(
-            (commit, r.get("model_fit"), r.get("purity_score"), r["config"])
-        )
-    _draw_two_panel(
-        "vqvae", "commit weight", False, vqvae_groups,
-        out_dir / "vqvae_hparam_curve.png",
-    )
-
-    # ---- PS-VQ-VAE: 3-panel split by stage ----
-    # Stage A varies arch (group_codebook_sizes), Stage B varies dynamics
-    # (decay × reset_threshold) on the winning Stage A arch, Stage C
-    # varies commit weight on the Stage B winner. Three panels per metric.
-    by_stage: dict[str, list[dict]] = {"A": [], "B": [], "C": []}
-    for r in rows:
-        if r["family"] != "ps_vqvae":
-            continue
-        parsed = _parse_ps_vqvae_label(r["config"])
-        if parsed is None:
-            continue
-        by_stage[parsed["stage"]].append({"parsed": parsed, "row": r})
-    if any(by_stage.values()):
-        fig, axes = plt.subplots(2, 3, figsize=(15, 7.5), squeeze=False)
-        best_label = best_per_family.get("ps_vqvae", {}).get("config")
-
-        def _draw_ps_panel(ax_f, ax_p, stage_entries: list[dict],
-                           x_key: str, x_label: str, title: str,
-                           x_is_log: bool = False, x_is_categorical: bool = False):
-            if not stage_entries:
-                ax_f.set_visible(False)
-                ax_p.set_visible(False)
-                return
-            if stage_entries[0]["parsed"]["stage"] == "B":
-                # X = decay; one line per reset_threshold (rt).
-                rt_groups: dict[float, list] = {}
-                for e in stage_entries:
-                    p = e["parsed"]
-                    r = e["row"]
-                    rt_groups.setdefault(p["rt"], []).append(
-                        (p["decay"], r.get("model_fit"), r.get("purity_score"),
-                         r["config"])
-                    )
-                rt_keys = sorted(rt_groups.keys())
-                colors = plt.cm.viridis(np.linspace(0.1, 0.85, max(len(rt_keys), 1)))
-                for color, rt in zip(colors, rt_keys):
-                    pts = sorted(rt_groups[rt], key=lambda t: t[0])
-                    xs = [t[0] for t in pts]
-                    fits = [t[1] for t in pts]
-                    purs = [t[2] for t in pts]
-                    cfgs = [t[3] for t in pts]
-                    ax_f.plot(xs, fits, marker="o", color=color,
-                              label=f"rt={rt}", linewidth=1.4)
-                    ax_p.plot(xs, purs, marker="o", color=color,
-                              label=f"rt={rt}", linewidth=1.4)
-                    for x, fit_v, pur_v, cfg in zip(xs, fits, purs, cfgs):
-                        if cfg == best_label:
-                            if fit_v is not None:
-                                ax_f.plot([x], [fit_v], marker="*",
-                                          markersize=14, color="#e74c3c",
-                                          markeredgecolor="black",
-                                          linewidth=0, zorder=5)
-                            if pur_v is not None:
-                                ax_p.plot([x], [pur_v], marker="*",
-                                          markersize=14, color="#e74c3c",
-                                          markeredgecolor="black",
-                                          linewidth=0, zorder=5)
-            else:
-                # Single line, x is the requested key.
-                pts = sorted(
-                    [(e["parsed"][x_key]
-                      if not x_is_categorical else str(e["parsed"]["group_sizes"]),
-                      e["row"].get("model_fit"),
-                      e["row"].get("purity_score"),
-                      e["row"]["config"])
-                     for e in stage_entries],
-                    key=lambda t: (t[0] if not x_is_categorical
-                                   else str(t[0])),
-                )
-                if x_is_categorical:
-                    xs_str = [t[0] for t in pts]
-                    xs = list(range(len(xs_str)))
-                    ax_f.set_xticks(xs); ax_f.set_xticklabels(xs_str, rotation=30, ha="right", fontsize=8)
-                    ax_p.set_xticks(xs); ax_p.set_xticklabels(xs_str, rotation=30, ha="right", fontsize=8)
-                else:
-                    xs = [t[0] for t in pts]
-                fits = [t[1] for t in pts]
-                purs = [t[2] for t in pts]
-                cfgs = [t[3] for t in pts]
-                ax_f.plot(xs, fits, marker="o", color="#3b82c4", linewidth=1.4)
-                ax_p.plot(xs, purs, marker="o", color="#3b82c4", linewidth=1.4)
-                for x, fit_v, pur_v, cfg in zip(xs, fits, purs, cfgs):
-                    if cfg == best_label:
-                        if fit_v is not None:
-                            ax_f.plot([x], [fit_v], marker="*",
-                                      markersize=14, color="#e74c3c",
-                                      markeredgecolor="black",
-                                      linewidth=0, zorder=5)
-                        if pur_v is not None:
-                            ax_p.plot([x], [pur_v], marker="*",
-                                      markersize=14, color="#e74c3c",
-                                      markeredgecolor="black",
-                                      linewidth=0, zorder=5)
-            for ax in (ax_f, ax_p):
-                ax.set_xlabel(x_label)
-                if x_is_log:
-                    ax.set_xscale("log")
-                ax.grid(True, alpha=0.3)
-            ax_f.set_ylabel("model fit (higher = better)")
-            ax_p.set_ylabel("purity score")
-            ax_f.set_title(f"{title} — fit", fontsize=10)
-            ax_p.set_title(f"{title} — purity", fontsize=10)
-            if ax_f.has_data() and any(line.get_label() and not line.get_label().startswith("_") for line in ax_f.lines):
-                handles, labels = ax_f.get_legend_handles_labels()
-                if labels:
-                    ax_f.legend(fontsize=8, loc="best")
-                    ax_p.legend(fontsize=8, loc="best")
-
-        _draw_ps_panel(
-            axes[0, 0], axes[1, 0], by_stage["A"],
-            x_key="group_sizes", x_label="group_codebook_sizes",
-            title="Stage A — architecture", x_is_categorical=True,
-        )
-        _draw_ps_panel(
-            axes[0, 1], axes[1, 1], by_stage["B"],
-            x_key="decay", x_label="EMA decay",
-            title="Stage B — dynamics (lines = reset_threshold)",
-        )
-        _draw_ps_panel(
-            axes[0, 2], axes[1, 2], by_stage["C"],
-            x_key="commit", x_label="commit weight",
-            title="Stage C — commit",
-        )
-        fig.suptitle(
-            "PS-VQ-VAE — staged hyperparameter sweep "
-            "(top: fit; bottom: purity)",
-            y=1.0,
-        )
-        fig.tight_layout()
-        out_path = out_dir / "ps_vqvae_hparam_curve.png"
-        fig.savefig(out_path, dpi=180, bbox_inches="tight")
-        plt.close(fig)
-        log.info("Wrote %s", out_path)
-
 
 # =============================================================================
 # Plot 4b: Raw training loss bars for the neural families. The scatter
@@ -1305,8 +1116,8 @@ def plot_neural_loss_bars(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    NEURAL = ["vae", "vqvae", "ps_vqvae"]
-    family_title = {"vae": "VAE", "vqvae": "VQ-VAE", "ps_vqvae": "PS-VQ-VAE"}
+    NEURAL = ["vae"]
+    family_title = {"vae": "VAE"}
     panels: list[tuple[str, list[dict]]] = []
     for fam in NEURAL:
         fam_rows = [
@@ -1372,8 +1183,6 @@ def plot_neural_loss_bars(
 _FAMILY_COLORS_TABLE: dict[str, str] = {
     "kpms": "#cfe2f3",
     "vae": "#d9ead3",
-    "vqvae": "#fff2cc",
-    "ps_vqvae": "#f4cccc",
 }
 
 
@@ -1522,17 +1331,13 @@ def main(cfg: DictConfig) -> None:
     family_to_configs: dict[str, list[FamilyConfig]] = {
         "kpms": collect_kpms_configs(cfg),
         "vae": collect_neural_configs(cfg.neural.vae),
-        "vqvae": collect_neural_configs(cfg.neural.vqvae),
-        "ps_vqvae": collect_neural_configs(cfg.neural.ps_vqvae),
     }
     total = sum(len(v) for v in family_to_configs.values())
     log.info(
-        "Collected %d configs (kpms=%d, vae=%d, vqvae=%d, ps_vqvae=%d)",
+        "Collected %d configs (kpms=%d, vae=%d)",
         total,
         len(family_to_configs["kpms"]),
         len(family_to_configs["vae"]),
-        len(family_to_configs["vqvae"]),
-        len(family_to_configs["ps_vqvae"]),
     )
 
     # --- 3. Load reference qpos (shared kinematic space for purity) ---
