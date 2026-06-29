@@ -151,6 +151,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", default="kpms", help="code_grid run name")
     ap.add_argument("--top", type=int, default=15)
+    ap.add_argument("--cols", type=int, default=5,
+                    help="panels per row (default 5)")
+    ap.add_argument("--order", default="behavior", choices=["behavior", "matrix"],
+                    help="behavior: top-N grouped by modal behavior (default). "
+                         "matrix: every code in the distinctness matrix, laid out "
+                         "5-per-row in the SAME similarity (seriation) order as the "
+                         "matrix rim, so adjacent panels are the codes the matrix "
+                         "places next to each other.")
     ap.add_argument("--pose", default="random")
     ap.add_argument("--checkpoint",
                     default="model_checkpoints/260407_031233_484020")
@@ -166,8 +174,26 @@ def main():
     root = get_repo_root()
     run_dir = root / "outputs" / "code_grid" / "code_grid_rollouts" / args.run
     data_dir = run_dir / "data"
-    top_codes, code_beh, usage = load_run_meta(run_dir, args.top)
-    log.info(f"[{args.run}] top {len(top_codes)} codes: {top_codes}")
+    if args.order == "matrix":
+        # Use the exact code set and similarity (seriation) order of the
+        # distinctness matrix rim, so the atlas reads in the same order as the
+        # matrix and adjacent panels are the codes clustered together.
+        from c2a.figures.paper.render_paper_figures import _seriation_order
+        labels = json.loads((run_dir / "labels" / "code_labels.json").read_text())
+        code_beh = {
+            int(cid): _base_behavior(str(rec.get("label", "")))
+            for cid, rec in labels.get("codes", {}).items()
+        }
+        usage = np.asarray(np.load(data_dir / "usage_rank.npz")["usage"])
+        z = np.load(run_dir / "merged" / f"distance_{args.pose}.npz",
+                    allow_pickle=True)
+        D = np.asarray(z["distance"], dtype=float)
+        cids = [int(c) for c in z["code_ids"]]
+        order, _cl = _seriation_order(D)
+        top_codes = [cids[i] for i in order]
+    else:
+        top_codes, code_beh, usage = load_run_meta(run_dir, args.top)
+    log.info(f"[{args.run}] {args.order}-order, {len(top_codes)} codes: {top_codes}")
 
     env = build_env(str(root / args.checkpoint))
     log.info("Environment loaded")
@@ -190,17 +216,23 @@ def main():
     # rows = behavior; codes within a behavior wrap to the next line after
     # MAXCOL so panels (and their text) stay large. Title lives in the LaTeX
     # caption, not the image.
-    MAXCOL = 5
-    by_beh = {
-        b: sorted([c for c in top_codes if code_beh.get(c) == b],
-                  key=lambda c: -usage[c])
-        for b in BEHAVIOR_ORDER
-    }
-    by_beh = {b: cs for b, cs in by_beh.items() if cs}
+    MAXCOL = args.cols
     layout: list[tuple[str, list[int]]] = []
-    for beh, cs in by_beh.items():
-        for i in range(0, len(cs), MAXCOL):
-            layout.append((beh if i == 0 else "", cs[i:i + MAXCOL]))
+    if args.order == "matrix":
+        # sequential 5-per-row in the matrix's seriation order (no row labels;
+        # the order itself, not a behavior grouping, is the organizing axis)
+        for i in range(0, len(top_codes), MAXCOL):
+            layout.append(("", top_codes[i:i + MAXCOL]))
+    else:
+        by_beh = {
+            b: sorted([c for c in top_codes if code_beh.get(c) == b],
+                      key=lambda c: -usage[c])
+            for b in BEHAVIOR_ORDER
+        }
+        by_beh = {b: cs for b, cs in by_beh.items() if cs}
+        for beh, cs in by_beh.items():
+            for i in range(0, len(cs), MAXCOL):
+                layout.append((beh if i == 0 else "", cs[i:i + MAXCOL]))
     nrow, ncol = len(layout), MAXCOL
     fig, axes = plt.subplots(nrow, ncol, figsize=(3.0 * ncol, 2.7 * nrow),
                              squeeze=False)
@@ -225,12 +257,14 @@ def main():
 
     out_dir = root / "outputs" / "codebook_atlas"
     out_dir.mkdir(parents=True, exist_ok=True)
+    stem = (f"code_atlas_seriated_{args.run}" if args.order == "matrix"
+            else f"code_atlas_{args.run}")
     for ext in ("pdf", "png"):
-        fig.savefig(out_dir / f"code_atlas_{args.run}.{ext}", dpi=200,
+        fig.savefig(out_dir / f"{stem}.{ext}", dpi=200,
                     bbox_inches="tight", facecolor="white")
     plt.close(fig)
-    log.info(f"Saved {out_dir}/code_atlas_{args.run}.pdf / .png "
-             f"({len(frames)} codes, {nrow} behaviors)")
+    log.info(f"Saved {out_dir}/{stem}.pdf / .png "
+             f"({len(frames)} codes, {nrow} rows, order={args.order})")
 
 
 if __name__ == "__main__":

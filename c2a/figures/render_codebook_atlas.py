@@ -158,7 +158,7 @@ def build_env(ckpt_path: str):
     splits = json.load(open(root / "data" / "rodent" / "rodent_balanced_splits.json"))
     test_indices = splits["balanced"]["test_indices"]
     codes = np.load(
-        root / "outputs" / "tokenizer" / "designed_v1" / "best_codes.npz"
+        root / "outputs" / "tokenizer" / "designed_v3" / "best_codes.npz"
     )["test_codes"]
     clips = ReferenceClips(
         data_path=str(root / "data" / "rodent" / "rodent_reference_clips.h5"),
@@ -196,9 +196,9 @@ def main():
     ap.add_argument("--run", default="multiscale")
     ap.add_argument("--pose", default="random")
     ap.add_argument("--codes",
-                    default="outputs/tokenizer/designed_v1/best_codes.npz")
+                    default="outputs/tokenizer/designed_v3/best_codes.npz")
     ap.add_argument("--checkpoint",
-                    default="model_checkpoints/260606_083446_639090")
+                    default="model_checkpoints/260619_172456_431528")
     ap.add_argument("--hold", type=int, default=1000)
     ap.add_argument("--select", default="medoid",
                     choices=["medoid", "best_reward"],
@@ -285,7 +285,7 @@ def main():
                              fontweight="bold")
     fig.tight_layout()
 
-    out_dir = root / "outputs" / "codebook_atlas"
+    out_dir = root / "outputs" / "figures" / "codebook_atlas"
     out_dir.mkdir(parents=True, exist_ok=True)
     for ext in ("pdf", "png"):
         fig.savefig(out_dir / f"codebook_atlas.{ext}", dpi=200,

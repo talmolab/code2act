@@ -30,6 +30,7 @@ embodied dynamics starter-kit from
 **Representations** (``dynamics.representations``):
 
 * ``hidden`` — GRU hidden state only.
+* ``posture`` — root-stripped qpos only (the body state, no hidden).
 * ``joint``  — ``[hidden, root-stripped qpos]``, each block standardized then
   joint-PCA'd (the embodied (hidden, body) state).
 
@@ -138,13 +139,15 @@ def _state_feature(
 ) -> np.ndarray:
     """Per-(body, frame) state feature for a code: ``(K, T, F)``.
 
-    ``hidden`` → GRU hidden state. ``joint`` → standardized
-    [hidden, root-stripped qpos] concatenation.
+    ``hidden`` → GRU hidden state. ``posture`` → root-stripped qpos only.
+    ``joint`` → standardized [hidden, root-stripped qpos] concatenation.
     """
     h = rollouts[int(code)]["hidden"]  # (K, T, H)
     if representation == "hidden":
         return h
     q = rollouts[int(code)]["qpos"][..., 3:]  # drop 3 root-translation dims
+    if representation == "posture":
+        return q
     hm, hs = h_stats
     qm, qs = q_stats
     return np.concatenate([(h - hm) / hs, (q - qm) / qs], axis=-1)
