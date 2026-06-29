@@ -451,7 +451,7 @@ single best-reward body (which can be an idiosyncratic outlier). Use
 `render_code_atlas_grouped` lays out the top-N most-used codes **grouped by modal
 behavior** (Fig 6b ordering), making the redundancy visible — one behavior is
 realized by several codes (e.g. ~10 Immobile codes). Outputs to
-`outputs/codebook_atlas/`.
+`outputs/figures/codebook_atlas/`.
 
 ```bash
 python -m c2a.figures.render_codebook_atlas --select medoid          # designed (Fig 10)

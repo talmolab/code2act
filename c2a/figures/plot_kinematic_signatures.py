@@ -25,7 +25,7 @@ from c2a.paths import get_repo_root
 # ── Paths ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_DIR = get_repo_root() / "outputs" / "kinematic_signatures"
+OUTPUT_DIR = get_repo_root() / "outputs" / "figures" / "kinematic_signatures"
 
 # ── Behaviors and conditions ─────────────────────────────────────────────────
 BEHAVIORS = ["walk", "groom", "rear"]

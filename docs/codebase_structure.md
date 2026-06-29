@@ -172,14 +172,14 @@ c2a/
 | PS-VQVAE codes | `trained_kinematics_vae_ckpts/ps_vqvae/best_codes.npz` | `c2a.codegen.kinematics_vae.ps_vqvae.tokenize` |
 | MIMIC encoder | `trained_mimic_ckpts/` | `c2a.train_mimic_encoder` |
 | Decoder RL | `model_checkpoints/` | `c2a.train_moseq_decoder` |
-| Figures | `outputs/<figure_name>/` | every `c2a.figures.*` script (one subdir per script) |
+| Figures | `outputs/figures/<figure_name>/` | every `c2a.figures.*` script (one subdir per script) |
 | Experiments | `outputs/<theme>/<exp_name>/` | every `c2a.experiments.<theme>.*` script |
 | WandB | `wandb/` (or `c2a/wandb/`) | every training script |
 
-Every `c2a.figures.*` script resolves its output dir via
-`c2a.paths.get_repo_root()` and writes to `outputs/<figure_name>/`
-directly — never under `c2a/figures/`. There is no `outputs/figures/`
-grouping level.
+`outputs/` mirrors the code layout: experiment outputs live under their theme
+(`outputs/<theme>/<exp_name>/`, matching `c2a/experiments/<theme>/`) and figure
+render outputs are grouped under `outputs/figures/<figure_name>/` (matching
+`c2a/figures/`). The final publication figures are copied into `paper/figures/`.
 
 ## See also
 

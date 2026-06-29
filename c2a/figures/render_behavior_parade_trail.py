@@ -38,7 +38,7 @@ import numpy as np
 SCRIPT_DIR = Path(__file__).parent
 MOSEQ_DIR = get_c2a_root()
 REPO_ROOT = get_repo_root()
-OUTPUT_DIR = get_repo_root() / "outputs" / "behavior_parade_trail"
+OUTPUT_DIR = get_repo_root() / "outputs" / "figures" / "behavior_parade_trail"
 
 from vnl_playground.tasks import utils as vnl_utils
 from c2a.rendering_utils import _disable_lights_recursive
@@ -281,11 +281,20 @@ def build_parade_trail_model(
     overhead = spec.worldbody.add_light(name="trail_overhead")
     overhead.pos = [camera_lookat[0], camera_lookat[1], 3.0]
     overhead.dir = [0, 0, -1]
-    overhead.diffuse = [0.8, 0.8, 0.8]
+    overhead.diffuse = [0.9, 0.9, 0.9]
     overhead.specular = [0.2, 0.2, 0.2]
 
     model = spec.compile()
     base_nq = model.nq // num_copies
+
+    # A single overhead light leaves a near-horizontal camera (e.g. the
+    # perturbation filmstrip) looking at the bodies' shadowed front faces, which
+    # reads as very dark. Add a global ambient/headlight fill so every face is
+    # lit regardless of camera angle.
+    model.vis.headlight.active = 1
+    model.vis.headlight.ambient = [0.55, 0.55, 0.55]
+    model.vis.headlight.diffuse = [0.45, 0.45, 0.45]
+    model.vis.headlight.specular = [0.1, 0.1, 0.1]
 
     for i in range(model.nlight):
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_LIGHT, i)
