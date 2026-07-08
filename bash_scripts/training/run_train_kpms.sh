@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Code2Act KPMS baseline training (reward_mode=off, distillation on)
+# Code2Act — train the KPMS steering strategy (reward_mode=off, distill on)
 # =============================================================================
 #
 # Pure-tracking PPO with KPMS discrete codes as the segmenter.  No c2c
@@ -13,10 +13,10 @@
 #
 # Usage:
 #   cd code2act
-#   WANDB_API_KEY=<key> bash bash_scripts/run_kpms_baseline.sh
+#   WANDB_API_KEY=<key> bash bash_scripts/training/run_train_kpms.sh
 #
 #   # Extra Hydra overrides can be appended as positional args:
-#   WANDB_API_KEY=<key> bash bash_scripts/run_kpms_baseline.sh \
+#   WANDB_API_KEY=<key> bash bash_scripts/training/run_train_kpms.sh \
 #       train_setup.train_config.num_timesteps=3000000000
 # =============================================================================
 set -euo pipefail

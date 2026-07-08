@@ -1,22 +1,32 @@
-# [Code2Act: Motor Programs from Discrete Behavioral Codes for Embodied Control](https://kbian.org/Code2Act-website/)
+# [Code2Act: Steering Embodied Behavior with Discrete Codes](https://kbian.org/Code2Act-website/)
 
 Computational models of naturalistic behavior fall into two families that do not
-meet. Probabilistic state-space models such as Keypoint-MoSeq segment continuous
-behavior into discrete syllables from keypoints; they describe what a behavior
-looks like but not how it is physically produced. Reinforcement-learning
-imitation policies produce biomechanically realistic motion but expose no
-behavioral vocabulary one can index to steer them. A behavioral label can be
-observed and correlated, but it cannot be run.
+meet. Unsupervised segmenters such as Keypoint-MoSeq split continuous behavior
+into discrete syllables; they describe what a behavior looks like but not how it
+is physically produced. Physics-based reinforcement-learning imitators produce
+biomechanically realistic motion but expose no nameable vocabulary: steering one
+toward a target behavior means hand-designing a goal-specific reward, a separate
+joystick per behavior. A behavioral label can be observed and correlated, but it
+cannot be run.
 
-**Code2Act** makes a discrete behavioral code *executable*. Conditioning a
-distilled physics controller on the code stream compiles each symbolic label
-into a runnable motor program for a 38-actuator biomechanical rodent: a code
-that can be executed, started from an arbitrary initial state, composed into
-sequences, and probed through the controller's internal dynamics. Each held code
-behaves as a behaviorally typed attractor that the controller actively defends,
-and the same structure holds for a hand-specified codebook the controller never
-co-adapted with. This turns the study of behavior from observational and
-statistical into generative, interventional, and dynamical.
+**Code2Act** makes any discrete behavioral code *executable*. Conditioning a
+distilled physics controller on a per-frame code stream compiles each symbolic
+label into a runnable motor program for a 38-actuator biomechanical rodent,
+turning a behavioral vocabulary into a panel of buttons one steers by index, with
+no per-behavior reward engineering. The construction is agnostic to where codes
+come from: we drive the *same* controller from three interchangeable **steering
+strategies** — an unsupervised segmenter (Keypoint-MoSeq), a learned
+kinematics-VAE codebook, and a hand-specified set of manually labeled behaviors.
+Because the distilled imitation latent encodes a state-dependent *change* signal,
+hard motion tracking with distillation forces each code into a *one-to-many* map
+that reaches the same goal motion from any initial condition. Across all three
+strategies, code-driven behavior is distributionally close to expert motion, each
+held code acts as a behaviorally typed attractor the controller actively defends
+(reassembling from diverse initial states and restoring after an external
+perturbation), and the codes are behaviorally distinct, including for the
+hand-specified codebook the controller never co-adapted with. This turns the
+study of behavior from observational and statistical into generative,
+interventional, and dynamical.
 
 ## Installation
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Code2Act additive-mode training (from scratch)
+# Code2Act — train the KVAE steering strategy (kinematics-VAE, c2c additive)
 # =============================================================================
 #
 # Trains a code-conditioned policy with distillation + additive c2c reward:
@@ -24,10 +24,10 @@
 #
 # Usage:
 #   cd code2act
-#   bash bash_scripts/run_c2c_additive.sh
+#   bash bash_scripts/training/run_train_kvae.sh
 #
 #   # Override common settings on the CLI (Hydra overrides):
-#   bash bash_scripts/run_c2c_additive.sh \
+#   bash bash_scripts/training/run_train_kvae.sh \
 #       code2code.alpha=0.7 \
 #       train_setup.train_config.num_timesteps=1500000000
 # =============================================================================

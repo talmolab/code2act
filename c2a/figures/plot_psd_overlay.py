@@ -8,6 +8,7 @@ Usage:
     python plot_psd_overlay.py
 """
 
+import argparse
 from pathlib import Path
 import json
 
@@ -22,8 +23,22 @@ from scipy.signal import welch
 from c2a.paths import get_repo_root
 
 SCRIPT_DIR = Path(__file__).parent
-DATA_DIR = get_repo_root() / "outputs" / "fidelity" / "moseq_gait_dynamics"
+FIDELITY_DIR = get_repo_root() / "outputs" / "fidelity"
+DATA_DIR = FIDELITY_DIR / "moseq_gait_dynamics"
 OUTPUT_DIR = get_repo_root() / "outputs" / "figures" / "psd_overlay"
+
+
+def _resolve_gait_dir(run: str, data_dir: str | None) -> Path:
+    """Gait-dynamics output directory for a steering strategy.
+
+    The ``kpms`` strategy reads the legacy ``moseq_gait_dynamics`` directory for
+    backward compatibility; other strategies (e.g. ``best_vae`` = kvae) read a
+    per-run ``moseq_gait_dynamics_<run>`` directory (the experiment's
+    ``output.base_dir`` override). An explicit ``--data-dir`` overrides both.
+    """
+    if data_dir:
+        return Path(data_dir)
+    return DATA_DIR if run == "kpms" else FIDELITY_DIR / f"moseq_gait_dynamics_{run}"
 
 CONDITION_COLORS = {
     "mimic_mjx": "#D55E00",
@@ -138,10 +153,22 @@ def dominant_frequency(freqs, psd, fmin=FMIN, fmax=FMAX):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--run", default="kpms",
+                    help="steering strategy: kpms | best_vae (kvae) | mlb")
+    ap.add_argument("--data-dir", default=None,
+                    help="override input gait-dynamics directory")
+    args = ap.parse_args()
+
     _setup_nature_style()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    data_dir = _resolve_gait_dir(args.run, args.data_dir)
+    # kpms outputs stay un-suffixed (backward compatible); other strategies get
+    # a per-run suffix so figures coexist.
+    rsuf = "" if args.run == "kpms" else f"_{args.run}"
+    print(f"run={args.run}  data_dir={data_dir}")
 
-    with open(DATA_DIR / "summary.json") as f:
+    with open(data_dir / "summary.json") as f:
         summary = json.load(f)
     clip_indices = summary["walk_clip_indices"]
     joint_addrs = get_joint_addrs()
@@ -152,7 +179,7 @@ def main():
 
     for clip_idx in clip_indices:
         for cond in ["mimic_mjx", "code2act"]:
-            npz_path = DATA_DIR / f"rollout_{cond}_clip{clip_idx}.npz"
+            npz_path = data_dir / f"rollout_{cond}_clip{clip_idx}.npz"
             if not npz_path.exists():
                 print(f"  Missing: {npz_path}")
                 continue
@@ -221,12 +248,12 @@ def main():
         border_rect = _add_rounded_border(fig, list(axes))
 
         for ext in ("png", "pdf"):
-            fig.savefig(OUTPUT_DIR / f"psd_overlay_{side_name}.{ext}")
+            fig.savefig(OUTPUT_DIR / f"psd_overlay_{side_name}{rsuf}.{ext}")
         border_rect.set_facecolor("none")
-        fig.savefig(OUTPUT_DIR / f"psd_overlay_{side_name}.svg", transparent=True)
+        fig.savefig(OUTPUT_DIR / f"psd_overlay_{side_name}{rsuf}.svg", transparent=True)
         plt.close()
         for ext in ("png", "pdf", "svg"):
-            print(f"Saved: {OUTPUT_DIR / f'psd_overlay_{side_name}.{ext}'}")
+            print(f"Saved: {OUTPUT_DIR / f'psd_overlay_{side_name}{rsuf}.{ext}'}")
 
     # ── Figure 2: Dominant frequency bar chart ────────────────────────
     fig2, ax2 = plt.subplots(figsize=(5, 3))
@@ -258,12 +285,12 @@ def main():
     border_rect2 = _add_rounded_border(fig2, [ax2])
 
     for ext in ("png", "pdf"):
-        fig2.savefig(OUTPUT_DIR / f"dominant_frequencies.{ext}")
+        fig2.savefig(OUTPUT_DIR / f"dominant_frequencies{rsuf}.{ext}")
     border_rect2.set_facecolor("none")
-    fig2.savefig(OUTPUT_DIR / "dominant_frequencies.svg", transparent=True)
+    fig2.savefig(OUTPUT_DIR / f"dominant_frequencies{rsuf}.svg", transparent=True)
     plt.close()
     for ext in ("png", "pdf", "svg"):
-        print(f"Saved: {OUTPUT_DIR / f'dominant_frequencies.{ext}'}")
+        print(f"Saved: {OUTPUT_DIR / f'dominant_frequencies{rsuf}.{ext}'}")
 
     # Print summary
     print(f"\nDominant frequencies (resolution={freq_res:.3f} Hz):")

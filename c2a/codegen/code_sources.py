@@ -52,8 +52,8 @@ SOURCE_KPMS_RAW = "kpms_raw"
 SOURCE_KPMS_MERGED = "kpms_merged"
 SOURCE_KINEMATICS_VAE = "kinematics_vae"
 SOURCE_GT_DIRECTIONAL_TURN = "gt_directional_turn"
-SOURCE_DESIGNED = "designed"  # hand-crafted multi-scale codebook (see
-                              # c2a.codegen.designed_segmenter)
+SOURCE_MLB = "mlb"  # manually labeled behaviors: 9 flat behavior x direction
+                    # codes (see c2a.codegen.mlb_segmenter)
 SOURCE_RANDOM = "random"  # implicit when codes_path=null
 
 # Sources whose ``.npz`` file format is the shared CodesPayload schema
@@ -64,7 +64,7 @@ _NPZ_SCHEMA_SOURCES = frozenset({
     SOURCE_KPMS_RAW,
     SOURCE_KPMS_MERGED,
     SOURCE_KINEMATICS_VAE,
-    SOURCE_DESIGNED,
+    SOURCE_MLB,
 })
 
 VALID_SOURCES = {
@@ -72,7 +72,7 @@ VALID_SOURCES = {
     SOURCE_KPMS_MERGED,
     SOURCE_KINEMATICS_VAE,
     SOURCE_GT_DIRECTIONAL_TURN,
-    SOURCE_DESIGNED,
+    SOURCE_MLB,
 }
 
 
@@ -172,7 +172,7 @@ def load_codes(
         return _generate_random(cfg, n_train, n_test, n_frames)
     if codes_path is None and code_source in (
         SOURCE_KINEMATICS_VAE,
-        SOURCE_DESIGNED,
+        SOURCE_MLB,
     ):
         raise ValueError(
             f"kpms_config.code_source={code_source!r} requires "
@@ -202,10 +202,10 @@ def load_codes(
             require_merged=False, requested_source=SOURCE_KINEMATICS_VAE,
         )
 
-    if code_source == SOURCE_DESIGNED:
+    if code_source == SOURCE_MLB:
         return _load_kpms_npz(
             codes_path, train_indices, test_indices, n_frames,
-            require_merged=False, requested_source=SOURCE_DESIGNED,
+            require_merged=False, requested_source=SOURCE_MLB,
         )
 
     if code_source == SOURCE_GT_DIRECTIONAL_TURN:

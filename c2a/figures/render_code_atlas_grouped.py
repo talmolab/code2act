@@ -1,7 +1,8 @@
-"""Behavior-grouped code atlas for data-discovered tokenizers.
+"""Behavior-grouped code atlas for data-discovered steering strategies.
 
-Companion to ``render_codebook_atlas`` (the hand-designed codebook). For a
-data-discovered tokenizer (Keypoint-MoSeq or the kinematics VAE + k-means) this
+Companion to ``render_codebook_atlas`` (the mlb steering strategy). For a
+data-discovered steering strategy (Keypoint-MoSeq or the kinematics VAE +
+k-means) this
 renders the top-N most-used codes as frozen-ghost motion trails, **grouped by
 modal behavior** — the same grouping used for the behavior→code spread of the
 code-distinctness figure (Fig. 6b). It makes two points the distinctness section

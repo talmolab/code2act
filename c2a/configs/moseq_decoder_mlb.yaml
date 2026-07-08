@@ -1,0 +1,40 @@
+# @package _global_
+# =============================================================================
+# MLB steering strategy — 9 flat manually-labeled-behavior codes
+# =============================================================================
+# Manually Labeled Behaviors (mlb): each reference frame's manual behavior
+# (Immobile / Rear / Turn / Walk) crossed with a kinematically-derived
+# Left / Right / Straight direction, giving 9 flat codes (no n-grams, no
+# sentinel). See c2a.codegen.mlb_segmenter and c2a.codegen.shared.mlb_labels.
+#
+# Inherits the full decoder stack (RNN decoder, distillation head, frozen
+# MIMIC decoder) from moseq_decoder.yaml; only the code source changes.
+#
+# Build the codes BEFORE launching training:
+#   python3.12 bash_scripts/_pyrun.py c2a.codegen.mlb_segmenter \
+#     --output outputs/tokenizer/mlb_v1/best_codes.npz --deadband 0.10
+#
+# Then:
+#   bash bash_scripts/training/run_train_mlb.sh
+# =============================================================================
+
+defaults:
+  - moseq_decoder
+  - _self_
+
+kpms_config:
+  code_source: mlb
+  codes_path: ${oc.env:C2A_ROOT,.}/outputs/tokenizer/mlb_v1/best_codes.npz
+
+network_config:
+  # 9 flat codes. The embedding table is auto-resized at load time to match
+  # the codes_path npz num_states; set here so smoke-test fallbacks get the
+  # right shape. Flat single-behavior codes (vs. composite n-grams), so the
+  # default code_embed_dim=16 is ample.
+  num_codes: 9
+  code_embed_dim: 16
+
+train_setup:
+  run_name: mlb_v1_from_scratch
+  train_config:
+    num_timesteps: 1_500_000_000

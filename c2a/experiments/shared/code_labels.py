@@ -18,8 +18,16 @@ import numpy as np
 
 from c2a.codegen.shared.label_alignment import (
     BEHAVIORS,
+    BEHAVIOR_TO_INT,
     DIRECTIONS,
+    DIRECTION_TO_INT,
     UNLABELED,
+)
+from c2a.codegen.shared.mlb_labels import (
+    MLB_COLORS,
+    MLB_LABELS,
+    MLB_LABEL_TO_INT,
+    mlb_code,
 )
 
 log = logging.getLogger(__name__)
@@ -32,7 +40,19 @@ __all__ = [
     "label_based_clusters",
     "save_code_labels_json",
     "load_code_labels_json",
+    # 9-class (D3) canonical labeling shared across all steering strategies.
+    "NINE_CLASS_LABELS",
+    "behavior_direction_to_nine",
+    "compute_nine_class_labels",
+    "nine_class_label_for_code",
 ]
+
+# Canonical 9-class scheme is *the* cross-strategy behavior vocabulary (D3):
+# every steering strategy (kpms / kvae / mlb) colors its codes into one of
+# these 9 directional categories. The names/order/colors are owned by
+# ``c2a.codegen.shared.mlb_labels`` (the mlb tokenizer's source of truth);
+# kpms/kvae codes are *auto-labeled* into them by :func:`compute_nine_class_labels`.
+NINE_CLASS_LABELS: tuple[str, ...] = MLB_LABELS
 
 
 def code_label_to_string(behavior: int, direction: int) -> str:
@@ -283,3 +303,230 @@ def load_code_labels_json(path: Path) -> dict[int, dict[str, Any]]:
     with path.open() as f:
         payload = json.load(f)
     return {int(k): v for k, v in payload["codes"].items()}
+
+
+# ---------------------------------------------------------------------------
+# 9-class (D3) canonical labeling — behavior x kinematic direction.
+#
+# Unlike :func:`compute_code_labels` (which reads direction from the CSV
+# ``direction`` track — annotated ~100% Straight for Walk and therefore useless
+# for handedness), the 9-class scheme derives direction *kinematically* from the
+# reference body's net heading change over each code occurrence, exactly the way
+# the mlb tokenizer does (see :mod:`c2a.codegen.mlb_segmenter`). This keeps the
+# global color/legend scheme consistent across all three steering strategies.
+# ---------------------------------------------------------------------------
+
+
+def behavior_direction_to_nine(
+    behavior_int: int, direction_idx: int
+) -> tuple[str, int]:
+    """Map a (modal-behavior, kinematic-direction) pair to a 9-class label.
+
+    Args:
+        behavior_int: index into :data:`BEHAVIORS`
+            (``0=Immobile, 1=Rear, 2=Turn, 3=Walk``) or :data:`UNLABELED`.
+        direction_idx: index into :data:`DIRECTIONS`
+            (``0=Left, 1=Right, 2=Straight``). Ignored for ``Immobile``.
+            For ``Turn`` it must be Left/Right (the kinematic path guarantees
+            this); for ``Walk``/``Rear`` any of the three is valid.
+
+    Returns:
+        ``(label, code)`` where ``label`` is one of
+        :data:`NINE_CLASS_LABELS` (or ``"unlabeled"``) and ``code`` is the
+        matching 0..8 index (or ``-1`` when unlabeled).
+
+    Raises:
+        ValueError: ``Turn`` with a non Left/Right direction. Use
+            :func:`compute_nine_class_labels` (kinematic) so this never occurs.
+    """
+    if behavior_int < 0 or behavior_int >= len(BEHAVIORS):
+        return "unlabeled", -1
+    bname = BEHAVIORS[behavior_int]
+    if bname == "Immobile":
+        code = MLB_LABEL_TO_INT["Immobile"]
+        return MLB_LABELS[code], code
+    code = mlb_code(bname, direction_idx)
+    return MLB_LABELS[code], code
+
+
+def nine_class_label_for_code(
+    behavior_int: int,
+    net_yaws: "np.ndarray | list[float]",
+    weights: "np.ndarray | list[float]",
+    *,
+    deadband: float = 0.10,
+) -> tuple[str, int, int]:
+    """9-class label for one code from its per-occurrence net-yaw signal.
+
+    This is the per-code primitive: given a code's modal behavior and the
+    (sign-applied) net heading change of each of its contiguous occurrences,
+    classify a single representative direction (frame-weighted modal vote over
+    the per-occurrence Left/Right/Straight calls) and return the 9-class label.
+
+    Direction rules mirror :func:`c2a.codegen.mlb_segmenter._direction_idx`:
+
+    * ``Immobile`` collapses direction (single code, ``"Immobile"``).
+    * ``Turn`` is forced Left/Right by net-yaw sign (never Straight).
+    * ``Walk`` / ``Rear`` are Straight when ``|net yaw| < deadband`` else L/R.
+
+    Args:
+        behavior_int: modal behavior index into :data:`BEHAVIORS`, or
+            :data:`UNLABELED`.
+        net_yaws: ``(n_occurrences,)`` sign-applied net yaw per occurrence
+            (``sign * (yaw[end-1] - yaw[start])``). ``Left := net > 0``.
+        weights: ``(n_occurrences,)`` frame counts per occurrence (the vote
+            weight). Same length as ``net_yaws``.
+        deadband: straight deadband in radians (mlb default 0.10).
+
+    Returns:
+        ``(label, code, direction_idx)``. ``direction_idx`` is the resolved
+        :data:`DIRECTIONS` index, or ``-1`` for Immobile / unlabeled.
+    """
+    if behavior_int < 0 or behavior_int >= len(BEHAVIORS):
+        return "unlabeled", -1, -1
+    bname = BEHAVIORS[behavior_int]
+    if bname == "Immobile":
+        code = MLB_LABEL_TO_INT["Immobile"]
+        return MLB_LABELS[code], code, -1
+
+    net_yaws = np.asarray(net_yaws, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    is_turn = bname == "Turn"
+    # Frame-weighted vote over per-occurrence L/R/S calls.
+    vote = np.zeros(len(DIRECTIONS), dtype=np.float64)
+    for ny, w in zip(net_yaws, weights):
+        if is_turn:
+            d = DIRECTION_TO_INT["Left"] if ny > 0 else DIRECTION_TO_INT["Right"]
+        elif abs(ny) < deadband:
+            d = DIRECTION_TO_INT["Straight"]
+        else:
+            d = DIRECTION_TO_INT["Left"] if ny > 0 else DIRECTION_TO_INT["Right"]
+        vote[d] += w
+    if vote.sum() <= 0:
+        # No kinematic evidence: default to Straight (Walk/Rear) or, for Turn
+        # (which has no Straight code), the more populated of L/R is undefined
+        # so fall back to Left. This only fires for codes with zero occurrences
+        # in the reference, which are already behavior-unlabeled in practice.
+        d_idx = DIRECTION_TO_INT["Left"] if is_turn else DIRECTION_TO_INT["Straight"]
+    elif is_turn:
+        d_idx = int(np.argmax(vote[: DIRECTION_TO_INT["Straight"]]))  # only L/R
+    else:
+        d_idx = int(np.argmax(vote))
+    code = mlb_code(bname, d_idx)
+    return MLB_LABELS[code], code, d_idx
+
+
+def _code_bouts(codes_row: np.ndarray, code: int) -> list[tuple[int, int]]:
+    """Contiguous ``[start, end)`` runs where ``codes_row == code``."""
+    mask = codes_row == code
+    out: list[tuple[int, int]] = []
+    s: int | None = None
+    for i, m in enumerate(mask):
+        if m and s is None:
+            s = i
+        elif not m and s is not None:
+            out.append((s, i))
+            s = None
+    if s is not None:
+        out.append((s, len(mask)))
+    return out
+
+
+def compute_nine_class_labels(
+    train_codes: np.ndarray,
+    train_indices: np.ndarray,
+    test_codes: np.ndarray,
+    test_indices: np.ndarray,
+    behavior_arr: np.ndarray,
+    direction_arr: np.ndarray,
+    label_clip_indices: np.ndarray,
+    ref_yaw: np.ndarray,
+    ref_clip_indices: np.ndarray,
+    num_codes: int,
+    *,
+    deadband: float = 0.10,
+    sign: float | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Auto-label every code into one of the 9 canonical directional categories.
+
+    Modal *behavior* is taken from the CSV cross-tab (same as
+    :func:`compute_code_labels`); *direction* is derived kinematically from the
+    reference body's net yaw over each contiguous code occurrence (the mlb
+    convention), so Walk/Rear codes can be Left/Right (the CSV direction track
+    cannot supply this — it annotates Walk ~100% Straight).
+
+    Args:
+        train_codes / train_indices / test_codes / test_indices: per-clip code
+            time series and their clip ids (same as :func:`compute_code_labels`).
+        behavior_arr / direction_arr / label_clip_indices: CSV label arrays from
+            :func:`c2a.codegen.shared.label_alignment.load_label_frames`.
+        ref_yaw: ``(N_ref_clips, T)`` unwrapped reference yaw, e.g. from
+            ``c2a.codegen.mlb_segmenter._load_reference_yaw``. Row order matches
+            ``ref_clip_indices``.
+        ref_clip_indices: ``(N_ref_clips,)`` clip ids for ``ref_yaw`` rows.
+        num_codes: codebook cardinality.
+        deadband: straight deadband in radians (mlb default 0.10).
+        sign: Left-sign convention (``Left := sign * net_yaw > 0``). If ``None``,
+            it is calibrated against the CSV Turn Left/Right annotations exactly
+            as the mlb tokenizer does (``mlb_segmenter._calibrate_sign``).
+
+    Returns:
+        ``{code_id: {**compute_code_labels[code], "nine_label": str,
+        "nine_code": int, "nine_direction": int, "color": [r, g, b]}}``. Codes
+        with no labeled behavior get ``nine_label="unlabeled"``, ``nine_code=-1``.
+    """
+    base = compute_code_labels(
+        train_codes, train_indices, test_codes, test_indices,
+        behavior_arr, direction_arr, label_clip_indices, num_codes,
+    )
+
+    if sign is None:
+        from c2a.codegen.mlb_segmenter import _calibrate_sign
+
+        # _calibrate_sign indexes behavior/direction/yaw by the SAME row order;
+        # align all three to ref_clip_indices.
+        ref_pos = {int(c): i for i, c in enumerate(ref_clip_indices)}
+        lab_pos = {int(c): i for i, c in enumerate(label_clip_indices)}
+        common = [c for c in ref_clip_indices.tolist() if int(c) in lab_pos]
+        beh = np.stack([behavior_arr[lab_pos[int(c)]] for c in common])
+        dirn = np.stack([direction_arr[lab_pos[int(c)]] for c in common])
+        yw = np.stack([ref_yaw[ref_pos[int(c)]] for c in common])
+        sign = _calibrate_sign(beh, dirn, yw)
+
+    ref_pos = {int(c): i for i, c in enumerate(ref_clip_indices)}
+
+    def _occurrences(code: int) -> tuple[list[float], list[float]]:
+        net_yaws: list[float] = []
+        weights: list[float] = []
+        for codes_arr, clip_ids in (
+            (train_codes, train_indices),
+            (test_codes, test_indices),
+        ):
+            for i, clip_id in enumerate(clip_ids):
+                rp = ref_pos.get(int(clip_id))
+                if rp is None:
+                    continue
+                yc = ref_yaw[rp]
+                for s, e in _code_bouts(codes_arr[i], code):
+                    if e - s < 2:
+                        continue
+                    net_yaws.append(sign * float(yc[e - 1] - yc[s]))
+                    weights.append(float(e - s))
+        return net_yaws, weights
+
+    out: dict[int, dict[str, Any]] = {}
+    for c in range(num_codes):
+        info = dict(base[c])
+        b_mode = int(info["behavior"])
+        net_yaws, weights = _occurrences(c)
+        label, code9, d_idx = nine_class_label_for_code(
+            b_mode, net_yaws, weights, deadband=deadband
+        )
+        info["nine_label"] = label
+        info["nine_code"] = int(code9)
+        info["nine_direction"] = int(d_idx)
+        info["color"] = (
+            list(MLB_COLORS[label]) if label in MLB_COLORS else [0.8, 0.8, 0.8]
+        )
+        out[c] = info
+    return out

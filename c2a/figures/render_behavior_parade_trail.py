@@ -42,9 +42,43 @@ OUTPUT_DIR = get_repo_root() / "outputs" / "figures" / "behavior_parade_trail"
 
 from vnl_playground.tasks import utils as vnl_utils
 from c2a.rendering_utils import _disable_lights_recursive
+from c2a.codegen.shared.label_alignment import BEHAVIOR_TO_INT
+from c2a.codegen.shared.mlb_labels import MLB_SHORT
+from c2a.experiments.shared.code_labels import nine_class_label_for_code
+from c2a.experiments.shared.plotting import nine_class_rgb
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+# Per-steering-strategy checkpoint + codes for the env used to build the trail
+# walker (the rendered motion itself comes from the saved parade rollout, so the
+# codes only seed the env; the walker XML / rescale are what matter). Override
+# any field on the command line.
+RUN_CONFIG: dict[str, dict[str, str]] = {
+    "kpms": {
+        "checkpoint": "model_checkpoints/260407_031233_484020",
+        "codes": "outputs/tokenizer/kpms_sweep/best_codes.npz",
+    },
+    "kvae": {
+        "checkpoint": "model_checkpoints/260603_180852_140475",
+        "codes": ("outputs/tokenizer/trained_kinematics_vae_ckpts/vae_sweep/"
+                  "kl_0p001/tokenize_k25/best_codes.npz"),
+    },
+    "mlb": {
+        "checkpoint": "model_checkpoints/260629_212713_669229",
+        "codes": "outputs/tokenizer/mlb_v1/best_codes.npz",
+    },
+}
+
+# parade behavior name (as written by run_behavior_parade) -> BEHAVIORS index.
+# c2a's 4-class corpus folds grooming into Immobile.
+_PHASE_BEH_TO_INT: dict[str, int] = {
+    "walk": BEHAVIOR_TO_INT["Walk"],
+    "rear": BEHAVIOR_TO_INT["Rear"],
+    "turn": BEHAVIOR_TO_INT["Turn"],
+    "groom": BEHAVIOR_TO_INT["Immobile"],
+    "immobile": BEHAVIOR_TO_INT["Immobile"],
+}
 
 # Behavior-parade rollouts live under the repo-root outputs/ tree (never
 # c2a/outputs), one subdir per behavior sequence written by
@@ -65,6 +99,31 @@ def _quat_to_yaw(quat):
     """Yaw from a (w,x,y,z) quaternion array (..., 4)."""
     w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
     return np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def phase_nine(beh_name: str, qpos_phase: np.ndarray,
+               deadband: float = 0.10) -> tuple[str, tuple[float, float, float]]:
+    """9-class label + RGB for one parade phase (D3).
+
+    The phase's coarse behavior is taken from its name; the kinematic direction
+    (Left / Right / Straight, or forced L/R for Turn) is derived from the
+    exemplar body's net heading change over the phase, matching the mlb / kpms /
+    kvae 9-class auto-labeling convention.
+
+    Args:
+        beh_name: parade behavior name (e.g. ``"walk"``, ``"groom"``).
+        qpos_phase: ``(T_phase, nq)`` exemplar-body qpos for this phase.
+
+    Returns:
+        ``(label, rgb)`` where ``label`` is a 9-class category string.
+    """
+    b_int = _PHASE_BEH_TO_INT.get(beh_name.lower(), -1)
+    yaw = np.unwrap(_quat_to_yaw(qpos_phase[:, 3:7]))
+    net = float(yaw[-1] - yaw[0]) if yaw.size >= 2 else 0.0
+    label, _code, _d = nine_class_label_for_code(
+        b_int, [net], [float(len(qpos_phase))], deadband=deadband
+    )
+    return label, nine_class_rgb(label)
 
 
 def select_parade_exemplar(qpos_all, boundaries):
@@ -188,6 +247,14 @@ def timestep_to_behavior(
         if start <= t < end:
             return beh
     return boundaries[-1][0]
+
+
+def _phase_of(t: int, boundaries: list[tuple[str, int, int]]) -> int:
+    """Index of the parade phase containing timestep ``t`` (last on overrun)."""
+    for pi, (_beh, start, end) in enumerate(boundaries):
+        if start <= t < end:
+            return pi
+    return len(boundaries) - 1
 
 
 # ── Trail model construction ────────────────────────────────────────────────
@@ -336,6 +403,17 @@ def main():
     parser = argparse.ArgumentParser(
         description="Render behavior transition parade as motion trail"
     )
+    parser.add_argument("--run", default="kvae",
+                        help="steering strategy: kpms | kvae | mlb "
+                             "(selects checkpoint + codes)")
+    parser.add_argument("--checkpoint", default=None,
+                        help="override the strategy's decoder checkpoint path")
+    parser.add_argument("--codes", default=None,
+                        help="override the strategy's best_codes.npz path")
+    parser.add_argument("--parade-dir", default=None,
+                        help="parade rollout dir (with data/parade_rollouts.npz "
+                             "and code_selection.json); default is the legacy "
+                             f"{PARADE_SEQUENCE} dir")
     parser.add_argument("--body-idx", type=int, default=-1,
                         help="Which body from the parade to use; -1 (default) "
                              "auto-selects the body that best performs the "
@@ -369,7 +447,11 @@ def main():
     from vnl_playground.tasks.rodent.imitation import ReferenceClips
     from c2a.moseq_env_wrapper import MoSeqImitation
 
-    ckpt_path = str(REPO_ROOT / "model_checkpoints" / "260603_180852_140475")
+    rcfg = RUN_CONFIG.get(args.run, RUN_CONFIG["kvae"])
+    ckpt_rel = args.checkpoint or rcfg["checkpoint"]
+    codes_rel = args.codes or rcfg["codes"]
+    ckpt_path = str(REPO_ROOT / ckpt_rel)
+    log.info(f"run={args.run}  checkpoint={ckpt_rel}  codes={codes_rel}")
     cfg = checkpointing.load_config_from_checkpoint(
         ckpt_path, step_prefix="MoSeqPPONetwork"
     )
@@ -383,7 +465,7 @@ def main():
         splits = json.load(f)
     test_indices = splits["balanced"]["test_indices"]
 
-    codes_data = np.load(get_repo_root() / "outputs" / "tokenizer" / "trained_kinematics_vae_ckpts" / "vae_sweep" / "kl_0p001" / "tokenize_k25" / "best_codes.npz")
+    codes_data = np.load(REPO_ROOT / codes_rel)
     test_codes = codes_data["test_codes"]
 
     test_clips = ReferenceClips(
@@ -395,10 +477,17 @@ def main():
     log.info("Environment loaded")
 
     # ── Load parade data ─────────────────────────────────────────────
-    d = np.load(PARADE_DATA, allow_pickle=True)
+    if args.parade_dir:
+        parade_dir = Path(args.parade_dir)
+        parade_data = parade_dir / "data" / "parade_rollouts.npz"
+        parade_meta = parade_dir / "code_selection.json"
+    else:
+        parade_data, parade_meta = PARADE_DATA, PARADE_META
+    log.info(f"parade data: {parade_data}")
+    d = np.load(parade_data, allow_pickle=True)
     qpos_all = np.asarray(d["qpos"], dtype=np.float64)  # (K, T, nq)
 
-    with open(PARADE_META) as f:
+    with open(parade_meta) as f:
         selection = json.load(f)
 
     # Phase boundaries must follow the ACTUAL temporal order of the rollout
@@ -426,8 +515,15 @@ def main():
     qpos = qpos_all[body_idx]
     log.info(f"Parade body {body_idx} of {qpos_all.shape[0]}: {qpos.shape}")
 
-    for beh, start, end in boundaries:
-        log.info(f"  {beh}: frames {start}-{end}")
+    # Per-phase 9-class color + label (D3): behavior from the phase name,
+    # direction from the exemplar body's net heading change over the phase.
+    phase_color: dict[int, tuple[float, float, float]] = {}
+    phase_label: dict[int, str] = {}
+    for pi, (beh, start, end) in enumerate(boundaries):
+        lab, rgb = phase_nine(beh, qpos[start:end])
+        phase_color[pi] = rgb
+        phase_label[pi] = MLB_SHORT.get(lab, lab)
+        log.info(f"  {beh}: frames {start}-{end}  -> {lab}")
 
     # ── Compute copy timesteps and trace segments ────────────────────
     all_trail_indices = []
@@ -444,7 +540,7 @@ def main():
         trace_timesteps = np.arange(beh_start, beh_end, args.trace_step)
         trace_pos = qpos[trace_timesteps, :3].copy()
         trace_pos[:, 2] += 0.005
-        raw_trace.append((trace_pos, [*BEHAVIOR_RGB[beh], 0.85], pi))
+        raw_trace.append((trace_pos, [*phase_color[pi], 0.85], pi))
 
     total_copies = len(all_trail_indices)
     log.info(f"Total copies: {total_copies} at timesteps: {all_trail_indices}")
@@ -472,8 +568,8 @@ def main():
         for pi in range(len(raw_trace) - 1):
             end_pt = raw_trace[pi][0][-1].copy()
             start_pt = raw_trace[pi + 1][0][0].copy()
-            c0 = np.array(BEHAVIOR_RGB[boundaries[pi][0]])
-            c1 = np.array(BEHAVIOR_RGB[boundaries[pi + 1][0]])
+            c0 = np.array(phase_color[pi])
+            c1 = np.array(phase_color[pi + 1])
             pts = np.linspace(end_pt, start_pt, n_sub + 1)
             for s in range(n_sub):
                 frac = (s + 0.5) / n_sub
@@ -508,11 +604,10 @@ def main():
         camera_fovy=args.cam_fovy,
     )
 
-    # Recolor each copy by its behavior phase
+    # Recolor each copy by its phase's 9-class color
     copy_colors = []
     for t in all_trail_indices:
-        beh = timestep_to_behavior(t, boundaries)
-        copy_colors.append(BEHAVIOR_RGBA[beh])
+        copy_colors.append([*phase_color[_phase_of(t, boundaries)], 1.0])
     recolor_copies(trail_model, copy_colors)
 
     # copy_qpos already built above (with optional per-phase x offsets)
@@ -531,24 +626,23 @@ def main():
     total_sec = total_frames / FPS
     n_limbs = len(LIMBS)
 
-    fig = plt.figure(figsize=(16, 8.5))
+    fig = plt.figure(figsize=(13.6, 5.7))
     gs = gridspec.GridSpec(
-        3, 1, height_ratios=[1, 14, 4],
+        3, 1, height_ratios=[1, 13, 4],
         hspace=0.05,
     )
 
-    # Top: behavior phase bar
+    # Top: behavior phase bar (9-class colored, 9-class short labels)
     ax_bar_top = fig.add_subplot(gs[0])
-    for beh, beh_start, beh_end in boundaries:
-        color = BEHAVIOR_RGB[beh]
+    for pi, (beh, beh_start, beh_end) in enumerate(boundaries):
         ax_bar_top.barh(
             0, (beh_end - beh_start) / FPS, left=beh_start / FPS,
-            height=1, color=color, edgecolor="none",
+            height=1, color=phase_color[pi], edgecolor="none",
         )
         ax_bar_top.text(
             (beh_start + beh_end) / 2 / FPS, 0,
-            BEHAVIOR_LABELS[beh], ha="center", va="center",
-            fontsize=11, fontweight="bold", color="white",
+            phase_label[pi], ha="center", va="center",
+            fontsize=15, fontweight="bold", color="white",
         )
     ax_bar_top.set_xlim(0, total_sec)
     ax_bar_top.set_ylim(-0.5, 0.5)
@@ -565,31 +659,31 @@ def main():
     # Bottom: real gait diagram (stance/swing per limb)
     ax_gait = fig.add_subplot(gs[2])
 
-    def _draw_stance(li, t0, t1, beh):
+    def _draw_stance(li, t0, t1, pidx):
         ax_gait.fill_between(
             [t0 / FPS, t1 / FPS], li - 0.4, li + 0.4,
-            color=BEHAVIOR_RGB[beh], alpha=0.7, edgecolor="none",
+            color=phase_color[pidx], alpha=0.7, edgecolor="none",
         )
 
     for li, limb in enumerate(LIMBS):
         stance = contacts[limb]
         in_stance = False
         start_t = 0
-        cur_beh = None
+        cur_phase = None
         for t in range(len(stance)):
-            beh_t = timestep_to_behavior(t, boundaries) if stance[t] else None
+            phase_t = _phase_of(t, boundaries) if stance[t] else None
             if stance[t] and not in_stance:
-                start_t, cur_beh, in_stance = t, beh_t, True
-            elif in_stance and (not stance[t] or beh_t != cur_beh):
+                start_t, cur_phase, in_stance = t, phase_t, True
+            elif in_stance and (not stance[t] or phase_t != cur_phase):
                 # close run at the swing onset OR the phase boundary, so a
                 # foot held across a phase boundary is split and recolored
-                _draw_stance(li, start_t, t, cur_beh)
+                _draw_stance(li, start_t, t, cur_phase)
                 if stance[t]:               # phase changed, still planted
-                    start_t, cur_beh = t, beh_t
+                    start_t, cur_phase = t, phase_t
                 else:
                     in_stance = False
         if in_stance:
-            _draw_stance(li, start_t, len(stance), cur_beh)
+            _draw_stance(li, start_t, len(stance), cur_phase)
 
     # Behavior phase boundaries
     for _, beh_start, beh_end in boundaries:
@@ -609,16 +703,17 @@ def main():
     ax_gait.set_xlim(0, total_sec)
     ax_gait.set_ylim(-0.6, n_limbs - 0.4)
     ax_gait.set_yticks(range(n_limbs))
-    ax_gait.set_yticklabels(LIMBS, fontsize=7)
-    ax_gait.set_xlabel("Time (s)", fontsize=9)
-    ax_gait.tick_params(axis="x", labelsize=7)
+    ax_gait.set_yticklabels(LIMBS, fontsize=10)
+    ax_gait.set_xlabel("Time (s)", fontsize=13)
+    ax_gait.tick_params(axis="x", labelsize=10)
     ax_gait.tick_params(axis="y", length=0)
     ax_gait.spines["top"].set_visible(False)
     ax_gait.spines["right"].set_visible(False)
     ax_gait.spines["left"].set_visible(False)
     ax_gait.invert_yaxis()
 
-    out_base = OUTPUT_DIR / "behavior_parade_trail"
+    rsuf = "" if args.run == "kvae" else f"_{args.run}"
+    out_base = OUTPUT_DIR / f"behavior_parade_trail{rsuf}"
     for ext in (".pdf", ".png"):
         fig.savefig(
             str(out_base) + ext, dpi=300, bbox_inches="tight",

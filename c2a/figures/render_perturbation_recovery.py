@@ -169,32 +169,52 @@ def _phase_color(t: int, tp: int, post: int, alpha: float = 1.0) -> list[float]:
     return [red[k] * (1 - u) + grey[k] * u for k in range(3)] + [alpha]
 
 
-def _select_body_frames(q_all: np.ndarray, t_perturb: int, n: int):
-    """Pick the body that rears strongly *and recovers*, and choose ``n``
-    snapshot frames that read as a smooth time-lapse: two reared baseline
-    frames, the toppled trough at the impulse, then a dense, evenly-time-spaced
-    sweep through the recovery back to a clearly-reared late frame. Rearing is
-    intermittent (the body rears up and down), so the baseline/trough/end
-    anchors are selected by root height — not a fixed time offset — guaranteeing
-    the first and last bodies are in the reared posture; the recovery sweep is
-    uniform in time so the row fills the long axis with a continuous arc.
-    Returns (body, frame idxs)."""
-    T = q_all.shape[1]
-    late_lo = min(t_perturb + 260, T - 1)
-    body = int(np.argmax(np.median(q_all[:, late_lo:, 2], axis=1)))
-    q = q_all[body]
+def _select_body_frames(q_all: np.ndarray, t_perturb: int, n: int,
+                        prefer_flat: bool = False):
+    """Pick a representative body that recovers to the held code's *own* attractor
+    (whatever its posture: low for walk, high for rear) and choose ``n`` snapshot
+    frames that read as a smooth time-lapse: two on-attractor baseline frames, the
+    displaced trough at the impulse, then a uniform-in-time sweep through the
+    recovery. Behavior-agnostic: anchors are by deviation from the code's settled
+    root height, not by absolute height, so a walk code does not get rendered as a
+    rear.
 
-    def _arg(a, b, fn):
-        w = np.arange(max(0, a), min(T, b))
-        return int(w[fn(q[w, 2])])
+    ``prefer_flat`` (locomotor codes): among the well-recovering bodies, choose
+    the one whose torso stays most horizontal before and after the shove, so a
+    walk baseline reads as a low prowling walk rather than an upright, rear-like
+    stance. Returns (body, frame idxs)."""
+    T = q_all.shape[1]
+    pre = slice(max(0, t_perturb - 120), t_perturb)
+    late = slice(min(t_perturb + 260, T - 1), T)
+    attractor_z = float(np.median(q_all[:, pre, 2].mean(axis=1)))  # settled height
+    late_z = q_all[:, late, 2].mean(axis=1)
+    rec_err = np.abs(late_z - attractor_z)
+    if prefer_flat:
+        def _pitch(quat):  # torso tilt from horizontal (deg); ~0 flat, ~90 rear
+            w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+            return np.degrees(np.arcsin(np.clip(2 * (w * y - z * x), -1.0, 1.0)))
+        base_pitch = np.abs(_pitch(q_all[:, pre, 3:7])).mean(axis=1)
+        late_pitch = np.abs(_pitch(q_all[:, late, 3:7])).mean(axis=1)
+        cand = np.where(rec_err <= np.quantile(rec_err, 0.4))[0]
+        if cand.size == 0:
+            cand = np.arange(q_all.shape[0])
+        body = int(cand[np.argmin(base_pitch[cand] + late_pitch[cand])])
+    else:
+        # representative body = best recovery back to the attractor height.
+        body = int(np.argmin(rec_err))
+    q = q_all[body]
+    base_z = float(np.mean(q[pre, 2]))
 
     n = max(5, int(n))
-    b0 = _arg(t_perturb - 95, t_perturb - 52, np.argmax)   # reared baseline 1
-    b1 = _arg(t_perturb - 48, t_perturb - 8, np.argmax)    # reared baseline 2
-    pk = _arg(t_perturb + 2, t_perturb + 70, np.argmin)    # toppled (impulse)
-    end = _arg(t_perturb + 260, min(t_perturb + 560, T - 1), np.argmax)  # reared
-    # uniform-in-time recovery sweep from the trough to the recovered posture,
-    # inclusive of both endpoints (pk and end); two reared baselines lead it.
+    # two baseline frames just before the impulse (on the attractor)
+    b0 = max(0, t_perturb - 70)
+    b1 = max(1, t_perturb - 20)
+    # trough = max displacement from the attractor height just after the shove
+    tw = np.arange(t_perturb, min(T, t_perturb + 90))
+    pk = int(tw[np.argmax(np.abs(q[tw, 2] - base_z))]) if tw.size else t_perturb
+    # end = late frame closest to the attractor height (recovered)
+    ew = np.arange(min(t_perturb + 260, T - 1), T)
+    end = int(ew[np.argmin(np.abs(q[ew, 2] - base_z))]) if ew.size else T - 1
     sweep = [int(round(t)) for t in np.linspace(pk, end, max(2, n - 2))]
     idxs = [b0, b1] + sweep
     return body, idxs
@@ -252,9 +272,12 @@ def _render_row(env, q: np.ndarray, idxs: list[int], colors: list[list[float]],
 
 def _render_kick_strip(run_dir: Path, examples: list[tuple], t_perturb: int,
                        checkpoint: str, n_copies: int = 11,
-                       bottom_crop: float = 0.0) -> np.ndarray | None:
+                       bottom_crop: float = 0.0,
+                       prefer_flat: bool = False) -> np.ndarray | None:
     """Two (or more) code examples side by side, each a grey→red→grey row of
-    snapshots: baseline (grey) → shoved (red) → recovered (grey)."""
+    snapshots: baseline (grey) → shoved (red) → recovered (grey). ``prefer_flat``
+    biases body selection toward a horizontal (walk-like) posture for locomotor
+    codes so the baseline does not read as a rear."""
     try:
         from c2a.figures.render_codebook_atlas import build_env
         from c2a.experiments.shared.code_grid import add_banner
@@ -267,7 +290,8 @@ def _render_kick_strip(run_dir: Path, examples: list[tuple], t_perturb: int,
         rows = []
         for cid, amp, label in examples:
             q_all = np.asarray(_load(run_dir, cid, amp, "qpos"), dtype=np.float64)
-            body, idxs = _select_body_frames(q_all, t_perturb, n_copies)
+            body, idxs = _select_body_frames(q_all, t_perturb, n_copies,
+                                             prefer_flat=prefer_flat)
             q = q_all[body]
             cpost = max(idxs[-1] - t_perturb, 1)
             colors = [_phase_color(int(t), t_perturb, cpost) for t in idxs]
@@ -293,159 +317,356 @@ def _render_kick_strip(run_dir: Path, examples: list[tuple], t_perturb: int,
         return None
 
 
+# ---------------------------------------------------------------------------
+# Per-steering-strategy summary figure (3 lines, one per strategy)
+# ---------------------------------------------------------------------------
+# Each steering strategy (kpms / kvae / mlb) gets ONE line per panel, averaged
+# over that strategy's held codes. The 3 strategies are distinguished by a
+# tab10 color scheme + a single shared legend (this figure is per-strategy, not
+# 9-class-colored). Strategies without a perturbation_recovery dir are skipped.
+STRATEGY_ORDER = ["kpms", "best_vae", "mlb"]
+STRATEGY_LABELS = {
+    "kpms": "Keypoint-MoSeq (kpms)",
+    "best_vae": "Kinematics-VAE (kvae)",
+    "mlb": "Manually labeled (mlb)",
+}
+
+
+def _mean_curve(summary: dict, space: str, metric: str
+                ) -> tuple[list[float], np.ndarray]:
+    """Per-amplitude mean (over codes) of a perturbation-summary metric.
+
+    Reads ``summary["codes"][c]["spaces"][space]["metrics"][i][metric]`` for
+    every code ``c`` and averages across codes at each amplitude index, ignoring
+    ``None`` entries (e.g. ``recovery_frac`` is ``None`` at amplitude 0). Returns
+    ``(amplitudes, mean_per_amplitude)`` with ``NaN`` where no code has a value.
+    """
+    amps = [float(a) for a in summary["amplitudes"]]
+    cols: list[list[float]] = [[] for _ in amps]
+    for _c, rec in summary["codes"].items():
+        sp = rec.get("spaces", {}).get(space)
+        if sp is None:
+            continue
+        for i, m in enumerate(sp["metrics"]):
+            if i >= len(cols):
+                break
+            v = m.get(metric)
+            # Exclude non-finite and physically-diverged outliers: a body that
+            # blows up under the strongest shove produces an astronomical
+            # distance (e.g. 1e25) that would dominate the mean. Distances are
+            # in units of the converged spread, so O(10) is already extreme.
+            if v is not None and np.isfinite(float(v)) and abs(float(v)) < 1e3:
+                cols[i].append(float(v))
+    mean = np.array([np.mean(col) if col else np.nan for col in cols])
+    return amps, mean
+
+
+def _deviation_with_control(base: Path, s: str, summ: dict):
+    """Per-strategy pose deviation vs impulse (mean over codes) + the foreign-code
+    control level and the unperturbed floor, via the rigorous root-stripped MMD
+    (:func:`_recovery_deviation`). Returns ``(amps, dev_mean, floor, foreign)`` or
+    ``None`` on failure."""
+    amps = [float(a) for a in summ["amplitudes"]]
+    codes = [int(c) for c in summ["codes"].keys()]
+    if len(codes) < 2:
+        return None
+    wrong = {c: codes[(i + 1) % len(codes)] for i, c in enumerate(codes)}
+    try:
+        own, ctrl = _recovery_deviation(base / s, codes, amps, wrong)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"deviation failed for {s}: {e}")
+        return None
+    dev = np.nanmean(np.array([own[c] for c in codes if c in own], float), axis=0)
+    foreign = float(np.nanmean([ctrl[c] for c in codes if c in ctrl]))
+    return np.array(amps), dev, float(dev[0]), foreign
+
+
+def _beh_mean_recovery(summ: dict, bcodes: list[int], n_amp: int) -> np.ndarray:
+    """Mean pose recovery_frac over a behavior's codes, per amplitude (NaN-safe)."""
+    out = []
+    for i in range(n_amp):
+        vals = []
+        for c in bcodes:
+            v = summ["codes"][str(c)]["spaces"]["pose"]["metrics"][i].get("recovery_frac")
+            if v is not None and np.isfinite(float(v)):
+                vals.append(float(v))
+        out.append(float(np.mean(vals)) if vals else np.nan)
+    return np.array(out)
+
+
+def _render_only_strategy(s: str, summ: dict, base: Path, out_dir: Path) -> None:
+    """Standalone 2-panel figure for ONE steering strategy: pose recovery
+    fraction (left) and post-impulse pose deviation with floor + foreign-code
+    control band (right), one line per behavior. Used for the main Fig 3 (c,d),
+    which is mlb-only. Reuses the same per-behavior curve + control-band logic as
+    the all-strategy figure (``_beh_mean_recovery`` / ``_recovery_deviation``).
+    Emits ``perturbation_recovery_<s>.{pdf,png}``."""
+    from matplotlib.lines import Line2D
+
+    amps = [float(a) for a in summ["amplitudes"]]
+    codes = [int(c) for c in summ["codes"]]
+    beh_of = {int(c): summ["codes"][c].get("behavior") for c in summ["codes"]}
+    wrong = {c: codes[(i + 1) % len(codes)] for i, c in enumerate(codes)}
+    try:
+        own, ctrl = _recovery_deviation(base / s, codes, amps, wrong)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"deviation failed for {s}: {e}"); own, ctrl = {}, {}
+
+    fig, axes = plt.subplots(1, 2, squeeze=False, figsize=(10.2, 4.9))
+    ax_rec, ax_dev = axes[0]
+    for ax, tag in ((ax_rec, "(c)"), (ax_dev, "(d)")):
+        ax.text(-0.05, 1.06, tag, transform=ax.transAxes, fontsize=25,
+                fontweight="bold", va="bottom")
+    ax_rec.set_ylabel("pose recovery frac.", fontsize=20)
+    ax_dev.set_ylabel("pose deviation", fontsize=20)
+    seen_beh: list[str] = []
+    for b in BEHAVIOR_ORDER:
+        bc = [c for c in codes if beh_of[c] == b]
+        if not bc:
+            continue
+        col = BEHAVIOR_COLORS.get(b, "0.5")
+        rec = _beh_mean_recovery(summ, bc, len(amps))
+        ok = ~np.isnan(rec)
+        if ok.any():
+            ax_rec.plot(np.array(amps)[ok], rec[ok], "o-", lw=1.8, color=col,
+                        label=b)
+        dv = [own[c] for c in bc if c in own]
+        if dv:
+            ax_dev.plot(amps, np.nanmean(np.array(dv), axis=0), "o-", lw=1.8,
+                        color=col, label=b)
+        if b not in seen_beh:
+            seen_beh.append(b)
+    if own:
+        ax_dev.axhline(float(np.nanmean([own[c][0] for c in codes if c in own])),
+                       color="0.45", ls=":", lw=1.1)
+    if ctrl:
+        ax_dev.axhline(float(np.nanmean([ctrl[c] for c in codes if c in ctrl])),
+                       color="0.6", ls="--", lw=1.0)
+    ax_rec.set_ylim(0, 1.02); ax_rec.grid(alpha=0.3)
+    ax_dev.set_ylim(bottom=0); ax_dev.grid(alpha=0.3)
+    ax_rec.set_xlabel("impulse strength (a.u.)"); ax_dev.set_xlabel("impulse strength (a.u.)")
+    beh_h = [Line2D([], [], marker="o", color=BEHAVIOR_COLORS.get(b, "0.5"),
+                    label=b) for b in BEHAVIOR_ORDER if b in seen_beh]
+    ctrl_h = [Line2D([], [], color="0.45", ls=":", label="unperturbed floor"),
+              Line2D([], [], color="0.6", ls="--", label="foreign code (control)")]
+    fig.legend(handles=beh_h + ctrl_h, loc="lower center",
+               ncol=len(beh_h) + 2, frameon=False, bbox_to_anchor=(0.5, -0.02))
+    fig.tight_layout(rect=[0, 0.08, 1, 1])
+    for ext in ("pdf", "png"):
+        fig.savefig(out_dir / f"perturbation_recovery_{s}.{ext}", dpi=200,
+                    bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"wrote {out_dir}/perturbation_recovery_{s}.pdf/.png (2-panel, {s})")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", default="kpms")
-    ap.add_argument("--amp", type=float, default=2.4,
-                    help="amplitude shown in the d(t) panel")
-    ap.add_argument("--film-code", type=int, default=4,
-                    help="code id for the filmstrip (default 4 = Rear: upright "
-                         "→ toppled by the shove → back upright, an in-place "
-                         "posture that reads clearly)")
-    ap.add_argument("--film-amp", type=float, default=2.4)
-    ap.add_argument("--film-frames", type=int, default=11,
-                    help="number of frozen-body snapshots in the (a) filmstrip; "
-                         "more frames fill the long axis with a smoother "
-                         "baseline→topple→recovery→reared time-lapse")
-    ap.add_argument("--film-bottom-crop", type=float, default=0.28,
-                    help="fraction of the filmstrip height to trim from the bottom "
-                         "(removes the floor reflection / shadow)")
-    ap.add_argument("--checkpoint",
-                    default="model_checkpoints/260611_073323_750085")
     ap.add_argument("--base",
-                    default="outputs/perturbation/perturbation_recovery")
+                    default="outputs/perturbation/perturbation_recovery",
+                    help="directory holding one subdir per steering strategy")
+    ap.add_argument("--strategies", nargs="*", default=None)
+    ap.add_argument("--only", default=None,
+                    help="emit a standalone 2-panel (recovery frac. | deviation) "
+                         "figure for just this strategy -> "
+                         "perturbation_recovery_<strategy>.pdf (main Fig 3 c,d). "
+                         "Without it, the all-strategy figure is produced.")
+    ap.add_argument("--no-filmstrip", action="store_true",
+                    help="skip the appendix kick→recovery filmstrip render")
+    ap.add_argument("--film-pick", nargs="*", default=None,
+                    help="override the filmstrip code for a given "
+                         "strategy/behavior cell, e.g. 'mlb:Rear=4'. Defaults to "
+                         "the first code of that behavior. Repeatable.")
     args = ap.parse_args()
 
-    plt.rcParams.update({
-        "font.size": 13,
-        "axes.titlesize": 13,
-        "axes.labelsize": 13,
-        "xtick.labelsize": 11.5,
-        "ytick.labelsize": 11.5,
-        "legend.fontsize": 10.5,
-    })
+    # Parse per-cell filmstrip code overrides -> {(strategy, behavior): code}.
+    film_pick: dict[tuple[str, str], int] = {}
+    for spec in (args.film_pick or []):
+        key, _, val = spec.partition("=")
+        strat, _, beh = key.partition(":")
+        film_pick[(strat, beh)] = int(val)
 
+    plt.rcParams.update({"font.size": 22, "axes.labelsize": 22,
+                         "xtick.labelsize": 19, "ytick.labelsize": 19,
+                         "legend.fontsize": 18})
     root = get_repo_root()
-    run_dir = root / args.base / args.run
-    summary = json.loads((run_dir / "perturbation_summary.json").read_text())
-    t_perturb = int(summary["t_perturb"])
-    T = int(summary["hold_frames"])
-    amps = [float(a) for a in summary["amplitudes"]]
-    settle = 60
-    grid = np.arange(T)
-    cloud_idx = np.arange(t_perturb + settle, T)
-    rng = np.random.RandomState(0)
-
-    # codes ordered by behavior
-    code_beh = {int(c): rec["behavior"] for c, rec in summary["codes"].items()}
-    codes = sorted(code_beh, key=lambda c: BEHAVIOR_ORDER.index(code_beh[c])
-                   if code_beh[c] in BEHAVIOR_ORDER else 99)
-    # wrong-code partner = the next behavior's code (cyclic)
-    wrong = {c: codes[(i + 1) % len(codes)] for i, c in enumerate(codes)}
-
-    # ---- figure ----
-    # Single example: a postural code (Rear) shown as baseline → shove →
-    # recovery, full width.
-    examples = [(args.film_code, args.film_amp, "Rear")]
-    film = _render_kick_strip(run_dir, examples, t_perturb, args.checkpoint,
-                              n_copies=int(args.film_frames),
-                              bottom_crop=float(args.film_bottom_crop))
-
-    # Post-impulse pose deviation curves + foreign-code control (panel c).
-    dev, dev_ctrl = _recovery_deviation(run_dir, codes, amps, wrong)
-
-    # Layout: (a) filmstrip across the top at full width (keeping its rendered
-    # aspect), then a bottom row of two curves, (b) behavior recall and (c) pose
-    # deviation, both versus impulse strength and sharing the per-behavior colors.
-    fig_w = 12.0
-    margin = 0.06
-    film_w = 1.0 - 2 * margin
-    if film is not None:
-        img_h, img_w = film.shape[:2]
-        ar = img_w / img_h
-    else:
-        ar = 5.0
-    film_h_in = (film_w * fig_w) / ar
-    curve_h_in = 2.7
-    gap_in = 0.95          # vertical gap between (a) and the (b)/(c) row
-    top_pad_in = 0.15
-    bot_pad_in = 0.55      # room for the curve x-axis labels
-    fig_h = top_pad_in + film_h_in + gap_in + curve_h_in + bot_pad_in
-    fig = plt.figure(figsize=(fig_w, fig_h))
-
-    fhf = film_h_in / fig_h
-    ax_film = fig.add_axes(
-        [margin, 1.0 - (top_pad_in + film_h_in) / fig_h, film_w, fhf])
-    chf = curve_h_in / fig_h
-    cy0 = bot_pad_in / fig_h
-    ax_basin = fig.add_axes([0.09, cy0, 0.36, chf])
-    ax_dev = fig.add_axes([0.59, cy0, 0.36, chf])
-
-    # (a) ghost-trail filmstrip
-    ax_film.set_axis_off()
-    if film is not None:
-        ax_film.imshow(film)
-
-    # round-trip recall curves (panel b) from run_perturbation_roundtrip.
-    rt_dir = root / "outputs/perturbation/perturbation_roundtrip/default"
-    rt_sum = json.loads((rt_dir / "perturbation_roundtrip_summary.json").read_text())
-    rt = dict(np.load(rt_dir / "curves.npz"))
-    rt_amps = [float(a) for a in rt["amps"]]
-    rt_codes = sorted((int(c) for c in rt_sum["codes"]),
-                      key=lambda c: BEHAVIOR_ORDER.index(rt_sum["codes"][str(c)]["behavior"])
-                      if rt_sum["codes"][str(c)]["behavior"] in BEHAVIOR_ORDER else 99)
-
-    # (b) absolute round-trip behavior recall in the recovered window vs impulse
-    # magnitude (amp 0 = unperturbed baseline); higher is better recovery.
-    for c in rt_codes:
-        cc = rt_sum["codes"][str(c)]
-        ys = [cc["amps"][f"{a:g}"]["final_beh"] for a in rt_amps]
-        ax_basin.plot(rt_amps, ys, marker="o", lw=2.0,
-                      color=BEHAVIOR_COLORS.get(cc["behavior"], "k"),
-                      label=cc["behavior"])
-    ax_basin.set_ylim(0, 1.0)
-    ax_basin.set_xlabel("impulse strength")
-    ax_basin.set_ylabel("behavior recall")
-    ax_basin.legend(fontsize=9, loc="lower left")
-
-    # (c) post-impulse pose deviation: MMD between the recovered-window posture of
-    # perturbed vs unperturbed rollouts, per code, vs impulse magnitude. Lower is
-    # better (re-settled onto the same posture). Two references bound it: the lower
-    # dashed line is the unperturbed (amp 0) split-half floor (perfect recovery),
-    # and the upper grey band is the distance to a different code's attractor (the
-    # control) — staying below it means the body returns to its OWN attractor.
-    floor = float(np.median([dev[c][0] for c in codes]))
-    ctrl_vals = [dev_ctrl[c] for c in codes]
-    ax_dev.axhspan(min(ctrl_vals), max(ctrl_vals), color="0.85", zorder=0)
-    ax_dev.axhline(float(np.mean(ctrl_vals)), color="0.55", ls="--", lw=1.0,
-                   label="different code (control)")
-    # behavior curves share (b)'s color legend; here we label only the two grey
-    # reference lines so it is clear what they mean.
-    for c in codes:
-        ax_dev.plot(amps, dev[c], marker="o", lw=2.0,
-                    color=BEHAVIOR_COLORS.get(code_beh[c], "k"))
-    ax_dev.axhline(floor, color="0.6", ls=":", lw=1.0,
-                   label="unperturbed floor")
-    ax_dev.set_ylim(bottom=0)
-    ax_dev.set_xlabel("impulse strength")
-    ax_dev.set_ylabel("pose MMD\n(perturbed vs unperturbed)")
-    ax_dev.legend(fontsize=8, loc="upper left", framealpha=0.9)
-
-    # bold panel labels at each panel's left edge
-    ax_film.text(0.0, 1.01, "(a)", transform=ax_film.transAxes,
-                 fontsize=15, fontweight="bold", va="bottom")
-    ax_basin.text(0.0, 1.04, "(b)", transform=ax_basin.transAxes,
-                  fontsize=15, fontweight="bold", va="bottom")
-    ax_dev.text(0.0, 1.04, "(c)", transform=ax_dev.transAxes,
-                fontsize=15, fontweight="bold", va="bottom")
-
-    out_dir = root / "outputs" / "perturbation"
+    base = root / args.base
+    want = args.strategies if args.strategies else STRATEGY_ORDER
+    strategies = [s for s in want
+                  if (base / s / "perturbation_summary.json").exists()]
+    if not strategies:
+        log.warning(f"no strategy summaries under {base}; nothing to plot")
+        return
+    log.info(f"strategies with data: {strategies}")
+    cmap = plt.get_cmap("tab10")
+    colors = {s: cmap(i % 10) for i, s in enumerate(STRATEGY_ORDER)}
+    summaries = {s: json.loads((base / s / "perturbation_summary.json").read_text())
+                 for s in strategies}
+    out_dir = root / "paper" / "figures"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Single-strategy mode: emit just the 2-panel (c,d) figure and return.
+    if args.only:
+        if args.only not in strategies:
+            log.warning(f"--only {args.only}: no perturbation summary under "
+                        f"{base / args.only}; nothing to plot")
+            return
+        _render_only_strategy(args.only, summaries[args.only], base, out_dir)
+        return
+
+    # --- Main figure: one ROW per steering strategy (kpms, kvae, mlb); two
+    #     columns -- pose recovery fraction (left) and post-impulse pose deviation
+    #     with the unperturbed floor + foreign-code control band (right). Within
+    #     each panel, one line per behavior category. Strategies without data
+    #     (mlb, pending retrain) get a labelled TBD row. Panels are labelled
+    #     (a)..(f), starting from (a).
+    from matplotlib.lines import Line2D
+    BEHAVIOR_ORDER = ["Immobile", "Rear", "Walk", "Turn"]
+    tags = [["(a)", "(b)"], ["(c)", "(d)"], ["(e)", "(f)"]]
+    fig, axes = plt.subplots(len(STRATEGY_ORDER), 2, squeeze=False,
+                             figsize=(10.0, 3.7 * len(STRATEGY_ORDER)))
+    seen_beh: list[str] = []
+    for r, s in enumerate(STRATEGY_ORDER):
+        ax_rec, ax_dev = axes[r]
+        ax_rec.text(-0.05, 1.06, tags[r][0], transform=ax_rec.transAxes,
+                    fontsize=25, fontweight="bold", va="bottom")
+        ax_dev.text(-0.05, 1.06, tags[r][1], transform=ax_dev.transAxes,
+                    fontsize=25, fontweight="bold", va="bottom")
+        ax_rec.set_ylabel(f"{STRATEGY_LABELS[s].split(' (')[0]}\npose recovery frac.",
+                          fontsize=18)
+        ax_dev.set_ylabel("pose deviation", fontsize=18)
+        if s not in strategies:
+            for ax in (ax_rec, ax_dev):
+                ax.text(0.5, 0.5, "pending mlb retrain (TBD)", ha="center",
+                        va="center", color="0.55", fontsize=17,
+                        fontweight="bold", transform=ax.transAxes)
+                ax.set_xticks([]); ax.set_yticks([])
+            continue
+        summ = summaries[s]
+        amps = [float(a) for a in summ["amplitudes"]]
+        codes = [int(c) for c in summ["codes"]]
+        beh_of = {int(c): summ["codes"][c].get("behavior") for c in summ["codes"]}
+        wrong = {c: codes[(i + 1) % len(codes)] for i, c in enumerate(codes)}
+        try:
+            own, ctrl = _recovery_deviation(base / s, codes, amps, wrong)
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"deviation failed for {s}: {e}"); own, ctrl = {}, {}
+        for b in BEHAVIOR_ORDER:
+            bc = [c for c in codes if beh_of[c] == b]
+            if not bc:
+                continue
+            col = BEHAVIOR_COLORS.get(b, "0.5")
+            rec = _beh_mean_recovery(summ, bc, len(amps))
+            ok = ~np.isnan(rec)
+            if ok.any():
+                ax_rec.plot(np.array(amps)[ok], rec[ok], "o-", lw=1.8,
+                            color=col, label=b)
+            dv = [own[c] for c in bc if c in own]
+            if dv:
+                ax_dev.plot(amps, np.nanmean(np.array(dv), axis=0), "o-",
+                            lw=1.8, color=col, label=b)
+            if b not in seen_beh:
+                seen_beh.append(b)
+        if own:
+            ax_dev.axhline(float(np.nanmean([own[c][0] for c in codes if c in own])),
+                           color="0.45", ls=":", lw=1.1)
+        if ctrl:
+            ax_dev.axhline(float(np.nanmean([ctrl[c] for c in codes if c in ctrl])),
+                           color="0.6", ls="--", lw=1.0)
+        ax_rec.set_ylim(0, 1.02); ax_rec.grid(alpha=0.3)
+        ax_dev.set_ylim(bottom=0); ax_dev.grid(alpha=0.3)
+    axes[-1][0].set_xlabel("impulse strength (a.u.)")
+    axes[-1][1].set_xlabel("impulse strength (a.u.)")
+    beh_h = [Line2D([], [], marker="o", color=BEHAVIOR_COLORS.get(b, "0.5"),
+                    label=b) for b in BEHAVIOR_ORDER if b in seen_beh]
+    ctrl_h = [Line2D([], [], color="0.45", ls=":", label="unperturbed floor"),
+              Line2D([], [], color="0.6", ls="--", label="foreign code (control)")]
+    fig.legend(handles=beh_h + ctrl_h, loc="lower center",
+               ncol=len(beh_h) + 2, frameon=False, bbox_to_anchor=(0.5, -0.01))
+    fig.tight_layout(rect=[0, 0.05, 1, 1])
     for ext in ("pdf", "png"):
         fig.savefig(out_dir / f"perturbation_recovery_figure.{ext}", dpi=200,
                     bbox_inches="tight", facecolor="white")
     plt.close(fig)
-    log.info(f"Saved {out_dir}/perturbation_recovery_figure.pdf / .png")
+    print(f"wrote {out_dir}/perturbation_recovery_figure.pdf/.png "
+          f"(per-behavior, per-strategy a-f)")
+
+    # --- Appendix: kick→recovery filmstrip GRID. Columns = recovery from a
+    #     postural (Rear) vs a locomotor (Walk) code; rows = steering strategy.
+    #     Each cell is a grey→red→grey snapshot strip. mlb rows are TBD. ---
+    if not args.no_filmstrip:
+        col_specs = [("Rear", "recovery from rear"), ("Walk", "recovery from walk")]
+        cells: dict[tuple[str, str], np.ndarray] = {}
+        for s in strategies:
+            summ = summaries[s]
+            amps = [float(a) for a in summ["amplitudes"]]
+            amp = amps[max(1, len(amps) // 2)] if len(amps) > 1 else amps[-1]
+            t_perturb = int(summ.get("t_perturb", 800))
+            ckpt = str(summ.get("checkpoint", "")).replace(str(root) + "/", "")
+            for beh, _ in col_specs:
+                bc = [int(c) for c, v in summ["codes"].items()
+                      if v.get("behavior") == beh]
+                if not bc:
+                    continue
+                cid = film_pick.get((s, beh), bc[0])
+                if cid not in bc:  # guard against a stale override
+                    log.warning(f"film-pick {s}:{beh}={cid} not a {beh} code; "
+                                f"using {bc[0]}")
+                    cid = bc[0]
+                img = _render_kick_strip(base / s, [(cid, amp, "")], t_perturb,
+                                         ckpt, n_copies=9, bottom_crop=0.16,
+                                         prefer_flat=(beh == "Walk"))
+                if img is not None:
+                    cells[(s, beh)] = img
+                    print(f"  filmstrip {s}/{beh}: code {cid}, amp {amp}")
+        if cells:
+            nrow, ncol = len(STRATEGY_ORDER), len(col_specs)
+            # Pad every strip to a uniform (maxH x maxW) with white so all cells
+            # are the same size -> columns align and aspect="equal" leaves no
+            # distortion. figsize matches the uniform-cell aspect.
+            maxH = max(im.shape[0] for im in cells.values())
+            maxW = max(im.shape[1] for im in cells.values())
+
+            def _pad(im):
+                ph, pw = maxH - im.shape[0], maxW - im.shape[1]
+                return np.pad(im, ((ph // 2, ph - ph // 2),
+                                   (pw // 2, pw - pw // 2), (0, 0)),
+                              constant_values=255)
+
+            short = {"kpms": "kpms", "best_vae": "kvae", "mlb": "mlb"}
+            ar = maxW / maxH
+            cell_w = 5.2
+            fig2, axes2 = plt.subplots(nrow, ncol, squeeze=False,
+                                       figsize=(cell_w * ncol,
+                                                (cell_w / ar) * nrow))
+            for ci, (_, lbl) in enumerate(col_specs):
+                axes2[0][ci].set_title(lbl, fontsize=13, fontweight="bold")
+            for ri, s in enumerate(STRATEGY_ORDER):
+                axes2[ri][0].set_ylabel(short.get(s, s), fontsize=12,
+                                        fontweight="bold", labelpad=6)
+                for ci, (beh, _) in enumerate(col_specs):
+                    ax = axes2[ri][ci]
+                    ax.set_xticks([]); ax.set_yticks([])
+                    if (s, beh) in cells:
+                        ax.imshow(_pad(cells[(s, beh)]), aspect="equal")
+                    else:
+                        txt = ("pending mlb retrain (TBD)" if s not in strategies
+                               else "no code")
+                        col = "0.55" if s not in strategies else "0.7"
+                        ax.text(0.5, 0.5, txt, ha="center", va="center",
+                                color=col, fontsize=12, fontweight="bold",
+                                transform=ax.transAxes)
+                        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+                        for sp in ax.spines.values():
+                            sp.set_color("0.8")
+            fig2.subplots_adjust(wspace=0.04, hspace=0.08)
+            for ext in ("pdf", "png"):
+                fig2.savefig(out_dir / f"perturbation_filmstrip.{ext}",
+                             dpi=200, bbox_inches="tight", facecolor="white")
+            plt.close(fig2)
+            print(f"wrote {out_dir}/perturbation_filmstrip.pdf/.png "
+                  f"({ncol} cols x {nrow} rows)")
+        else:
+            print("filmstrip render unavailable; skipped")
 
 
 if __name__ == "__main__":

@@ -60,8 +60,8 @@ bash bash_scripts/pipeline/run_kpms_effect_sweep.sh --launch           # ...and 
 
 | Script | What it does |
 |---|---|
-| `run_kpms_baseline.sh` | K=100 KPMS decoder, pure motion-tracking baseline (`reward_mode=off`). |
-| `run_c2c_additive.sh` | Decoder training with the **code-consistency (code2code)** additive reward. The featured controller uses this term. |
+| `run_train_kpms.sh` | K=100 KPMS decoder, pure motion-tracking baseline (`reward_mode=off`). |
+| `run_train_kvae.sh` | Decoder training with the **code-consistency (code2code)** additive reward. The featured controller uses this term. |
 | `run_train_designed_segmenter.sh` | Trains the controller on the **hand-designed multi-scale codebook** (`c2a.codegen.designed_segmenter` → `c2a.train_moseq_decoder`). Drives all `*_multiscale` paper figures. |
 
 ## WandB metrics (decoder runs)

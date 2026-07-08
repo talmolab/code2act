@@ -38,7 +38,10 @@ from c2a.codegen.shared.label_alignment import (
     DIRECTION_TO_INT,
     UNLABELED,
 )
-from c2a.experiments.shared.code_labels import code_label_to_string
+from c2a.experiments.shared.code_labels import (
+    code_label_to_string,
+    nine_class_label_for_code,
+)
 from c2a.experiments.shared.topomimic_labeler import (
     DEFAULT_LABELER_FPS,
     label_rollout_body,
@@ -55,7 +58,77 @@ __all__ = [
     "label_based_clusters_rollout",
     "save_code_labels_json",
     "load_code_labels_json",
+    "augment_code_labels_with_nine_class",
 ]
+
+
+# ---------------------------------------------------------------------------
+# 9-class (D3) augmentation of rollout-derived labels
+# ---------------------------------------------------------------------------
+_QUAT_SLICE = slice(3, 7)  # root quaternion (w, x, y, z) in rollout qpos
+
+
+def _body_net_yaws(qpos_K_T_D: np.ndarray, sign: float) -> Tuple[List[float], List[float]]:
+    """Per-body sign-applied net yaw + frame-weight from a code's rollout qpos."""
+    q = qpos_K_T_D[:, :, _QUAT_SLICE]  # (K, T, 4)
+    w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+    yaw = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))  # (K, T)
+    yaw = np.unwrap(yaw, axis=1)
+    net = sign * (yaw[:, -1] - yaw[:, 0])
+    weights = np.full(net.shape[0], float(qpos_K_T_D.shape[1]))
+    return net.tolist(), weights.tolist()
+
+
+def augment_code_labels_with_nine_class(
+    code_labels: Dict[int, Dict[str, Any]],
+    rollouts_data_dir: Path,
+    *,
+    sign: float = 1.0,
+    deadband: float = 0.10,
+) -> Dict[int, Dict[str, Any]]:
+    """Add ``nine_label`` / ``nine_code`` / ``color`` to rollout code labels (D3).
+
+    Reuses each code's already-computed modal *behavior* (from the rollout
+    auto-labeler) and derives a *kinematic* direction from the net heading
+    change of the code's rollout bodies (the mlb convention), so Walk/Rear
+    codes can be Left/Right. Codes without a rollout npz keep their behavior
+    but get a Straight-defaulted (or, for Turn, Left-defaulted) direction.
+
+    Args:
+        code_labels: output of :func:`label_codes_from_rollouts_dir` (mutated
+            in place and returned).
+        rollouts_data_dir: directory holding ``rollout_<pose>_code<NNN>.npz``
+            files (each with a ``qpos`` array of shape ``(K, T, nq)``).
+        sign: Left-sign convention (``Left := sign * net_yaw > 0``). Pass the
+            same value the mlb tokenizer calibrated (its ``provenance.left_sign``)
+            so handedness is consistent across strategies.
+        deadband: straight deadband in radians (mlb default 0.10).
+
+    Returns:
+        The same dict, with three new keys per code.
+    """
+    from c2a.codegen.shared.mlb_labels import MLB_COLORS
+
+    rollouts_data_dir = Path(rollouts_data_dir)
+    for code, info in code_labels.items():
+        b_int = int(info.get("behavior", -1))
+        net_yaws: List[float] = []
+        weights: List[float] = []
+        for p in sorted(rollouts_data_dir.glob(f"rollout_*_code{int(code):03d}.npz")):
+            qpos = np.load(p)["qpos"]
+            ny, w = _body_net_yaws(qpos, sign)
+            net_yaws.extend(ny)
+            weights.extend(w)
+        label, code9, d_idx = nine_class_label_for_code(
+            b_int, net_yaws, weights, deadband=deadband
+        )
+        info["nine_label"] = label
+        info["nine_code"] = int(code9)
+        info["nine_direction"] = int(d_idx)
+        info["color"] = (
+            list(MLB_COLORS[label]) if label in MLB_COLORS else [0.8, 0.8, 0.8]
+        )
+    return code_labels
 
 
 # ---------------------------------------------------------------------------

@@ -1,16 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# Train policy with the designed multi-scale segmenter (K=25 + UNL).
+# Train the MLB steering-strategy controller (9 flat behavior x direction codes).
 # =============================================================================
 # Stage A: build the codes npz (one-time, ~5 s) unless --skip-build is passed.
-# Stage B: launch PPO training using c2a/configs/moseq_decoder_designed.yaml.
+# Stage B: launch PPO training using c2a/configs/moseq_decoder_mlb.yaml.
 #
 # Usage:
-#   bash bash_scripts/run_train_designed_segmenter.sh                # full train
-#   bash bash_scripts/run_train_designed_segmenter.sh --smoke        # ~10M steps
-#   bash bash_scripts/run_train_designed_segmenter.sh --skip-build   # codes exist
+#   bash bash_scripts/training/run_train_mlb.sh                # full train
+#   bash bash_scripts/training/run_train_mlb.sh --smoke        # ~10M steps
+#   bash bash_scripts/training/run_train_mlb.sh --skip-build   # codes exist
+#   bash bash_scripts/training/run_train_mlb.sh --deadband 0.15
 #
-# Any extra arguments are forwarded as Hydra overrides to the training script.
+# Any other extra arguments are forwarded as Hydra overrides to training.
 # =============================================================================
 
 set -euo pipefail
@@ -34,24 +35,25 @@ export WANDB_MODE="${WANDB_MODE:-online}"
 # ----- arg parsing -----
 SKIP_BUILD=false
 SMOKE=false
+DEADBAND="0.10"
 EXTRA_OVERRIDES=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-build) SKIP_BUILD=true; shift ;;
         --smoke)      SMOKE=true; shift ;;
+        --deadband)   DEADBAND="$2"; shift 2 ;;
         *) EXTRA_OVERRIDES+=("$1"); shift ;;
     esac
 done
 
-PATTERN_YAML="c2a/codegen/patterns/multi_scale_v1.yaml"
-CODES_NPZ="outputs/tokenizer/designed_v1/best_codes.npz"
+CODES_NPZ="outputs/tokenizer/mlb_v1/best_codes.npz"
 
 # ----- Stage A: build codes -----
 if [ "$SKIP_BUILD" = "false" ]; then
-    echo "=== Stage A: building designed codes ==="
-    python3.12 bash_scripts/_pyrun.py c2a.codegen.designed_segmenter \
-        --pattern_yaml "$PATTERN_YAML" \
-        --output "$CODES_NPZ"
+    echo "=== Stage A: building MLB codes (deadband=$DEADBAND) ==="
+    python3.12 bash_scripts/_pyrun.py c2a.codegen.mlb_segmenter \
+        --output "$CODES_NPZ" \
+        --deadband "$DEADBAND"
 else
     echo "=== Stage A: skipped (using existing $CODES_NPZ) ==="
 fi
@@ -67,21 +69,19 @@ echo "=== Stage B: launching PPO training ==="
 
 OVERRIDES=()
 if [ "$SMOKE" = "true" ]; then
-    # Smoke: few minutes, ~10 PPO iters, just verify the loop runs.
     OVERRIDES+=(
         "train_setup.train_config.num_envs=256"
         "train_setup.train_config.num_timesteps=10000000"
         "train_setup.train_config.num_minibatches=4"
-        "train_setup.run_name=designed_v1_smoke"
+        "train_setup.run_name=mlb_v1_smoke"
     )
     export WANDB_MODE=disabled
 fi
 
-# Append user-provided overrides last so they win.
 for o in "${EXTRA_OVERRIDES[@]}"; do
     OVERRIDES+=("$o")
 done
 
 python3.12 bash_scripts/_pyrun.py c2a.train_moseq_decoder \
-    --config-name=moseq_decoder_designed \
+    --config-name=moseq_decoder_mlb \
     "${OVERRIDES[@]}"
