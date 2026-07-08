@@ -12,6 +12,7 @@ Usage:
     python plot_kinematic_signatures.py
 """
 
+import argparse
 from pathlib import Path
 
 import matplotlib
@@ -26,6 +27,19 @@ from c2a.paths import get_repo_root
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
 OUTPUT_DIR = get_repo_root() / "outputs" / "figures" / "kinematic_signatures"
+
+
+def _resolve_data_dir(run: str, data_dir: str | None) -> Path:
+    """Input ``killer_*.npz`` directory for a steering strategy.
+
+    The ``kpms`` strategy reads the legacy ``c2a/figures/data/`` location for
+    backward compatibility; other strategies (e.g. ``best_vae`` = kvae) read a
+    per-run subdir ``c2a/figures/data/<run>/``. An explicit ``--data-dir``
+    overrides both.
+    """
+    if data_dir:
+        return Path(data_dir)
+    return DATA_DIR if run == "kpms" else DATA_DIR / run
 
 # ── Behaviors and conditions ─────────────────────────────────────────────────
 BEHAVIORS = ["walk", "groom", "rear"]
@@ -103,8 +117,12 @@ def _add_rounded_border(fig: plt.Figure, axes_list: list[plt.Axes]) -> mpatches.
     return rect
 
 
-def load_killer_data() -> dict[str, dict[str, list[np.ndarray]]]:
+def load_killer_data(data_dir: Path = DATA_DIR) -> dict[str, dict[str, list[np.ndarray]]]:
     """Load qpos arrays for each behavior x height.
+
+    Args:
+        data_dir: directory holding ``killer_<behavior>_<height>.npz`` for the
+            selected steering strategy.
 
     Returns:
         ``{behavior: {height: [qpos_0, qpos_1, ...]}}``
@@ -113,7 +131,7 @@ def load_killer_data() -> dict[str, dict[str, list[np.ndarray]]]:
     for beh in BEHAVIORS:
         data[beh] = {}
         for h in HEIGHTS:
-            fp = DATA_DIR / f"killer_{beh}_{h}.npz"
+            fp = data_dir / f"killer_{beh}_{h}.npz"
             d = np.load(fp, allow_pickle=True)
             qpos_arr = d["qpos"]
             max_len = max(qpos_arr[i].shape[0] for i in range(len(qpos_arr)))
@@ -360,14 +378,26 @@ def plot_joint_motion_by_bodypart(
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--run", default="kpms",
+                    help="steering strategy: kpms | best_vae (kvae) | mlb")
+    ap.add_argument("--data-dir", default=None,
+                    help="override input killer_*.npz directory")
+    args = ap.parse_args()
+
     _setup_nature_style()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    data = load_killer_data()
+    data_dir = _resolve_data_dir(args.run, args.data_dir)
+    # kpms outputs stay un-suffixed (backward compatible); other strategies
+    # get a per-run suffix so figures coexist.
+    rsuf = "" if args.run == "kpms" else f"_{args.run}"
+    print(f"run={args.run}  data_dir={data_dir}")
+    data = load_killer_data(data_dir)
 
     for height in HEIGHTS:
         # Original 3-panel figure
         fig, border_rect = plot_kinematic_signatures(data, height)
-        stem = f"kinematic_signatures_{height}"
+        stem = f"kinematic_signatures_{height}{rsuf}"
         for ext in ("pdf", "png"):
             fig.savefig(OUTPUT_DIR / f"{stem}.{ext}")
         border_rect.set_facecolor("none")
@@ -377,7 +407,7 @@ def main() -> None:
 
         # Body-part breakdown figure
         fig2, border_rect2 = plot_joint_motion_by_bodypart(data, height)
-        stem2 = f"joint_motion_bodypart_{height}"
+        stem2 = f"joint_motion_bodypart_{height}{rsuf}"
         for ext in ("pdf", "png"):
             fig2.savefig(OUTPUT_DIR / f"{stem2}.{ext}")
         border_rect2.set_facecolor("none")

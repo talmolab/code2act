@@ -433,6 +433,44 @@ def main(cfg: DictConfig) -> None:
                      f"qpos {agg['qpos'].shape} mean_rew "
                      f"{float(agg['reward'].mean()):.3f}")
 
+    # --- sanitize physically-diverged bodies ---
+    # At the strongest shoves a small fraction of bodies can blow the simulator
+    # up and produce non-finite qpos for the rest of the episode. Forward-fill
+    # the last finite frame per body (a diverged body "freezes" at its last
+    # valid pose, so it correctly stays FAR from the attractor and counts as
+    # *not* recovered rather than poisoning the PCA/kNN with NaN).
+    def _ffill_nan(x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float32).copy()
+        bad = ~np.isfinite(x)
+        if not bad.any():
+            return x
+        # x: (K, T, D). Forward-fill along T per (body, dim).
+        K, Tt, D = x.shape
+        for k in range(K):
+            for dd in range(D):
+                col = x[k, :, dd]
+                m = ~np.isfinite(col)
+                if not m.any():
+                    continue
+                last = 0.0
+                for t in range(Tt):
+                    if np.isfinite(col[t]):
+                        last = col[t]
+                    else:
+                        col[t] = last
+                x[k, :, dd] = col
+        return x
+
+    for cid in raw:
+        for amp in raw[cid]:
+            for key in ("qpos", "hidden"):
+                if not np.isfinite(raw[cid][amp][key]).all():
+                    n_bad = int((~np.isfinite(raw[cid][amp][key])).sum())
+                    raw[cid][amp][key] = _ffill_nan(raw[cid][amp][key])
+                    log.warning(
+                        f"  sanitized {n_bad} non-finite {key} values "
+                        f"(code {cid}, amp {amp:g}) by forward-fill")
+
     # --- analysis ---
     a = cfg.analysis
     spaces = list(a.spaces)

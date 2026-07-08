@@ -582,6 +582,18 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
         img = mpimg.imread(str(img_path))
         h_img, w_img = img.shape[:2]
         img_rodent = img[:, int(w_img * 0.75) :, :]
+        # Auto-crop the transparent / white border so the image extent hugs the
+        # rodent itself; otherwise bbox_inches="tight" keeps the padding and the
+        # figure picks up a large left/top whitespace margin.
+        if img_rodent.shape[2] == 4:
+            mask = img_rodent[:, :, 3] > 0.05            # non-transparent
+        else:
+            mask = (img_rodent[:, :, :3] < 0.96).any(axis=2)  # non-white
+        ys_m, xs_m = np.where(mask)
+        if xs_m.size and ys_m.size:
+            img_rodent = img_rodent[
+                ys_m.min() : ys_m.max() + 1, xs_m.min() : xs_m.max() + 1, :
+            ]
         rh, rw = img_rodent.shape[:2]
         aspect_r = rw / rh
         display_h = 0.85
@@ -600,12 +612,17 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
     xg_label_y = (rod_cy - 0.42 + main_y + 0.30) / 2
     _arrow(ax, rod_cx, rod_cy - 0.48, rod_cx, main_y + 0.30,
            color=C_STAC, lw=1.3)
-    down_sym = r"$s_t^g$" if end2end else r"$x_t^g$"
-    down_lbl = "joint angles" if end2end else "keypoints"
-    ax.text(rod_cx + 0.18, xg_label_y, down_sym, ha="left", va="center",
-            fontsize=11, color=C_TEXT, zorder=5)
-    ax.text(rod_cx + 0.18, xg_label_y - 0.16, down_lbl, ha="left", va="top",
-            fontsize=7.5, color=C_STAC, fontstyle="italic")
+    # Fig 1 (main pipeline) shows a generic steering-strategy box, so the
+    # down-arrow input carries no keypoints / x^g_t label; the end2end variant
+    # still annotates its joint-angle input.
+    down_sym = r"$s_t^g$" if end2end else ""
+    down_lbl = "joint angles" if end2end else ""
+    if down_sym:
+        ax.text(rod_cx + 0.18, xg_label_y, down_sym, ha="left", va="center",
+                fontsize=11, color=C_TEXT, zorder=5)
+    if down_lbl:
+        ax.text(rod_cx + 0.18, xg_label_y - 0.16, down_lbl, ha="left", va="top",
+                fontsize=7.5, color=C_STAC, fontstyle="italic")
 
     # --- Straight-right arrow: Rodent -> s^g_t -> Encoder ---
     # Encoder x position (defined later, but we know it from the distill head)
@@ -632,8 +649,8 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
                sublabel=r"$c_t = \mathrm{VAE}(s_t^g)$", sublabel_size=7.5)
     else:
         _block(ax, kpms_x, kpms_by, kpms_w, kpms_h, C_BLUE,
-               "Keypoint-\nMoSeq", fontsize=8.5, border_color=C_BLUE_DARK,
-               sublabel=r"$c_t = \mathrm{MoSeq}(x_t^g)$", sublabel_size=7.5)
+               "Steering\nStrategy", fontsize=8.5, border_color=C_BLUE_DARK,
+               sublabel=r"$c_t = \mathrm{code}(s_t^g)$", sublabel_size=7.5)
 
     # --- Single arrow KPMS -> RNN with c_t label on top ---
     rnn_cx = kpms_x + kpms_w + 1.10
@@ -644,13 +661,13 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
     ax.text(ct_label_x, main_y + 0.10, r"$c_t$", ha="center", va="bottom",
             fontsize=12, color=C_CODE_DARK, fontweight="bold", zorder=5)
     ax.text(ct_label_x, main_y + 0.25,
-            "kinematic latent" if end2end else "syllable",
+            "kinematic latent" if end2end else "code",
             ha="center", va="bottom",
             fontsize=7, color=C_CODE_DARK, fontstyle="italic", zorder=5)
 
     # --- RNN (correct aspect ratio) ---
     _rnn_diagram(ax, rnn_cx, rnn_cy, rnn_r)
-    ax.text(rnn_cx, rnn_cy + rnn_r + 0.08, "RNN / SSM",
+    ax.text(rnn_cx, rnn_cy + rnn_r + 0.08, "RNN",
             ha="center", va="bottom", fontsize=9.5, fontweight="bold",
             color=C_DECODER_DARK, zorder=6)
 
@@ -876,10 +893,14 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
 
 def make_code2act_figure(output_dir: Path):
     """Generate Figure 2: Code2Act inference pipeline."""
-    fig, ax = plt.subplots(1, 1, figsize=(15, 7))
+    # xlim/ylim hug the drawn content (steering box at x=1.67 .. physics/reward
+    # near x=9.0; rodent top ~y=3.1) so there is no large empty left/top margin
+    # (bbox_inches="tight" does not trim the empty axes region). figsize matches
+    # the content aspect so the axes fills the figure.
+    fig, ax = plt.subplots(1, 1, figsize=(15, 6.0))
 
-    ax.set_xlim(-0.25, 9.40)
-    ax.set_ylim(0.05, 4.80)
+    ax.set_xlim(1.45, 9.15)
+    ax.set_ylim(0.12, 3.25)
     ax.set_aspect("equal")
     ax.axis("off")
 

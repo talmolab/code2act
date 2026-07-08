@@ -311,7 +311,7 @@ def _plot_distance_heatmap(
                  for i, sz in enumerate(cluster_sizes)]
     else:
         ticks = [f"c{i}({sz})" for i, sz in enumerate(cluster_sizes)]
-    fs = max(3.0, 8 - 0.11 * n)
+    fs = max(4.0, 11 - 0.15 * n)
     ax.set_xticks(range(n)); ax.set_yticks(range(n))
     ax.set_xticklabels(ticks, rotation=90, fontsize=fs)
     ax.set_yticklabels(ticks, fontsize=fs)
@@ -326,9 +326,9 @@ def _plot_distance_heatmap(
             for j in range(n):
                 if i != j and np.isfinite(D[i, j]):
                     ax.text(j, i, f"{D[i, j]:.2f}", ha="center", va="center",
-                            fontsize=5, color="white" if D[i, j] < vmax * 0.6 else "black")
+                            fontsize=7, color="white" if D[i, j] < vmax * 0.6 else "black")
     fig.colorbar(im, ax=ax, label=cbar_label, fraction=0.046)
-    ax.set_title(title, fontsize=9)
+    ax.set_title(title, fontsize=13)
     fig.tight_layout()
     fig.savefig(str(out_path), dpi=200)
     fig.savefig(str(out_path).replace(".png", ".pdf"))
@@ -413,23 +413,23 @@ def _plot_jpca(
             ax.plot(pr[:, 0], pr[:, 1], color=cmap(i % 20), linewidth=0.5, alpha=0.7)
             ax.plot(pr[0, 0], pr[0, 1], "o", color="black", markersize=1.5)
         lab = cluster_label_strings[i] if i < len(cluster_label_strings) else "?"
-        ax.set_title(f"c{i}[{lab}]\nrot R²={res['r2']:.2f}", fontsize=5.5)
+        ax.set_title(f"c{i}[{lab}]\nrot R²={res['r2']:.2f}", fontsize=8)
         ax.set_xticks([]); ax.set_yticks([])
 
     # rotational-strength bar across all clusters
     axb = fig.add_subplot(gs[nrows, :])
     r2s = [res["r2"] for res in jpca]
     axb.bar(range(n), r2s, color=[cmap(i % 20) for i in range(n)])
-    axb.set_ylabel("rotational R²", fontsize=7)
-    axb.set_xlabel("cluster", fontsize=7)
+    axb.set_ylabel("rotational R²", fontsize=10)
+    axb.set_xlabel("cluster", fontsize=10)
     axb.set_xticks(range(n))
     axb.set_xticklabels(
         [f"c{i}[{cluster_label_strings[i] if i < len(cluster_label_strings) else '?'}]"
          for i in range(n)],
-        rotation=90, fontsize=max(3.0, 7 - 0.1 * n),
+        rotation=90, fontsize=max(4.0, 10 - 0.14 * n),
     )
     axb.set_ylim(0, 1)
-    fig.suptitle(f"jPCA rotational structure — {pose} ({title_suffix})", fontsize=10)
+    fig.suptitle(f"jPCA rotational structure — {pose} ({title_suffix})", fontsize=14)
     fig.tight_layout()
     fig.savefig(str(out_path), dpi=180)
     plt.close(fig)
@@ -543,8 +543,8 @@ def _plot_rslds_latent_phase(
             ax.scatter(X[m, 0], X[m, 1], s=2, alpha=0.35, color=cmap(k % 10),
                        label=f"z{k}", edgecolors="none")
     ax.set_xlabel("latent x₁"); ax.set_ylabel("latent x₂")
-    ax.legend(markerscale=3, fontsize=6, loc="best", frameon=False)
-    ax.set_title(f"rSLDS latent phase portrait — {pose} ({title_suffix})", fontsize=9)
+    ax.legend(markerscale=3, fontsize=8, loc="best", frameon=False)
+    ax.set_title(f"rSLDS latent phase portrait — {pose} ({title_suffix})", fontsize=13)
     fig.tight_layout(); fig.savefig(str(out_path), dpi=180); plt.close(fig)
 
 
@@ -568,12 +568,12 @@ def _plot_rslds_eigs(
         ax.axhline(0, color="#ccc", lw=0.4); ax.axvline(0, color="#ccc", lw=0.4)
         ax.scatter(ev.real, ev.imag, s=18, color="#0072B2", zorder=3)
         rot = np.any(np.abs(ev.imag) > 1e-3)
-        ax.set_title(f"z{k} {'(rot)' if rot else ''}", fontsize=8)
+        ax.set_title(f"z{k} {'(rot)' if rot else ''}", fontsize=11)
         ax.set_xlim(-1.3, 1.3); ax.set_ylim(-1.3, 1.3)
-        ax.set_aspect("equal"); ax.tick_params(labelsize=5)
+        ax.set_aspect("equal"); ax.tick_params(labelsize=7)
     for j in range(K, nrows * ncols):
         axes[j // ncols][j % ncols].axis("off")
-    fig.suptitle(f"rSLDS per-regime eigenvalues — {pose} ({title_suffix})", fontsize=9)
+    fig.suptitle(f"rSLDS per-regime eigenvalues — {pose} ({title_suffix})", fontsize=13)
     fig.tight_layout(); fig.savefig(str(out_path), dpi=180); plt.close(fig)
 
 
@@ -593,13 +593,13 @@ def _plot_rslds_transition(
     for i in range(K):
         for j in range(K):
             ax.text(j, i, f"{P[i, j]:.2f}", ha="center", va="center",
-                    fontsize=6, color="white" if P[i, j] < 0.6 else "black")
+                    fontsize=8, color="white" if P[i, j] < 0.6 else "black")
     ax.set_xticks(range(K)); ax.set_yticks(range(K))
-    ax.set_xticklabels([f"z{j}" for j in range(K)], fontsize=7)
-    ax.set_yticklabels([f"z{j}" for j in range(K)], fontsize=7)
+    ax.set_xticklabels([f"z{j}" for j in range(K)], fontsize=10)
+    ax.set_yticklabels([f"z{j}" for j in range(K)], fontsize=10)
     ax.set_xlabel("z_{t+1}"); ax.set_ylabel("z_t")
     fig.colorbar(im, ax=ax, label="P", fraction=0.046)
-    ax.set_title(f"rSLDS transitions — {pose} ({title_suffix})", fontsize=9)
+    ax.set_title(f"rSLDS transitions — {pose} ({title_suffix})", fontsize=13)
     fig.tight_layout(); fig.savefig(str(out_path), dpi=180); plt.close(fig)
 
 
@@ -620,19 +620,19 @@ def _plot_code_regime_confusion(
     conf = conf / np.maximum(conf.sum(axis=1, keepdims=True), 1)
     fig, ax = plt.subplots(figsize=(0.5 * K + 2.0, 0.18 * n_codes + 1.6))
     im = ax.imshow(conf, cmap="viridis", aspect="auto", vmin=0, vmax=1)
-    ax.set_xticks(range(K)); ax.set_xticklabels([f"z{j}" for j in range(K)], fontsize=7)
+    ax.set_xticks(range(K)); ax.set_xticklabels([f"z{j}" for j in range(K)], fontsize=10)
     ax.set_yticks(range(n_codes))
     ax.set_yticklabels(
         [f"c{i}[{cluster_label_strings[i] if i < len(cluster_label_strings) else '?'}]"
          for i in range(n_codes)],
-        fontsize=max(3.0, 7 - 0.08 * n_codes),
+        fontsize=max(4.0, 10 - 0.11 * n_codes),
     )
     if block_boundaries:
         for b in block_boundaries:
             ax.axhline(b - 0.5, color="white", linewidth=1.0)
     ax.set_xlabel("rSLDS regime"); ax.set_ylabel("code (by behavior label)")
     fig.colorbar(im, ax=ax, label="frame fraction", fraction=0.046)
-    ax.set_title(f"code → regime — {pose} ({title_suffix})", fontsize=9)
+    ax.set_title(f"code → regime — {pose} ({title_suffix})", fontsize=13)
     fig.tight_layout(); fig.savefig(str(out_path), dpi=180)
     fig.savefig(str(out_path).replace(".png", ".pdf")); plt.close(fig)
 

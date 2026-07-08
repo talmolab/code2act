@@ -258,24 +258,20 @@ def _log_eval_metrics(
                 n_rollouts,
             )
 
-            # Designed-segmenter override: tier-colored bar + code-name
-            # text overlay so the viewer can read which scale/granularity
-            # is currently active.  No-op for other code sources.
+            # MLB override: behavior/direction-colored bar + code-name text
+            # overlay so the viewer can read which steering code is active.
+            # No-op for other code sources.
             _code_colors_override = None
             _code_names = None
-            if str(cfg.kpms_config.get("code_source", "")) == "designed":
-                pattern_yaml = cfg.kpms_config.get("pattern_yaml", None)
-                if pattern_yaml is not None:
-                    try:
-                        from c2a.codegen.designed_segmenter import (
-                            load_tier_color_map, load_code_name_map,
-                        )
-                        _code_colors_override = load_tier_color_map(pattern_yaml)
-                        _code_names = load_code_name_map(pattern_yaml)
-                    except Exception as e:
-                        logging.warning(
-                            "designed-segmenter overlay disabled: %s", e,
-                        )
+            if str(cfg.kpms_config.get("code_source", "")) == "mlb":
+                try:
+                    from c2a.codegen.shared.mlb_labels import (
+                        MLB_LABELS, mlb_color_array,
+                    )
+                    _code_colors_override = mlb_color_array()
+                    _code_names = list(MLB_LABELS)
+                except Exception as e:
+                    logging.warning("mlb overlay disabled: %s", e)
 
             for vid_i in range(num_videos):
                 vid_states = all_rollout_states[vid_i]

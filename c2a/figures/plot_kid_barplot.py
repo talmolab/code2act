@@ -21,8 +21,8 @@ from c2a.paths import get_repo_root
 
 SCRIPT_DIR = Path(__file__).parent
 OUTPUT_DIR = get_repo_root() / "outputs" / "kid_barplot"
-# KID results are written per tokenizer (run_inception_distance suffixes the
-# output dir with the code source). Featured controller = Keypoint-MoSeq.
+# KID results are written per steering strategy (run_inception_distance suffixes
+# the output dir with the code source). Featured controller = Keypoint-MoSeq.
 KID_TOKENIZER = "kpms"
 RESULTS_PATH = (
     get_repo_root() / "outputs" / "fidelity"
