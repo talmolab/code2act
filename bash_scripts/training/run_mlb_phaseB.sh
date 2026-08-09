@@ -53,7 +53,7 @@ mkdir -p "$LOGDIR"
 CKPT_BASE="model_checkpoints/260629_212713_669229"
 # Launched early at the user's request (step 27, latest complete) rather than 30.
 # Env-overridable: PIN_STEP=NN bash run_mlb_phaseB.sh
-PIN_STEP="${PIN_STEP:-27}"
+PIN_STEP="${PIN_STEP:-208}"
 # ABSOLUTE path — orbax restore (behavior_parade/roundtrip/gait/KID loaders)
 # rejects relative checkpoint paths ("Checkpoint path should be absolute").
 CKPT_PIN="$PWD/${CKPT_BASE}_step${PIN_STEP}"   # snapshot dir => latest_step()==PIN_STEP
@@ -385,7 +385,7 @@ if want 11; then
   run_stage 11 "render_codebook_atlas (mlb)" 11e_atlas.log \
     $PYRUN c2a.figures.render_codebook_atlas \
       --run "$RUN" --checkpoint "$CKPT_PIN" \
-      --select best_reward --select-overrides 0=far_left 1=far_right 2=far_straight --anchor-mode off --hold 300 --n-copies 5 --cam-azim -95 --hold-overrides 1=170 2=170 --copies-overrides 1=4 2=4
+      --select best_reward --select-overrides 0=far_left 1=far_right 2=far_straight --anchor-mode off --hold 300 --n-copies 5 --cam-azim -95 --hold-overrides 1=170 2=170 --copies-overrides 1=4 2=4 --grid compact2x5
   # definitional atlas is the paper's code_atlas_mlb.pdf -> cp+rename.
   cp -f outputs/figures/codebook_atlas/codebook_atlas_mlb.pdf paper/figures/code_atlas_mlb.pdf \
     && echo "  copied codebook_atlas_mlb.pdf -> paper/figures/code_atlas_mlb.pdf"

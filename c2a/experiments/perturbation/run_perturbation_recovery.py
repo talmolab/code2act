@@ -85,9 +85,12 @@ from c2a.experiments.ic_contraction.run_ic_contraction import pose_features  # n
 log = logging.getLogger(__name__)
 REPO_ROOT = get_repo_root()
 
+# Coarse-behavior line colors, matched to the 9-class directional hues of the
+# confusion matrix (Fig. contraction a): Walk=blue, Rear=green, Turn=orange,
+# Immobile=grey (see c2a.codegen.shared.mlb_labels.MLB_COLORS).
 BEHAVIOR_COLORS = {
-    "Immobile": "#8d929e", "Rear": "#9e66cc",
-    "Turn": "#f2992a", "Walk": "#4cb46b", "Other": "#cccccc",
+    "Immobile": "#8c8c8c", "Rear": "#40a659",
+    "Turn": "#d9731f", "Walk": "#4d80d9", "Other": "#cccccc",
 }
 
 

@@ -95,7 +95,7 @@ def _block(
             zorder=zorder,
         )
     )
-    ty = y + h * 0.58 if sublabel else y + h / 2
+    ty = y + h * 0.66 if sublabel else y + h / 2
     ax.text(
         x + w / 2,
         ty,
@@ -110,7 +110,7 @@ def _block(
     if sublabel:
         ax.text(
             x + w / 2,
-            y + h * 0.25,
+            y + h * 0.12,
             sublabel,
             ha="center",
             va="center",
@@ -136,6 +136,7 @@ def _trapezoid(
     border_color=None,
     sublabel=None,
     sublabel_size=7,
+    sublabel_y=0.12,
     text_color="white",
 ):
     bc = border_color or color
@@ -154,7 +155,7 @@ def _trapezoid(
             zorder=3,
         )
     )
-    ty = y + h * 0.58 if sublabel else y + h / 2
+    ty = y + h * 0.66 if sublabel else y + h / 2
     ax.text(
         x + w / 2,
         ty,
@@ -169,7 +170,7 @@ def _trapezoid(
     if sublabel:
         ax.text(
             x + w / 2,
-            y + h * 0.25,
+            y + h * sublabel_y,
             sublabel,
             ha="center",
             va="center",
@@ -243,12 +244,12 @@ def _squiggly_arrow(ax, x1, y, x2, label=r"$\epsilon$"):
     amp = 0.025
     n_waves = max(2, int((x2 - x1) / 0.12))
     ys = y + amp * np.sin(2 * np.pi * n_waves * (xs - xs[0]) / (xs[-1] - xs[0]))
-    ax.plot(xs, ys, color=C_TEXT, lw=1.0, zorder=4)
+    ax.plot(xs, ys, color=C_TEXT, lw=1.4, zorder=4)
     ax.annotate(
         "",
         xy=(x2, y),
-        xytext=(xs[-1], ys[-1]),
-        arrowprops=dict(arrowstyle="-|>", color=C_TEXT, lw=1.0),
+        xytext=(x2 - 0.05, y),
+        arrowprops=dict(arrowstyle="-|>", color=C_TEXT, lw=1.4),
         zorder=4,
     )
     if label:
@@ -300,9 +301,9 @@ def _rnn_diagram(ax, cx, cy, radius):
         MplCircle(
             (cx, cy),
             radius,
-            facecolor=C_DECODER,
-            alpha=0.08,
-            edgecolor="#222222",
+            facecolor=C_BLUE,
+            alpha=0.10,
+            edgecolor=C_BLUE_DARK,
             linewidth=3.0,
             zorder=3,
         )
@@ -312,7 +313,7 @@ def _rnn_diagram(ax, cx, cy, radius):
             (cx, cy),
             radius * 0.84,
             facecolor="none",
-            edgecolor=C_DECODER_DARK,
+            edgecolor=C_BLUE_DARK,
             linewidth=0.7,
             zorder=3,
             alpha=0.30,
@@ -606,7 +607,7 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
                   clip_on=True)
     else:
         ax.text(rod_cx, rod_cy, "[Rodent]", ha="center", va="center",
-                fontsize=9, color=C_TEXT)
+                fontsize=13.5, color=C_TEXT)
 
     # --- Straight-down arrow: Rodent -> (x^g_t | s^g_t) -> block ---
     xg_label_y = (rod_cy - 0.42 + main_y + 0.30) / 2
@@ -619,73 +620,73 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
     down_lbl = "joint angles" if end2end else ""
     if down_sym:
         ax.text(rod_cx + 0.18, xg_label_y, down_sym, ha="left", va="center",
-                fontsize=11, color=C_TEXT, zorder=5)
+                fontsize=16.5, color=C_TEXT, zorder=5)
     if down_lbl:
         ax.text(rod_cx + 0.18, xg_label_y - 0.16, down_lbl, ha="left", va="top",
-                fontsize=7.5, color=C_STAC, fontstyle="italic")
+                fontsize=11.2, color=C_STAC, fontstyle="italic")
 
     # --- Straight-right arrow: Rodent -> s^g_t -> Encoder ---
     # Encoder x position (defined later, but we know it from the distill head)
     # dh_x is ~rnn_cx + rnn_r + 0.46; enc_x = dh_x. For now use enc_cy row.
     sg_arrow_start_x = rod_cx + 0.30
     # enc_x = dh_x = rnn_right + 0.40; stop arrow before the trapezoid
-    rnn_cx_approx = kpms_x + kpms_w + 1.10
-    rnn_r_approx = 0.48
-    sg_arrow_end_x = rnn_cx_approx + rnn_r_approx + 0.06 + 0.40 - 0.10
+    rnn_cx_approx = kpms_x + kpms_w + 0.85
+    rnn_r_approx = 0.36
+    sg_arrow_end_x = rnn_cx_approx + rnn_r_approx + 0.06 + 0.40 - 0.22
     _arrow(ax, sg_arrow_start_x, enc_cy, sg_arrow_end_x, enc_cy,
            color=C_STAC, lw=1.3)
     sg_label_x = (sg_arrow_start_x + sg_arrow_end_x) / 2
     ax.text(sg_label_x, enc_cy + 0.14, r"$s_t^g$", ha="center", va="bottom",
-            fontsize=11, color=C_TEXT, zorder=5)
+            fontsize=15, color=C_TEXT, fontweight="bold", zorder=5)
     ax.text(sg_label_x, enc_cy + 0.30, "joint angles", ha="center", va="bottom",
-            fontsize=7.5, color=C_STAC, fontstyle="italic")
+            fontsize=11, color=C_STAC, fontstyle="italic")
 
     # --- KPMS / Kinematics-VAE block (kpms_x, kpms_w defined above for rodent positioning) ---
     kpms_h = 0.46
     kpms_by = main_y - kpms_h / 2
     if end2end:
         _block(ax, kpms_x, kpms_by, kpms_w, kpms_h, C_BLUE,
-               "Kinematics\nVAE", fontsize=8.5, border_color=C_BLUE_DARK,
-               sublabel=r"$c_t = \mathrm{VAE}(s_t^g)$", sublabel_size=7.5)
+               "Kinematics\nVAE", fontsize=12.8, border_color=C_BLUE_DARK,
+               sublabel=r"$c_t = \mathrm{VAE}(s_t^g)$", sublabel_size=11.2)
     else:
         _block(ax, kpms_x, kpms_by, kpms_w, kpms_h, C_BLUE,
-               "Steering\nStrategy", fontsize=8.5, border_color=C_BLUE_DARK,
-               sublabel=r"$c_t = \mathrm{code}(s_t^g)$", sublabel_size=7.5)
+               "Steering\nStrategy", fontsize=12.8, border_color=C_BLUE_DARK)
 
     # --- Single arrow KPMS -> RNN with c_t label on top ---
-    rnn_cx = kpms_x + kpms_w + 1.10
+    rnn_cx = kpms_x + kpms_w + 0.85
     rnn_cy = main_y
-    rnn_r = 0.48
-    _arrow(ax, kpms_x + kpms_w + 0.05, main_y, rnn_cx - rnn_r - 0.06, main_y)
-    ct_label_x = (kpms_x + kpms_w + 0.05 + rnn_cx - rnn_r - 0.06) / 2
+    rnn_r = 0.36
+    _arrow(ax, kpms_x + kpms_w + 0.14, main_y, rnn_cx - rnn_r - 0.13, main_y)
+    ct_label_x = (kpms_x + kpms_w + 0.14 + rnn_cx - rnn_r - 0.13) / 2
     ax.text(ct_label_x, main_y + 0.10, r"$c_t$", ha="center", va="bottom",
-            fontsize=12, color=C_CODE_DARK, fontweight="bold", zorder=5)
+            fontsize=15, color=C_TEXT, fontweight="bold", zorder=5)
     ax.text(ct_label_x, main_y + 0.25,
             "kinematic latent" if end2end else "code",
             ha="center", va="bottom",
-            fontsize=7, color=C_CODE_DARK, fontstyle="italic", zorder=5)
+            fontsize=11, color=C_STAC, fontstyle="italic", zorder=5)
 
     # --- RNN (correct aspect ratio) ---
     _rnn_diagram(ax, rnn_cx, rnn_cy, rnn_r)
     ax.text(rnn_cx, rnn_cy + rnn_r + 0.08, "RNN",
-            ha="center", va="bottom", fontsize=9.5, fontweight="bold",
-            color=C_DECODER_DARK, zorder=6)
+            ha="center", va="bottom", fontsize=14.2, fontweight="bold",
+            color=C_BLUE_DARK, zorder=6)
 
     # --- h_t ---
     rnn_right = rnn_cx + rnn_r + 0.06
-    _arrow(ax, rnn_right, main_y, rnn_right + 0.35, main_y)
+    _arrow(ax, rnn_right + 0.04, main_y, rnn_right + 0.24, main_y)
     ax.text(rnn_right + 0.16, main_y + 0.14, r"$h_t$",
-            ha="center", va="bottom", fontsize=9.5, color=C_DECODER_DARK,
-            fontstyle="italic", zorder=5)
+            ha="center", va="bottom", fontsize=15, color=C_TEXT,
+            zorder=5)
 
     # --- Distill Head (BLUE trapezoid, like encoder) ---
-    dh_x = rnn_right + 0.40
+    dh_x = rnn_right + 0.30
     dh_w = 0.70
     dh_h = 0.46
     dh_by = main_y - dh_h / 2
-    _trapezoid(ax, dh_x, dh_by, dh_w, dh_h, C_BLUE, "Distill\nHead",
-               direction="right", fontsize=9, border_color=C_BLUE_DARK,
-               sublabel=r"$p_\psi(z \mid h_t)$", sublabel_size=7.5)
+    _trapezoid(ax, dh_x, dh_by, dh_w, dh_h, C_BLUE, "Distill",
+               direction="right", fontsize=13.5, border_color=C_BLUE_DARK,
+               sublabel=r"$p_\psi(z \mid h_t)$", sublabel_size=11.2,
+               sublabel_y=0.24)
     dh_cx = dh_x + dh_w / 2
 
     # --- [mu^d, sigma^d] bracket (no arrow, height matches head) ---
@@ -707,47 +708,40 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
         facecolor=C_Z0, alpha=0.30, edgecolor=C_Z0_DARK,
         linewidth=1.2, zorder=3))
     ax.text(z0_x + z0_w / 2, main_y, r"$z$", ha="center", va="center",
-            fontsize=12, color=C_Z0_DARK, fontweight="bold", zorder=4)
+            fontsize=18.0, color=C_Z0_DARK, fontweight="bold", zorder=4)
     ax.text(z0_x + z0_w / 2, main_y + z0_h / 2 + 0.06, "continuous\nlatent",
-            ha="center", va="bottom", fontsize=6.5, color=C_Z0_DARK,
+            ha="center", va="bottom", fontsize=11, color=C_STAC,
             fontstyle="italic", zorder=5, linespacing=0.9)
 
     # --- Clear arrow z -> Decoder ---
-    dec_x = z0_x + z0_w + 0.28
-    _arrow(ax, z0_x + z0_w + 0.05, main_y, dec_x - 0.05, main_y, lw=1.8)
+    dec_x = z0_x + z0_w + 0.36
+    _arrow(ax, z0_x + z0_w + 0.11, main_y, dec_x - 0.12, main_y, lw=1.8)
 
     # --- Decoder (Inverse Dynamics Model) ---
     dec_w = 0.90
     dec_h = 0.50
     dec_by = main_y - dec_h / 2
     _trapezoid(ax, dec_x, dec_by, dec_w, dec_h, C_DECODER, "Inverse\nDynamics",
-               direction="left", fontsize=9, border_color=C_DECODER_DARK,
-               sublabel=r"$[z, s_t^p] \to a_t$", sublabel_size=7.5)
+               direction="left", fontsize=13.5, border_color=C_DECODER_DARK,
+               sublabel=r"$[z, s_t^p] \to a_t$", sublabel_size=11.2)
     # Frozen symbol on decoder
-    ax.text(dec_x + 0.12, dec_by + dec_h * 0.22, "\u2744",
-            ha="center", va="center", fontsize=11, color="white",
+    ax.text(dec_x + 0.10, dec_by + dec_h * 0.85, "\u2744",
+            ha="center", va="center", fontsize=13, color="white",
             alpha=0.9, zorder=5)
     dec_cx = dec_x + dec_w / 2
 
-    # --- a_t ---
-    at_x = dec_x + dec_w + 0.38
-    _arrow(ax, dec_x + dec_w + 0.05, main_y, at_x - 0.12, main_y,
-           color="#222222", lw=2.0)
-    ax.text(at_x, main_y, r"$a_t$", ha="center", va="center",
-            fontsize=13, fontweight="bold", color=C_TEXT, zorder=5)
-    ax.text(at_x, main_y + 0.18, "action", ha="center", va="bottom",
-            fontsize=6.5, color=C_TEXT, fontstyle="italic", zorder=5)
-
-    # --- Physics Sim ---
-    phys_x = at_x + 0.35
+    # --- single arrow Inverse Dynamics -> Physics Sim, small a_t on the arrow ---
+    phys_x = dec_x + dec_w + 0.52
     phys_w = 0.58
     phys_h = 0.44
     phys_by = main_y - phys_h / 2
-    _arrow(ax, at_x + 0.12, main_y, phys_x - 0.05, main_y,
+    _arrow(ax, dec_x + dec_w + 0.10, main_y, phys_x - 0.10, main_y,
            color="#222222", lw=2.0)
+    ax.text((dec_x + dec_w + phys_x) / 2, main_y + 0.09, r"$a_t$",
+            ha="center", va="bottom", fontsize=15, color=C_TEXT, fontweight="bold", zorder=5)
     _block(ax, phys_x, phys_by, phys_w, phys_h, C_PHYSICS,
-           "Physics\nSim", fontsize=8, border_color="#666666",
-           text_color="white", sublabel=r"$s_{t+1}^p$", sublabel_size=7.5)
+           "Physics\nSim", fontsize=12.0, border_color="#666666",
+           text_color="white", sublabel=r"$s_{t+1}^p$", sublabel_size=11.2)
     phys_cx = phys_x + phys_w / 2
 
     # =====================================================================
@@ -763,10 +757,10 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
     # s^p_t label on horizontal line
     sp_label_x = (rnn_cx + dec_cx) / 2
     ax.text(sp_label_x, fb_y, r"$s_t^p$", ha="center", va="center",
-            fontsize=10, color=C_TEXT, fontweight="bold", zorder=5,
+            fontsize=15, color=C_TEXT, fontweight="bold", zorder=5,
             bbox=dict(facecolor="white", edgecolor="none", pad=1.5))
     ax.text(sp_label_x, fb_y - 0.14, "proprioceptive state",
-            ha="center", va="top", fontsize=6.5, color=C_TEXT,
+            ha="center", va="top", fontsize=11, color=C_STAC,
             fontstyle="italic", zorder=5)
 
     # Dashed up to RNN
@@ -807,11 +801,12 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
     enc_w = dh_w
     enc_h = dh_h
     enc_by = enc_cy - enc_h / 2
-    _trapezoid(ax, enc_x, enc_by, enc_w, enc_h, C_BLUE, "Encoder",
-               direction="right", fontsize=9, border_color=C_BLUE_DARK,
-               sublabel=r"$q_\phi(z \mid s_t^g)$", sublabel_size=7.5)
-    ax.text(enc_x + 0.12, enc_by + enc_h * 0.22, "\u2744",
-            ha="center", va="center", fontsize=11, color="white",
+    _trapezoid(ax, enc_x, enc_by, enc_w, enc_h, C_DECODER, "Encoder",
+               direction="right", fontsize=13.5, border_color=C_DECODER_DARK,
+               sublabel=r"$q_\phi(z \mid s_t^g)$", sublabel_size=11.2,
+               sublabel_y=0.24)
+    ax.text(enc_x + 0.02, enc_by + enc_h * 0.98, "\u2744",
+            ha="left", va="top", fontsize=13, color="white",
             alpha=0.9, zorder=5)
 
     # Arrow from s^g_t to Encoder (drawn above with rodent arrows)
@@ -827,7 +822,7 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
     kl_y = (enc_cy - enc_h / 2 + main_y + dh_h / 2) / 2
     # KL label
     ax.text(enc_bkt_cx, kl_y, r"$\mathrm{KL}$",
-            ha="center", va="center", fontsize=10, fontweight="bold",
+            ha="center", va="center", fontsize=15.0, fontweight="bold",
             color=C_KL, zorder=5)
     # Arrow FROM KL UP to encoder bracket
     _arrow(ax, enc_bkt_cx, kl_y + 0.14, enc_bkt_cx, enc_cy - enc_h / 2 - 0.02,
@@ -844,25 +839,8 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
     box_bottom = main_y - dh_h / 2 - box_pad
     box_right = enc_bkt_cx + 0.22  # right of bracket
     box_top = enc_cy + enc_h / 2 + box_pad
-    ax.add_patch(
-        FancyBboxPatch(
-            (box_left, box_bottom),
-            box_right - box_left,
-            box_top - box_bottom,
-            boxstyle="round,pad=0.05",
-            facecolor="none",
-            edgecolor="#999999",
-            linewidth=1.2,
-            linestyle="--",
-            zorder=1,
-        )
-    )
-    ax.text(
-        (box_left + box_right) / 2, box_bottom - 0.08,
-        "optional",
-        ha="center", va="top",
-        fontsize=8, fontstyle="italic", color="#888888", zorder=5,
-    )
+    # (optional dashed box + label removed per request; box_* extents are kept
+    #  only to route the MIMIC-MJX feedback arrow above the encoder/distill pair.)
 
     # =====================================================================
     # "MIMIC-MJX Pre-trained" above Inverse Dynamics, arrows to both
@@ -870,7 +848,7 @@ def draw_code2act_pipeline(ax, end2end: bool = False):
     pretrained_x = dec_cx
     pretrained_y = enc_cy + 0.10
     ax.text(pretrained_x, pretrained_y, "MIMIC-MJX\nPre-trained",
-            ha="center", va="center", fontsize=7.5, fontweight="bold",
+            ha="center", va="center", fontsize=11.2, fontweight="bold",
             color=C_STAC, fontstyle="italic", zorder=5)
 
     # Arrow from MIMIC-MJX: up above dashed box, then left, then down toward Encoder
@@ -899,7 +877,7 @@ def make_code2act_figure(output_dir: Path):
     # the content aspect so the axes fills the figure.
     fig, ax = plt.subplots(1, 1, figsize=(15, 6.0))
 
-    ax.set_xlim(1.45, 9.15)
+    ax.set_xlim(1.45, 8.78)
     ax.set_ylim(0.12, 3.25)
     ax.set_aspect("equal")
     ax.axis("off")
