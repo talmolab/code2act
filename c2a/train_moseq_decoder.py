@@ -12,8 +12,13 @@ Usage:
 
 import os
 
-os.environ["MUJOCO_GL"] = "egl"
-os.environ["PYOPENGL_PLATFORM"] = "egl"
+# EGL is the default headless-GPU backend, but must stay overridable: these are
+# read at MuJoCo import time, so an unconditional assignment makes the module
+# unimportable on a box without libEGL (the import fails inside PyOpenGL before
+# anything else runs). Set MUJOCO_GL=disable to train without rendering; video
+# logging is already best-effort (the render block catches its own exceptions).
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 import functools
 import json

@@ -7,6 +7,10 @@ venv/
 env/
 _pyrun.py
 paper/
+paper/figures/
+paper/samples/
+paper/tables/
+figures/
 logs/
 
 # Python
@@ -62,3 +66,6 @@ sessions/
 .claude/
 image.png
 ideas.pdf
+
+# Paper PDF (local copy only)
+/bian_NEmo_2026.pdf

@@ -85,10 +85,18 @@ from c2a.experiments.ic_contraction.run_ic_contraction import pose_features  # n
 log = logging.getLogger(__name__)
 REPO_ROOT = get_repo_root()
 
+# Coarse-behavior line colors, matched to the 9-class directional hues of the
+# confusion matrix (Fig. contraction a): Walk=blue, Rear=green, Turn=orange,
+# Immobile=grey (see c2a.codegen.shared.mlb_labels.MLB_COLORS).
 BEHAVIOR_COLORS = {
-    "Immobile": "#8d929e", "Rear": "#9e66cc",
-    "Turn": "#f2992a", "Walk": "#4cb46b", "Other": "#cccccc",
+    "Immobile": "#8c8c8c", "Rear": "#40a659",
+    "Turn": "#d9731f", "Walk": "#4d80d9", "Other": "#cccccc",
 }
+
+# The impulse must push the state at least this far beyond its converged spread
+# for the restoration fraction to be defined; below it the ratio is a quotient
+# of two noise terms. See ``_recovery_metrics``.
+MIN_EXCURSION = 1.25
 
 
 def _abs(p) -> Path:
@@ -242,7 +250,11 @@ def _recovery_metrics(d: np.ndarray, grid: np.ndarray, t_perturb: int,
     peak = float(np.max(d[peak_mask]))
     final = float(np.median(d[final_mask]))
     span = peak - floor
-    if span <= 1e-9:
+    # The ratio is only meaningful if the impulse actually left the attractor.
+    # In hidden space the excursion is often a few percent of the converged
+    # spread (e.g. floor 1.00, peak 1.02), where (peak-final)/span is noise
+    # amplified by a near-zero denominator and lands at 0 or 1 arbitrarily.
+    if span <= 1e-9 or peak < MIN_EXCURSION * max(floor, 1e-9):
         rec_frac = float("nan")
         rec_time = 0.0
         recovered = True

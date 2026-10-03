@@ -1,4 +1,16 @@
 # =============================================================================
+# MANUSCRIPT CONFIG (NeMo 2026). This sweep produced the KPMS tokenizer used
+# throughout the paper's experiments: s100_k1e+02_l10_arhmm/seed4, fit with
+# fix_heading=True (see the manuscript-setup note in
+# c2a/codegen/kpms/fit_kpms.py and the kpms_setup block below). Using
+# fix_heading=True gives tokenizer-level results similar to fix_heading=False
+# (effective codes 6.7 vs 8.5 of 100, NMI vs behavior 0.294 vs 0.268);
+# numbers in fit_kpms.py.
+# selection.mocap_hz=15 is kept as run; with 50 Hz clips the 400 ms target
+# resolves to 6 frames, no fit lands in the window, and selection falls back
+# to the 5 fits closest to target, which is how seed4 was chosen.
+# The fix_heading=False variant is kpms_sweep_k100_fix_heading_false.yaml.
+# =============================================================================
 # KPMS K=100 Hyperparameter Sweep — NEW (2026-05-26)
 # =============================================================================
 # K fixed at 100 (Bayesian sticky-HMM uses what it needs from the prior).
@@ -21,6 +33,13 @@ data:
   labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
   labeled_clip_range: [0, 841]
   csv_to_h5_subsample: 2
+
+# Keypoint-MoSeq setup, pinned to the manuscript values (also the defaults in
+# fit_kpms.py). anterior/posterior are omitted: the manuscript used the
+# positional pick (AnkleL / WristR), which fix_heading=True makes inert.
+kpms_setup:
+  fix_heading: true
+  fps: 30
 
 sweep:
   num_states: [100]

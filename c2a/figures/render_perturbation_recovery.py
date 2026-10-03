@@ -3,20 +3,13 @@
 Stage-2 figure for the perturbation–recovery experiment
 (``c2a.experiments.perturbation.run_perturbation_recovery``). Three panels:
 
-(a) **Kick → recovery (intuition).** A ghost-trail of one representative body
-    driven by a held code: frozen copies before the impulse (grey), at the
-    impulse (red), and recovering afterward (red→green), over the root
-    trajectory. The shove visibly throws the body off; the controller walks it
-    back onto the code's motif.
-(b) **Recovery curves.** Phase-invariant distance ``d(t)`` to the code's
-    (unperturbed) attractor cloud, behavior-colored, at a representative impulse
-    amplitude. Each curve sits at its converged floor, spikes at the impulse,
-    then decays back toward 1 — the controller defends the attractor. A
-    wrong-code control (distance to a *different* code's attractor) stays
-    elevated: recovery is code-specific.
-(c) **Basin.** Recovery fraction vs. impulse magnitude: the controller returns
-    to the attractor across the whole sweep (pose space), even for shoves that
-    displace the body to many times the converged spread.
+(b) **Displacement recovered.** Per behavior, the share of the impulse-induced
+    excursion in the distance to the code's attractor that has decayed by the
+    end of the episode, against impulse magnitude.
+(c) **Pose deviation.** Per behavior, the MMD between the final-window postures
+    of perturbed and unperturbed bodies of the same code, against the
+    unperturbed split-half floor and the distance between distinct codes'
+    attractors.
 
 Reads the rollouts + summary written by the experiment (no new rollouts for the
 quantitative panels; the ghost panel re-renders saved qpos).
@@ -52,6 +45,10 @@ from c2a.experiments.shared.code_grid import mmd_squared, _median_pairwise
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# Burned-in panel tags. The NEmo main figure letters its panels with LaTeX
+# subcaptions instead, so it renders with this off.
+BURN_LABELS = False
+
 BEHAVIOR_ORDER = ["Immobile", "Rear", "Walk", "Turn"]
 
 
@@ -68,17 +65,30 @@ def _final_pose_pool(q: np.ndarray, frames: int, rng, max_pool: int = 1500
     pools the final window across bodies into ``(<=max_pool, nq-3)``, matching the
     distinctness MMD's root strip. The window spans many gait cycles, so the pooled
     posture marginal is phase-invariant (a recovered limit-cycle reads as recovered
-    regardless of where in the cycle it ends)."""
+    regardless of where in the cycle it ends).
+
+    Non-finite rows are dropped. A body the simulator destabilized carries
+    ``inf``/``nan`` qpos, and a single such sample makes the median-heuristic
+    bandwidth ``nan``, which silently drives every MMD for that code to zero --
+    i.e. reports a blown-up rollout as *perfect* recovery. Those bodies are
+    excluded here and counted separately by :func:`_recovery_deviation`."""
     w = q[:, -frames:, 3:]
     flat = w.reshape(-1, w.shape[-1]).astype(np.float32)
+    flat = flat[np.isfinite(flat).all(axis=1)]
     if flat.shape[0] > max_pool:
         flat = flat[rng.choice(flat.shape[0], max_pool, replace=False)]
     return flat
 
 
+def _finite_mask(q: np.ndarray, frames: int) -> np.ndarray:
+    """Bodies whose scored final window is entirely finite."""
+    return np.isfinite(q[:, -frames:, :]).all(axis=(1, 2))
+
+
 def _recovery_deviation(run_dir: Path, codes: list[int], amps: list[float],
                         wrong: dict[int, int], frames: int = 250
-                        ) -> tuple[dict[int, list[float]], dict[int, float]]:
+                        ) -> tuple[dict[int, list[float]], dict[int, float],
+                                   dict[tuple[int, float], int]]:
     """Post-impulse pose deviation per code, versus impulse strength, plus a
     foreign-code control.
 
@@ -94,8 +104,12 @@ def _recovery_deviation(run_dir: Path, codes: list[int], amps: list[float],
     The control (per code) is the MMD between the code's own unperturbed reference
     and a different code's unperturbed posture, on the same kernel: the distance
     between distinct attractors. Recovery curves staying well below this level show
-    the body returns to its own attractor rather than to any posture. Returns
-    ``(own_curves, control_levels)``."""
+    the body returns to its own attractor rather than to any posture.
+
+    Bodies the simulator destabilized are excluded (the kernel is undefined on
+    non-finite states) and counted, so the exclusion is visible in the log
+    rather than silently shrinking the sample. Returns
+    ``(own_curves, control_levels, diverged_counts)`` keyed ``(code, amp)``."""
     rng = np.random.RandomState(0)
     refs: dict[int, np.ndarray] = {}
     tests: dict[int, np.ndarray] = {}
@@ -111,19 +125,25 @@ def _recovery_deviation(run_dir: Path, codes: list[int], amps: list[float],
         foreign[c] = _final_pose_pool(q0, frames, rng)
     own: dict[int, list[float]] = {}
     ctrl: dict[int, float] = {}
+    diverged: dict[tuple[int, float], int] = {}
     for c in codes:
         ref, test_idx = refs[c], tests[c]
-        pools = [
-            _final_pose_pool((q0s[c] if a == 0.0 else
-                              _load(run_dir, c, a, "qpos"))[test_idx], frames, rng)
-            for a in amps
-        ]
+        pools = []
+        for a in amps:
+            q = (q0s[c] if a == 0.0 else _load(run_dir, c, a, "qpos"))[test_idx]
+            ok = _finite_mask(q, frames)
+            n_bad = int((~ok).sum())
+            if n_bad:
+                diverged[(c, a)] = n_bad
+                log.warning(f"  code {c} amp {a:g}: {n_bad}/{len(ok)} scored "
+                            f"bodies destabilized; excluded from the MMD")
+            pools.append(_final_pose_pool(q[ok], frames, rng))
         sigma = _median_pairwise(np.concatenate([ref] + pools, axis=0))
         own[c] = [float(np.sqrt(max(0.0, mmd_squared(p, ref, sigma))))
-                  for p in pools]
+                  if p.shape[0] > 1 else float("nan") for p in pools]
         ctrl[c] = float(np.sqrt(max(0.0, mmd_squared(
             ref, foreign[wrong[c]], sigma))))
-    return own, ctrl
+    return own, ctrl, diverged
 
 
 def _global_stats(run_dir: Path, codes: list[int]) -> tuple[np.ndarray, np.ndarray]:
@@ -170,7 +190,7 @@ def _phase_color(t: int, tp: int, post: int, alpha: float = 1.0) -> list[float]:
 
 
 def _select_body_frames(q_all: np.ndarray, t_perturb: int, n: int,
-                        prefer_flat: bool = False):
+                        prefer_flat: bool = False, prefer_reared: bool = False):
     """Pick a representative body that recovers to the held code's *own* attractor
     (whatever its posture: low for walk, high for rear) and choose ``n`` snapshot
     frames that read as a smooth time-lapse: two on-attractor baseline frames, the
@@ -189,16 +209,22 @@ def _select_body_frames(q_all: np.ndarray, t_perturb: int, n: int,
     attractor_z = float(np.median(q_all[:, pre, 2].mean(axis=1)))  # settled height
     late_z = q_all[:, late, 2].mean(axis=1)
     rec_err = np.abs(late_z - attractor_z)
-    if prefer_flat:
+    if prefer_flat or prefer_reared:
         def _pitch(quat):  # torso tilt from horizontal (deg); ~0 flat, ~90 rear
             w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
             return np.degrees(np.arcsin(np.clip(2 * (w * y - z * x), -1.0, 1.0)))
         base_pitch = np.abs(_pitch(q_all[:, pre, 3:7])).mean(axis=1)
         late_pitch = np.abs(_pitch(q_all[:, late, 3:7])).mean(axis=1)
-        cand = np.where(rec_err <= np.quantile(rec_err, 0.4))[0]
+        cand = np.where(rec_err <= np.quantile(rec_err, 0.6))[0]
         if cand.size == 0:
             cand = np.arange(q_all.shape[0])
-        body = int(cand[np.argmin(base_pitch[cand] + late_pitch[cand])])
+        if prefer_reared:
+            # postural codes: body that stays most upright (reared) before AND
+            # after the shove, so a rear baseline reads as a clear rear->rear.
+            score = np.minimum(base_pitch, late_pitch)
+            body = int(cand[np.argmax(score[cand])])
+        else:
+            body = int(cand[np.argmin(base_pitch[cand] + late_pitch[cand])])
     else:
         # representative body = best recovery back to the attractor height.
         body = int(np.argmin(rec_err))
@@ -273,7 +299,8 @@ def _render_row(env, q: np.ndarray, idxs: list[int], colors: list[list[float]],
 def _render_kick_strip(run_dir: Path, examples: list[tuple], t_perturb: int,
                        checkpoint: str, n_copies: int = 11,
                        bottom_crop: float = 0.0,
-                       prefer_flat: bool = False) -> np.ndarray | None:
+                       prefer_flat: bool = False,
+                       prefer_reared: bool = False) -> np.ndarray | None:
     """Two (or more) code examples side by side, each a grey→red→grey row of
     snapshots: baseline (grey) → shoved (red) → recovered (grey). ``prefer_flat``
     biases body selection toward a horizontal (walk-like) posture for locomotor
@@ -291,7 +318,8 @@ def _render_kick_strip(run_dir: Path, examples: list[tuple], t_perturb: int,
         for cid, amp, label in examples:
             q_all = np.asarray(_load(run_dir, cid, amp, "qpos"), dtype=np.float64)
             body, idxs = _select_body_frames(q_all, t_perturb, n_copies,
-                                             prefer_flat=prefer_flat)
+                                             prefer_flat=prefer_flat,
+                                             prefer_reared=prefer_reared)
             q = q_all[body]
             cpost = max(idxs[-1] - t_perturb, 1)
             colors = [_phase_color(int(t), t_perturb, cpost) for t in idxs]
@@ -372,7 +400,7 @@ def _deviation_with_control(base: Path, s: str, summ: dict):
         return None
     wrong = {c: codes[(i + 1) % len(codes)] for i, c in enumerate(codes)}
     try:
-        own, ctrl = _recovery_deviation(base / s, codes, amps, wrong)
+        own, ctrl, div = _recovery_deviation(base / s, codes, amps, wrong)
     except Exception as e:  # noqa: BLE001
         log.warning(f"deviation failed for {s}: {e}")
         return None
@@ -382,25 +410,33 @@ def _deviation_with_control(base: Path, s: str, summ: dict):
 
 
 def _beh_mean_recovery(summ: dict, bcodes: list[int], n_amp: int) -> np.ndarray:
-    """Mean pose recovery_frac over a behavior's codes, per amplitude (NaN-safe)."""
+    """Mean recovered displacement over a behavior's codes, per amplitude.
+
+    The experiment's ``recovery_frac``: the share of the impulse-induced
+    excursion in the distance to the code's attractor that has decayed by the
+    end of the episode. Its denominator is that excursion, which the axis label
+    names ("displacement recovered"). Codes whose value is undefined at a given
+    amplitude are skipped.
+    """
     out = []
     for i in range(n_amp):
-        vals = []
-        for c in bcodes:
-            v = summ["codes"][str(c)]["spaces"]["pose"]["metrics"][i].get("recovery_frac")
-            if v is not None and np.isfinite(float(v)):
-                vals.append(float(v))
+        vals = [float(summ["codes"][str(c)]["spaces"]["pose"]["metrics"][i]["recovery_frac"])
+                for c in bcodes
+                if summ["codes"][str(c)]["spaces"]["pose"]["metrics"][i].get("recovery_frac")
+                is not None
+                and np.isfinite(float(summ["codes"][str(c)]["spaces"]["pose"]["metrics"][i]["recovery_frac"]))]
         out.append(float(np.mean(vals)) if vals else np.nan)
     return np.array(out)
 
 
 def _render_only_strategy(s: str, summ: dict, base: Path, out_dir: Path) -> None:
-    """Standalone 2-panel figure for ONE steering strategy: pose recovery
-    fraction (left) and post-impulse pose deviation with floor + foreign-code
-    control band (right), one line per behavior. Used for the main Fig 3 (c,d),
-    which is mlb-only. Reuses the same per-behavior curve + control-band logic as
-    the all-strategy figure (``_beh_mean_recovery`` / ``_recovery_deviation``).
-    Emits ``perturbation_recovery_<s>.{pdf,png}``."""
+    """Standalone panels for ONE steering strategy, used by the main contraction
+    figure (mlb): pose recovery fraction ``(b)`` and post-impulse pose deviation
+    ``(c)`` are each rendered as their own equally sized square panel, plus a
+    shared horizontal legend, so the figure can place ``(a)`` confusion, ``(b)``
+    and ``(c)`` at the same size on one row with the legend beneath all three.
+    Reuses ``_beh_mean_recovery`` / ``_recovery_deviation``. Emits
+    ``perturbation_recovery_<s>_{rec,dev,legend}.{pdf,png}``."""
     from matplotlib.lines import Line2D
 
     amps = [float(a) for a in summ["amplitudes"]]
@@ -408,55 +444,88 @@ def _render_only_strategy(s: str, summ: dict, base: Path, out_dir: Path) -> None
     beh_of = {int(c): summ["codes"][c].get("behavior") for c in summ["codes"]}
     wrong = {c: codes[(i + 1) % len(codes)] for i, c in enumerate(codes)}
     try:
-        own, ctrl = _recovery_deviation(base / s, codes, amps, wrong)
+        own, ctrl, div = _recovery_deviation(base / s, codes, amps, wrong)
+        if div:
+            log.warning(f"[{s}] destabilized bodies excluded from MMD: "
+                        + ", ".join(f"code {c} amp {a:g}: {n}"
+                                     for (c, a), n in sorted(div.items())))
     except Exception as e:  # noqa: BLE001
         log.warning(f"deviation failed for {s}: {e}"); own, ctrl = {}, {}
+    seen_beh = [b for b in BEHAVIOR_ORDER
+                if any(beh_of[c] == b for c in codes)]
 
-    fig, axes = plt.subplots(1, 2, squeeze=False, figsize=(10.2, 4.9))
-    ax_rec, ax_dev = axes[0]
-    for ax, tag in ((ax_rec, "(c)"), (ax_dev, "(d)")):
-        ax.text(-0.05, 1.06, tag, transform=ax.transAxes, fontsize=25,
+    def _save(fig, suffix, pad=0.15):
+        for ext in ("pdf", "png"):
+            fig.savefig(out_dir / f"perturbation_recovery_{s}_{suffix}.{ext}",
+                        dpi=200, bbox_inches="tight", pad_inches=pad,
+                        facecolor="white")
+        plt.close(fig)
+
+    # ---- panel (b): recovery fraction ----
+    fig, ax = plt.subplots(figsize=(5.4, 5.0))
+    if BURN_LABELS:
+        ax.text(-0.02, 1.04, "(b)", transform=ax.transAxes, fontsize=26,
                 fontweight="bold", va="bottom")
-    ax_rec.set_ylabel("pose recovery frac.", fontsize=20)
-    ax_dev.set_ylabel("pose deviation", fontsize=20)
-    seen_beh: list[str] = []
+    ax.set_ylabel("displacement recovered", fontsize=22)
     for b in BEHAVIOR_ORDER:
         bc = [c for c in codes if beh_of[c] == b]
         if not bc:
             continue
-        col = BEHAVIOR_COLORS.get(b, "0.5")
         rec = _beh_mean_recovery(summ, bc, len(amps))
         ok = ~np.isnan(rec)
         if ok.any():
-            ax_rec.plot(np.array(amps)[ok], rec[ok], "o-", lw=1.8, color=col,
-                        label=b)
+            ax.plot(np.array(amps)[ok], rec[ok], "o-", lw=2.0,
+                    color=BEHAVIOR_COLORS.get(b, "0.5"))
+    ax.set_ylim(0, 1.02); ax.grid(alpha=0.3)
+    ax.set_xlabel("impulse strength (a.u.)")
+    fig.tight_layout(); _save(fig, "rec")
+
+    # ---- panel (c): post-impulse deviation ----
+    fig, ax = plt.subplots(figsize=(5.4, 5.0))
+    if BURN_LABELS:
+        ax.text(-0.02, 1.04, "(c)", transform=ax.transAxes, fontsize=26,
+                fontweight="bold", va="bottom")
+    ax.set_ylabel("pose deviation", fontsize=22)
+    for b in BEHAVIOR_ORDER:
+        bc = [c for c in codes if beh_of[c] == b]
         dv = [own[c] for c in bc if c in own]
         if dv:
-            ax_dev.plot(amps, np.nanmean(np.array(dv), axis=0), "o-", lw=1.8,
-                        color=col, label=b)
-        if b not in seen_beh:
-            seen_beh.append(b)
+            ax.plot(amps, np.nanmean(np.array(dv), axis=0), "o-", lw=2.0,
+                    color=BEHAVIOR_COLORS.get(b, "0.5"))
     if own:
-        ax_dev.axhline(float(np.nanmean([own[c][0] for c in codes if c in own])),
-                       color="0.45", ls=":", lw=1.1)
+        ax.axhline(float(np.nanmean([own[c][0] for c in codes if c in own])),
+                   color="0.45", ls=":", lw=1.3)
     if ctrl:
-        ax_dev.axhline(float(np.nanmean([ctrl[c] for c in codes if c in ctrl])),
-                       color="0.6", ls="--", lw=1.0)
-    ax_rec.set_ylim(0, 1.02); ax_rec.grid(alpha=0.3)
-    ax_dev.set_ylim(bottom=0); ax_dev.grid(alpha=0.3)
-    ax_rec.set_xlabel("impulse strength (a.u.)"); ax_dev.set_xlabel("impulse strength (a.u.)")
-    beh_h = [Line2D([], [], marker="o", color=BEHAVIOR_COLORS.get(b, "0.5"),
-                    label=b) for b in BEHAVIOR_ORDER if b in seen_beh]
+        ax.axhline(float(np.nanmean([ctrl[c] for c in codes if c in ctrl])),
+                   color="0.6", ls="--", lw=1.2)
+    ax.set_ylim(bottom=0); ax.grid(alpha=0.3)
+    ax.set_xlabel("impulse strength (a.u.)")
+    fig.tight_layout(); _save(fig, "dev")
+
+    # ---- shared horizontal legend (covers panels a, b and c) ----
+    # One key for the whole figure: the decomposition segments of (a) followed
+    # by the behavior colors and reference lines of (b, c), all at one size.
+    from matplotlib.patches import Patch
+    from c2a.figures.paper.render_roundtrip_figure import SEG_COLORS, SEG_LABELS
+    seg_h = [Patch(facecolor=c, edgecolor="white", label=l.replace("\n", " "))
+             for c, l in zip(SEG_COLORS, SEG_LABELS)]
+    beh_h = [Patch(facecolor=BEHAVIOR_COLORS.get(b, "0.5"), edgecolor="none",
+                   label=b) for b in BEHAVIOR_ORDER if b in seen_beh]
     ctrl_h = [Line2D([], [], color="0.45", ls=":", label="unperturbed floor"),
               Line2D([], [], color="0.6", ls="--", label="foreign code (control)")]
-    fig.legend(handles=beh_h + ctrl_h, loc="lower center",
-               ncol=len(beh_h) + 2, frameon=False, bbox_to_anchor=(0.5, -0.02))
-    fig.tight_layout(rect=[0, 0.08, 1, 1])
-    for ext in ("pdf", "png"):
-        fig.savefig(out_dir / f"perturbation_recovery_{s}.{ext}", dpi=200,
-                    bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-    print(f"wrote {out_dir}/perturbation_recovery_{s}.pdf/.png (2-panel, {s})")
+    figL, axL = plt.subplots(figsize=(13.0, 1.9)); axL.axis("off")
+    kw = dict(frameon=False, fontsize=26, columnspacing=1.8, handletextpad=0.6,
+              handlelength=1.6, handleheight=1.5)
+    # Two explicit rows rather than one ncol grid: matplotlib fills column-major,
+    # which would split panel (a)'s three segments across columns.
+    l1 = axL.legend(handles=seg_h, loc="upper center", ncol=3,
+                    bbox_to_anchor=(0.5, 1.05), **kw)
+    axL.add_artist(l1)
+    axL.legend(handles=beh_h + ctrl_h, loc="lower center", ncol=6,
+               bbox_to_anchor=(0.5, -0.05), **kw)
+    _save(figL, "legend", pad=0.05)
+    print(f"wrote {out_dir}/perturbation_recovery_{s}_{{rec,dev,legend}}.pdf/.png "
+          f"(3-part, {s})")
 
 
 def main():
@@ -485,9 +554,9 @@ def main():
         strat, _, beh = key.partition(":")
         film_pick[(strat, beh)] = int(val)
 
-    plt.rcParams.update({"font.size": 22, "axes.labelsize": 22,
-                         "xtick.labelsize": 19, "ytick.labelsize": 19,
-                         "legend.fontsize": 18})
+    plt.rcParams.update({"font.size": 24, "axes.labelsize": 24,
+                         "xtick.labelsize": 21, "ytick.labelsize": 21,
+                         "legend.fontsize": 21})
     root = get_repo_root()
     base = root / args.base
     want = args.strategies if args.strategies else STRATEGY_ORDER
@@ -523,7 +592,7 @@ def main():
     BEHAVIOR_ORDER = ["Immobile", "Rear", "Walk", "Turn"]
     tags = [["(a)", "(b)"], ["(c)", "(d)"], ["(e)", "(f)"]]
     fig, axes = plt.subplots(len(STRATEGY_ORDER), 2, squeeze=False,
-                             figsize=(10.0, 3.7 * len(STRATEGY_ORDER)))
+                             figsize=(12.0, 3.9 * len(STRATEGY_ORDER)))
     seen_beh: list[str] = []
     for r, s in enumerate(STRATEGY_ORDER):
         ax_rec, ax_dev = axes[r]
@@ -531,9 +600,11 @@ def main():
                     fontsize=25, fontweight="bold", va="bottom")
         ax_dev.text(-0.05, 1.06, tags[r][1], transform=ax_dev.transAxes,
                     fontsize=25, fontweight="bold", va="bottom")
-        ax_rec.set_ylabel(f"{STRATEGY_LABELS[s].split(' (')[0]}\npose recovery frac.",
-                          fontsize=18)
-        ax_dev.set_ylabel("pose deviation", fontsize=18)
+        # Short strategy tag: a rotated two-line label built from the full name
+        # is taller than the (now wide, short) panel and clips.
+        short = {"kpms": "kpms", "best_vae": "kvae", "mlb": "mlb"}.get(s, s)
+        ax_rec.set_ylabel(f"{short}\ndisplacement recovered", fontsize=17)
+        ax_dev.set_ylabel("pose deviation", fontsize=17)
         if s not in strategies:
             for ax in (ax_rec, ax_dev):
                 ax.text(0.5, 0.5, "pending mlb retrain (TBD)", ha="center",
@@ -547,7 +618,11 @@ def main():
         beh_of = {int(c): summ["codes"][c].get("behavior") for c in summ["codes"]}
         wrong = {c: codes[(i + 1) % len(codes)] for i, c in enumerate(codes)}
         try:
-            own, ctrl = _recovery_deviation(base / s, codes, amps, wrong)
+            own, ctrl, div = _recovery_deviation(base / s, codes, amps, wrong)
+            if div:
+                log.warning(f"[{s}] destabilized bodies excluded from MMD: "
+                            + ", ".join(f"code {c} amp {a:g}: {n}"
+                                         for (c, a), n in sorted(div.items())))
         except Exception as e:  # noqa: BLE001
             log.warning(f"deviation failed for {s}: {e}"); own, ctrl = {}, {}
         for b in BEHAVIOR_ORDER:
@@ -614,7 +689,8 @@ def main():
                     cid = bc[0]
                 img = _render_kick_strip(base / s, [(cid, amp, "")], t_perturb,
                                          ckpt, n_copies=9, bottom_crop=0.16,
-                                         prefer_flat=(beh == "Walk"))
+                                         prefer_flat=(beh == "Walk"),
+                                         prefer_reared=(beh == "Rear"))
                 if img is not None:
                     cells[(s, beh)] = img
                     print(f"  filmstrip {s}/{beh}: code {cid}, amp {amp}")

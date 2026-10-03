@@ -236,6 +236,11 @@ def main():
     ap.add_argument("--anchor-mode", default="auto",
                     choices=["auto", "on", "off"],
                     help="overlay translating (walk) copies in place: auto|on|off")
+    ap.add_argument("--grid", default="behavior3x3",
+                    choices=["behavior3x3", "compact2x5"],
+                    help="montage layout: behavior3x3 (rows=behavior, cols=L/S/R) or "
+                         "compact2x5 (2 rows x 5 cols, moving then postural, with a "
+                         "blocky behavior legend in the 10th cell)")
     ap.add_argument("--cam-elev", type=float, default=-22.0)
     ap.add_argument("--cam-azim", type=float, default=-130.0)
     ap.add_argument("--cam-fovy", type=float, default=45.0)
@@ -322,26 +327,46 @@ def main():
         log.info(f"  code {cid:2d} {meta[cid]['label']:14s} body {best} "
                  f"span={world_span:.2f} anchor={anchor}")
 
-    # ---- montage: fixed 3x3 MLB_GRID layout (rows = behavior; cols = L/center/R;
-    # Immobile in the Turn-row center). Each cell title = "<short>  (code N)".
-    nrow, ncol = len(MLB_GRID), len(MLB_GRID[0])
+    # ---- montage layout ----
+    if args.grid == "compact2x5":
+        # 2 rows x 5 cols: row 1 = moving (walk, turn), row 2 = postural
+        # (rear, immobile) + a blocky behavior legend in the last (10th) cell,
+        # filling the whitespace that a 9-into-10 grid leaves.
+        from matplotlib.patches import Patch
+        layout = [
+            ["Walk_Left", "Walk_Straight", "Walk_Right", "Turn_Left", "Turn_Right"],
+            ["Rear_Left", "Rear_Straight", "Rear_Right", "Immobile", "__LEGEND__"],
+        ]
+        nrow, ncol = 2, 5
+    else:  # behavior3x3
+        layout = [list(row) for row in MLB_GRID]
+        nrow, ncol = len(MLB_GRID), len(MLB_GRID[0])
+
     fig, axes = plt.subplots(nrow, ncol, figsize=(3.0 * ncol, 2.7 * nrow),
                              squeeze=False)
-    for ri, row in enumerate(MLB_GRID):
+    for ri, row in enumerate(layout):
         for ci, label in enumerate(row):
             ax = axes[ri][ci]
             ax.set_axis_off()
+            if label == "__LEGEND__":
+                handles = [Patch(facecolor=tuple(MLB_COLORS[l]), edgecolor="none",
+                                 label=MLB_SHORT[l]) for l in MLB_LABELS]
+                ax.legend(handles=handles, title="behavior", loc="center",
+                          ncol=2, fontsize=17, title_fontsize=19, frameon=False,
+                          handlelength=1.5, handleheight=1.5, handletextpad=0.5,
+                          columnspacing=1.0, labelspacing=0.7)
+                continue
             cid = MLB_LABEL_TO_INT[label]
             color = tuple(MLB_COLORS[label])
             if cid not in frames:
                 # placeholder cell (rollout not yet rendered, e.g. Phase B)
-                ax.text(0.5, 0.5, f"{MLB_SHORT[label]}\n(code {cid})",
+                ax.text(0.5, 0.5, f"{MLB_SHORT[label]}",
                         transform=ax.transAxes, ha="center", va="center",
-                        fontsize=13, color=color, fontweight="bold")
+                        fontsize=24, color=color, fontweight="bold")
                 continue
             ax.imshow(frames[cid])
-            ax.set_title(f"{MLB_SHORT[label]}  (code {cid})",
-                         fontsize=14, color=color, pad=4)
+            ax.set_title(f"{MLB_SHORT[label]}",
+                         fontsize=26, color=color, pad=6)
     fig.tight_layout()
 
     out_dir = root / "outputs" / "figures" / "codebook_atlas"
@@ -351,7 +376,7 @@ def main():
                     bbox_inches="tight", facecolor="white")
     plt.close(fig)
     log.info(f"Saved {out_dir}/codebook_atlas_{args.run}.pdf / .png "
-             f"({len(frames)}/9 codes rendered, 3x3 grid)")
+             f"({len(frames)}/9 codes rendered, {nrow}x{ncol} {args.grid})")
 
 
 if __name__ == "__main__":
