@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = {text = "BSD-3-Clause"}
 authors = [
-    {name = "Kaiwen Bian", email = "kaiwen@talmolab.org"},
+    {name = "Kaiwen Bian", email = "kbian@ucsd.edu"},
     {name = "Charles Zhang", email = "charleszhang@fas.harvard.edu"},
     {name = "Talmo Pereira", email = "talmo@salk.edu"},
 ]
