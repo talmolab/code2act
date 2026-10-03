@@ -21,13 +21,14 @@ Talmo D. Pereira<sup>1,2</sup>
 
 Code for *Discrete Actions for Naturalistic Behavior in Embodied Biomechanical
 Animal Models*<br>
-NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo), oral, non-archival
+NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo), oral
 
-[**Project page**](https://kbian.org/Code2Act-website/) &nbsp;|&nbsp;
-[**Code**](https://github.com/talmolab/code2act) &nbsp;|&nbsp;
-[**Citation**](#citation) &nbsp;|&nbsp;
-[**License**](LICENSE)
-<!-- Add the paper link (OpenReview / arXiv) here once it is public. -->
+[![Project Page](https://img.shields.io/badge/Project-Page-2b7bb9)](https://kbian.org/Code2Act-website/)
+![Venue](https://img.shields.io/badge/NEmo%202026-Oral-6f42c1)
+[![MIMIC-MJX](https://img.shields.io/badge/built%20on-MIMIC--MJX-orange)](https://mimic-mjx.talmolab.org/)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-green.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+<!-- Add a Paper badge (OpenReview / arXiv) and link the Venue badge to the workshop site once public. -->
 
 </div>
 
