@@ -48,6 +48,9 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 # ---------------------------------------------------------------------------
 # KPMS codes (K=100, s100_k1e+02_l10_arhmm seed4 — sweep best).
 # num_codes=100 is auto-detected from the npz; no CLI override needed.
+# This is the manuscript tokenizer, fit with fix_heading=True
+# (c2a/configs/kpms_sweep_k100.yaml); every KPMS experiment in the paper
+# uses it, through controller 260611_073323_750085.
 # ---------------------------------------------------------------------------
 CODES_PATH="outputs/tokenizer/kpms_sweep/s100_k1e+02_l10_arhmm/seed4/best_codes.npz"
 

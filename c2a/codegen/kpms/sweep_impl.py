@@ -778,6 +778,12 @@ def run_sweep(cfg: dict) -> dict:
     )
     log.info(f"Loaded keypoints: {keypoints.shape}, {len(kp_names)} keypoints")
 
+    # Optional Keypoint-MoSeq setup overrides (fix_heading, fps,
+    # anterior_bodypart, posterior_bodypart). Absent keys keep the manuscript
+    # setup defined in fit_kpms.py.
+    setup_kwargs = dict(cfg.get("kpms_setup") or {})
+    log.info(f"KPMS setup overrides: {setup_kwargs or 'none (manuscript setup)'}")
+
     # Derive the positional clip-index array for coverage metrics. KPMS fits
     # will produce ``fit_result.labels_list`` in the same order as
     # ``keypoints``, which is the balanced-split sorted order (see
@@ -885,6 +891,7 @@ def run_sweep(cfg: dict) -> dict:
                     hyperparams=hp,
                     seed=seed,
                     kp_names=kp_names,
+                    **setup_kwargs,
                 )
                 original, reconstructed = _reconstruct_keypoints(fit_result)
                 metrics = _compute_metrics(

@@ -12,8 +12,8 @@ Usage:
 
 import os
 
-os.environ["MUJOCO_GL"] = "egl"
-os.environ["PYOPENGL_PLATFORM"] = "egl"
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import logging

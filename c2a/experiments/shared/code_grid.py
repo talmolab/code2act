@@ -174,6 +174,10 @@ def _median_pairwise(samples: np.ndarray, max_pairs: int = 5000) -> float:
     j = rng.randint(0, n, size=max_pairs)
     mask = i != j
     d = np.linalg.norm(samples[i[mask]] - samples[j[mask]], axis=1)
+    # Drop non-finite pairs: np.median propagates a single nan to the whole
+    # bandwidth, which then drives every kernel entry -- and so every MMD that
+    # shares this sigma -- to nan, silently reported as a distance of zero.
+    d = d[np.isfinite(d)]
     if d.size == 0:
         return 1.0
     return float(np.median(d))

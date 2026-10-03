@@ -1,0 +1,97 @@
+# =============================================================================
+# KPMS K=100 sweep - fix_heading=False (2026-08-10)
+# =============================================================================
+# NOT the manuscript setup: the paper's KPMS results all use
+# kpms_sweep_k100.yaml (fix_heading=True). This is the fix_heading=False
+# variant, which opts in through the kpms_setup block below. The two give
+# similar tokenizer-level results (numbers in c2a/codegen/kpms/fit_kpms.py).
+#
+# fix_heading=True is documented upstream as head-fixed-only; it skips
+# egocentric rotation and pins the heading state at zero, leaving ~79% of the
+# PCA latent's variance as the animal's world heading (probe:
+# scratch/research/2026-08-09-kpms-fix-heading/). fix_heading=False rotates
+# each frame onto the body axis before PCA instead.
+#
+# Differences from kpms_sweep_k100.yaml:
+#   1. kpms_setup: fix_heading=False, body axis Snout -> TailBase
+#      (the fix_heading=True config's AnkleL -> WristR came from an
+#      alphabetical positional pick, inert under fix_heading=True), fps=50.
+#   2. selection.mocap_hz 15 -> 50. Clips are 250 frames at the 50 Hz
+#      reference = 5 s, not 16.67 s. The Weinreb 400 ms target is therefore
+#      20 frames, not 6; under the old value no fit cleared the window and
+#      selection fell back to "5 closest to target".
+#   3. kappa grid shifted ~100x upward. Without the heading component the
+#      latent dynamics are faster, so the fix_heading=True grid (100-2e4)
+#      cannot reach a 400 ms median duration. A pilot sweep put the target at
+#      kappa ~1e4.
+#
+# Output paths keep the original directory name (kpms_sweep_aligned): the
+# existing fix_heading=False fits live there and controller
+# 260811_161600_907732 references them. The fix_heading=True artifacts under
+# outputs/tokenizer/kpms_sweep/ are untouched.
+#
+# Usage:
+#   python3.12 bash_scripts/_pyrun.py c2a.codegen.run_sweep \
+#       --config c2a/configs/kpms_sweep_k100_fix_heading_false.yaml
+# =============================================================================
+
+model: kpms
+
+data:
+  reference_data_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_reference_clips.h5
+  balanced_split_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  stac_xml_path: ${oc.env:C2A_ROOT,.}/c2a/assets/rodent.xml
+  labels_path: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_labels.csv
+  labeled_clip_range: [0, 841]
+  csv_to_h5_subsample: 2
+
+# fix_heading=False setup (the manuscript uses fix_heading=True; see fit_kpms.py).
+kpms_setup:
+  fix_heading: false
+  anterior_bodypart: Snout
+  posterior_bodypart: TailBase
+  fps: 50
+
+sweep:
+  num_states: [100]
+  # Brackets the pilot optimum (kappa 1e4 -> 20-frame median duration).
+  kappa: [2000, 5000, 10000, 20000, 50000, 100000]
+  latent_dim: [10]
+  model_type: ["arhmm", "slds"]
+  seeds_per_setting: 5
+  ar_iters: 100
+  full_iters: 500
+
+selection:
+  target_duration_ms: 400      # Weinreb 2024 rodent recommendation
+  mocap_hz: 50                 # true reference rate -> target = 20 frames
+  tolerance_frac: 0.3
+
+output:
+  base_dir: outputs/tokenizer/kpms_sweep_aligned
+
+codegen:
+  sweep_results: outputs/tokenizer/kpms_sweep_aligned/sweep_results.json
+  balanced_split: ${oc.env:C2A_ROOT,.}/data/rodent/rodent_balanced_splits.json
+  output: outputs/tokenizer/kpms_sweep_aligned/best_codes.npz
+
+auto_render:
+  rank: mse
+  top_k: 5
+  trajectory_plots: true
+  trajectory_plots_kwargs:
+    pre: 0.1
+    post: 0.3
+    min_frequency: 0.0
+    min_duration: 3
+    fps: 50
+    projection_planes: ["xy", "xz"]
+    n_snapshots: 5
+    n_samples_per_syllable: 50
+    keypoint_colormap: autumn
+    save_png: true
+    save_gifs: true
+  syllable_grids: false
+  n_examples: 5
+  bout_strategy: longest
+  format: both

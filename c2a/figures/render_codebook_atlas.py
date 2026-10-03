@@ -352,7 +352,7 @@ def main():
                 handles = [Patch(facecolor=tuple(MLB_COLORS[l]), edgecolor="none",
                                  label=MLB_SHORT[l]) for l in MLB_LABELS]
                 ax.legend(handles=handles, title="behavior", loc="center",
-                          ncol=2, fontsize=12, title_fontsize=14, frameon=False,
+                          ncol=2, fontsize=17, title_fontsize=19, frameon=False,
                           handlelength=1.5, handleheight=1.5, handletextpad=0.5,
                           columnspacing=1.0, labelspacing=0.7)
                 continue
@@ -360,13 +360,13 @@ def main():
             color = tuple(MLB_COLORS[label])
             if cid not in frames:
                 # placeholder cell (rollout not yet rendered, e.g. Phase B)
-                ax.text(0.5, 0.5, f"{MLB_SHORT[label]}\n(code {cid})",
+                ax.text(0.5, 0.5, f"{MLB_SHORT[label]}",
                         transform=ax.transAxes, ha="center", va="center",
-                        fontsize=13, color=color, fontweight="bold")
+                        fontsize=24, color=color, fontweight="bold")
                 continue
             ax.imshow(frames[cid])
-            ax.set_title(f"{MLB_SHORT[label]}  (code {cid})",
-                         fontsize=14, color=color, pad=4)
+            ax.set_title(f"{MLB_SHORT[label]}",
+                         fontsize=26, color=color, pad=6)
     fig.tight_layout()
 
     out_dir = root / "outputs" / "figures" / "codebook_atlas"

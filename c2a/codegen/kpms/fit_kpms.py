@@ -55,6 +55,76 @@ class KPMSFitResult:
     labels_list: list[np.ndarray]
 
 
+# -----------------------------------------------------------------------------
+# Manuscript setup (NeMo 2026). The defaults below are the Keypoint-MoSeq setup
+# behind every KPMS result in the paper: tokenizer
+# outputs/tokenizer/kpms_sweep/s100_k1e+02_l10_arhmm/seed4 (its saved
+# config.yml records fix_heading=True, fps=30, anterior/posterior AnkleL/WristR)
+# driving controller model_checkpoints/260611_073323_750085. Do not change them
+# without re-running every KPMS experiment.
+#
+# fix_heading=True is upstream's head-fixed setting: Keypoint-MoSeq skips
+# egocentric rotation and pins the heading state at zero, so the PCA latent
+# keeps the rat's world heading and the anterior/posterior bodyparts are inert.
+#
+# Using fix_heading=True gives results similar to fix_heading=False
+# (Snout -> TailBase body axis, fps=50, kappa=1e4 to match the 400 ms target
+# duration). Compared on the fitted tokenizers:
+#   - effective codes (of 100):  6.7 (fix_heading=True)  vs  8.5 (False)
+#   - NMI vs behavior labels:    0.294                   vs  0.268
+#   - NMI vs world yaw:          0.021                   vs  0.040
+# The syllables carry little heading information in either setup, and both
+# show the same usage concentration on a handful of codes that the paper
+# reports. This comparison is at the tokenizer level; the paper's controller
+# experiments were run only on the fix_heading=True tokenizer. Details:
+# scratch/research/2026-08-09-kpms-fix-heading/. fix_heading=False is opt-in
+# via the keyword arguments of fit_kpms_keypoints
+# (c2a/configs/kpms_sweep_k100_fix_heading_false.yaml).
+# -----------------------------------------------------------------------------
+MANUSCRIPT_FIX_HEADING = True
+MANUSCRIPT_FPS = 30
+
+
+def _resolve_alignment_bodyparts(
+    kp_names: list[str],
+    anterior: str | None,
+    posterior: str | None,
+) -> tuple[list[str], list[str]]:
+    """Resolve the egocentric-alignment axis.
+
+    With both names ``None`` this reproduces the manuscript setup, which picks
+    ``kp_names[0]`` / ``kp_names[-1]`` positionally (``AnkleL`` / ``WristR``
+    for the alphabetical H5 order; inert under ``fix_heading=True``). Named
+    bodyparts are validated rather than guessed.
+
+    Args:
+        kp_names: Available keypoint names.
+        anterior: Anterior bodypart name, or ``None`` for the manuscript pick.
+        posterior: Posterior bodypart name, or ``None`` for the manuscript pick.
+
+    Returns:
+        ``(anterior_bodyparts, posterior_bodyparts)`` as single-element lists.
+
+    Raises:
+        ValueError: If only one name is given, or a name is not in
+            ``kp_names``.
+    """
+    if anterior is None and posterior is None:
+        return [kp_names[0]], [kp_names[-1]]
+    if anterior is None or posterior is None:
+        raise ValueError(
+            "Pass both anterior_bodypart and posterior_bodypart, or neither "
+            "(manuscript setup)."
+        )
+    missing = [n for n in (anterior, posterior) if n not in kp_names]
+    if missing:
+        raise ValueError(
+            f"Egocentric-alignment bodyparts {missing} are not in kp_names "
+            f"({kp_names})."
+        )
+    return [anterior], [posterior]
+
+
 def fit_kpms_keypoints(
     keypoint_data: np.ndarray,
     n_states: int,
@@ -63,6 +133,10 @@ def fit_kpms_keypoints(
     seed: int,
     kp_names: list[str] | None = None,
     clear_project: bool = True,
+    anterior_bodypart: str | None = None,
+    posterior_bodypart: str | None = None,
+    fps: int = MANUSCRIPT_FPS,
+    fix_heading: bool = MANUSCRIPT_FIX_HEADING,
 ) -> KPMSFitResult:
     """Fit a KPMS model on keypoint trajectories.
 
@@ -74,9 +148,26 @@ def fit_kpms_keypoints(
         seed: Random seed.
         kp_names: Keypoint names (defaults to ``kp_0``, ``kp_1``, ...).
         clear_project: Remove existing project directory before fitting.
+        anterior_bodypart: Anterior end of the alignment axis. ``None`` (with
+            ``posterior_bodypart=None``) keeps the manuscript's positional pick.
+        posterior_bodypart: Posterior end of the alignment axis.
+        fps: Frame rate written to the KPMS project. Defaults to the
+            manuscript value (30); the reference clips are 50 Hz.
+        fix_heading: Skip egocentric alignment and pin the heading state at
+            zero. Defaults to the manuscript value (``True``); see the
+            manuscript-setup note above.
 
     Returns:
         KPMSFitResult with model, results, labels.
+
+    Note:
+        ``fix_heading=True`` makes Keypoint-MoSeq skip egocentric rotation
+        (``jax_moseq`` ``alignment.preprocess_for_pca``) and stop resampling
+        the heading state (``gibbs.resample_model``), so the PCA latent the
+        AR-HMM segments retains the animal's world heading, and
+        ``anterior_bodyparts`` / ``posterior_bodyparts`` become inert. On this
+        corpus that left ~79% of latent variance as heading. Switching it off
+        needs ~100x higher ``kappa`` to reach the 400 ms target duration.
     """
     if not HAS_KPMS:
         raise ImportError(
@@ -95,23 +186,27 @@ def fit_kpms_keypoints(
         shutil.rmtree(project_path)
     project_path.mkdir(parents=True, exist_ok=True)
 
+    anterior_bodyparts, posterior_bodyparts = _resolve_alignment_bodyparts(
+        kp_names, anterior_bodypart, posterior_bodypart
+    )
+
     # Setup project config
     kpms.setup_project(
         project_dir,
-        fix_heading=True,
+        fix_heading=fix_heading,
         bodyparts=kp_names,
         skeleton=[],
-        fps=30,
+        fps=fps,
         overwrite=True,
     )
 
     kpms.update_config(
         project_dir,
-        fix_heading=True,
+        fix_heading=fix_heading,
         bodyparts=kp_names,
         use_bodyparts=kp_names,
-        anterior_bodyparts=[kp_names[0]],
-        posterior_bodyparts=[kp_names[-1]],
+        anterior_bodyparts=anterior_bodyparts,
+        posterior_bodyparts=posterior_bodyparts,
         verbose=False,
         latent_dim=hyperparams.latent_dim,
         num_states=n_states,
