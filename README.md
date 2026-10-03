@@ -21,7 +21,7 @@ Talmo D. Pereira<sup>1,2</sup>
 
 Code for *Discrete Actions for Naturalistic Behavior in Embodied Biomechanical
 Animal Models*<br>
-NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo), non-archival
+NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo), oral, non-archival
 
 [**Project page**](https://kbian.org/Code2Act-website/) &nbsp;|&nbsp;
 [**Code**](https://github.com/talmolab/code2act) &nbsp;|&nbsp;
@@ -252,12 +252,12 @@ The full tree, and where every output and checkpoint is written, is in
 ## Citation
 
 ```bibtex
-@misc{bian2026code2act,
+@article{bian2026code2act,
   title        = {Discrete Actions for Naturalistic Behavior in Embodied Biomechanical Animal Models},
   author       = {Bian, Kaiwen and Zhang, Charles Y. and Yang, Yuanjia and Sirbu, Aidan and
                   Leonardis, Eric J. and Richards, Blake A. and {\"O}lveczky, Bence P. and
                   Pereira, Talmo D.},
-  howpublished = {NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo)},
+  journal      = {NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo)},
   year         = {2026}
 }
 ```
