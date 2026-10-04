@@ -253,13 +253,13 @@ The full tree, and where every output and checkpoint is written, is in
 ## Citation
 
 ```bibtex
-@article{bian2026code2act,
-  title        = {Discrete Actions for Naturalistic Behavior in Embodied Biomechanical Animal Models},
-  author       = {Bian, Kaiwen and Zhang, Charles Y. and Yang, Yuanjia and Sirbu, Aidan and
-                  Leonardis, Eric J. and Richards, Blake A. and {\"O}lveczky, Bence P. and
-                  Pereira, Talmo D.},
-  journal      = {NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo)},
-  year         = {2026}
+@inproceedings{bian2026code2act,
+  title     = {Discrete Actions for Naturalistic Behavior in Embodied Biomechanical Animal Models},
+  author    = {Bian, Kaiwen and Zhang, Charles Y. and Yang, Yuanjia and Sirbu, Aidan and
+               Leonardis, Eric J. and Richards, Blake A. and {\"O}lveczky, Bence P. and
+               Pereira, Talmo D.},
+  booktitle = {NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo)},
+  year      = {2026}
 }
 ```
 
