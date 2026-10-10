@@ -71,3 +71,7 @@ ideas.pdf
 
 # Paper PDF (local copy only)
 /bian_NEmo_2026.pdf
+
+# Talk slides (NEmo oral): build sources, rendered media, and the deck
+slides/
+*.pptx
