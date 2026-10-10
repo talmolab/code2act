@@ -3,6 +3,8 @@
 track-mjx/
 propel/
 Code2Act-website/
+code2act-control-website/
+.venv-webdemo/
 venv/
 env/
 _pyrun.py
