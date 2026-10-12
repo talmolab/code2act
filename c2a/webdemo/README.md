@@ -45,18 +45,33 @@ out based on the round-trip summary:
 - Walk S and Rear S are read as Walk L and Rear R (exact recall 0.00 and 0.07).
 - Turn L is almost never performed (0.02).
 
-`DEMO_PRESETS` uses only these six symbols and only switches the pair
-experiment reaches reliably. The scores below are from MuJoCo C, 48 start
-poses, median / mean labeler agreement:
+`DEMO_PRESETS` (2026-10-12) came out of a search over 56 chains of 4–6 palette
+symbols with 2.5 s holds. The chains were 10 hand-written plus random ones
+that avoid the fragile switches below. Each chain was run from all 48 start
+poses in MuJoCo C. The kept chains had the highest share of bodies with
+**every** phase read as commanded:
 
-| Preset | Agreement | Falls |
-|---|---|---|
-| tour | 0.83 / 0.71 | 0 |
-| unseen (4 switches with zero corpus count) | 1.00 / 0.88 | 0 |
-| quick (1 s holds) | 0.75 / 0.67 | 0 |
+| Preset | Chain | All phases right | Default start |
+|---|---|---|---|
+| tour | Rear R → Rear L → Walk L → Walk R → Immobile | 0.64 | 0 |
+| rears | Rear R → Rear L → Rear R → Walk R | 0.75 | 0 |
+| turn | Turn R → Immobile → Rear R → Turn R | 0.88 | 1 |
+| walk | Turn R → Rear R → Immobile → Walk R | 0.68 | 0 |
 
-The project page's presets, which use all 9 symbols, scored 0.50 / 0.57 / 0.50
-medians under the same conditions.
+"All phases right" is the mean over the clean rollout and 3 replicas with
+N(0, 1e-4) action noise. The noise stands in for the browser's float drift.
+
+Each preset opens on a start pose where every phase landed:
+- in all 4 replicas;
+- when replayed through the web app's own TS runner (MuJoCo WASM +
+  onnxruntime-web in Node).
+
+Per-phase labeler agreement, median / mean over 48 starts, was 1.00 /
+0.87–0.94, with no falls.
+
+The old presets did worse. All phases were right on 0.19 (tour, 3 s holds),
+0.56 (unseen) and 0.04 (quick) of start poses. The old tour also failed its last
+two walks from start 0.
 
 ## Fragile switches (2026-10-10, MuJoCo C, 48 start poses)
 

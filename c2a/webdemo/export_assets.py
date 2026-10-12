@@ -64,23 +64,28 @@ PROBE_FRAME = 20
 #: outputs/ic_contraction/code_roundtrip/mlb/roundtrip_summary.json.
 PALETTE = ["Walk_L", "Walk_R", "Rear_L", "Rear_R", "Turn_R", "Immobile"]
 
-#: Demo presets (symbol, hold steps at 100 Hz), built only from PALETTE and
-#: from switches the pair experiment reaches reliably
-#: (outputs/behavior/impossible_transitions/mlb_s208_len500*/qualitative.csv).
+#: Demo presets (title, blurb, blocks of (symbol, hold steps at 100 Hz), start
+#: pose). Picked by a search over 56 chains of PALETTE symbols, 2.5 s holds, in
+#: MuJoCo C from all 48 start poses: these had the highest fraction of bodies
+#: whose every phase the labeler reads as commanded. Each start pose passed in
+#: the clean rollout and in 3 replicas with 1e-4 action noise (which stands in
+#: for the browser's float drift). See c2a/webdemo/README.md.
 DEMO_PRESETS = {
     "tour": ("A short tour",
-             "Each switch here lands in at least three of four bodies in the "
-             "paper's pair test.",
-             [("Rear_R", 300), ("Turn_R", 300), ("Walk_L", 300), ("Immobile", 300),
-              ("Walk_R", 300), ("Walk_L", 300)]),
-    "unseen": ("Transitions the corpus never contains",
-               "None of these four switches occurs in the training data.",
-               [("Rear_L", 250), ("Rear_R", 250), ("Rear_L", 250), ("Walk_R", 250),
-                ("Walk_L", 250)]),
-    "quick": ("Rapid switching",
-              "One second per symbol.",
-              [("Rear_R", 100), ("Turn_R", 100), ("Walk_L", 100), ("Immobile", 100),
-               ("Walk_R", 100), ("Walk_L", 100), ("Immobile", 100), ("Walk_R", 100)]),
+             "Two rears, two walks, then a stop. Every phase lands from about "
+             "2 in 3 start poses, including this one.",
+             [("Rear_R", 250), ("Rear_L", 250), ("Walk_L", 250), ("Walk_R", 250),
+              ("Immobile", 250)], 0),
+    "rears": ("Rear, rear, rear, walk",
+              "Alternating rears, then walking off. Lands from 3 in 4 start poses.",
+              [("Rear_R", 250), ("Rear_L", 250), ("Rear_R", 250), ("Walk_R", 250)], 0),
+    "turn": ("Turn, pause, rear, turn",
+             "The most reliable chain found: lands from almost 9 in 10 start poses.",
+             [("Turn_R", 250), ("Immobile", 250), ("Rear_R", 250), ("Turn_R", 250)], 1),
+    "walk": ("Turn, rear, pause, walk",
+             "Uses an Immobile pause to get from a rear into a walk. Lands from about "
+             "2 in 3 start poses.",
+             [("Turn_R", 250), ("Rear_R", 250), ("Immobile", 250), ("Walk_R", 250)], 0),
 }
 
 
@@ -225,8 +230,10 @@ def export_meta() -> None:
             "behavior_recall": round(float(r["behavior_recall"]), 3),
             "symbol_recall": round(float(r["category_recall"]), 3),
         })
-    as_json = lambda presets: {k: {"title": t, "blurb": b, "blocks": [[s, h] for s, h in seq]}
-                               for k, (t, b, seq) in presets.items()}
+    as_json = lambda presets: {
+        k: {"title": t, "blurb": b, "blocks": [[s, h] for s, h in seq],
+            **({"start": rest[0]} if rest else {})}
+        for k, (t, b, seq, *rest) in presets.items()}
     (OUT / "symbols.json").write_text(json.dumps({
         "symbols": symbols,
         "palette": PALETTE,
