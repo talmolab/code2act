@@ -30,6 +30,7 @@ import argparse
 import json
 import logging
 from collections import OrderedDict
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -64,28 +65,18 @@ PROBE_FRAME = 20
 #: outputs/ic_contraction/code_roundtrip/mlb/roundtrip_summary.json.
 PALETTE = ["Walk_L", "Walk_R", "Rear_L", "Rear_R", "Turn_R", "Immobile"]
 
-#: Demo presets (title, blurb, blocks of (symbol, hold steps at 100 Hz), start
-#: pose). Picked by a search over 56 chains of PALETTE symbols, 2.5 s holds, in
-#: MuJoCo C from all 48 start poses: these had the highest fraction of bodies
-#: whose every phase the labeler reads as commanded. Each start pose passed in
-#: the clean rollout and in 3 replicas with 1e-4 action noise (which stands in
-#: for the browser's float drift). See c2a/webdemo/README.md.
+#: The demo only lets users build sequences listed in verified_chains.json
+#: (written by c2a.webdemo.chain_select): every listed chain, with every prefix,
+#: had each phase read as commanded from each listed start pose in every
+#: verification run. See c2a/webdemo/README.md.
+VERIFIED_CHAINS = Path(__file__).with_name("verified_chains.json")
+
+#: Example sequences (title, blocks); each must be verified from at least one start pose.
 DEMO_PRESETS = {
-    "tour": ("A short tour",
-             "Two rears, two walks, then a stop. Every phase lands from about "
-             "2 in 3 start poses, including this one.",
-             [("Rear_R", 250), ("Rear_L", 250), ("Walk_L", 250), ("Walk_R", 250),
-              ("Immobile", 250)], 0),
-    "rears": ("Rear, rear, rear, walk",
-              "Alternating rears, then walking off. Lands from 3 in 4 start poses.",
-              [("Rear_R", 250), ("Rear_L", 250), ("Rear_R", 250), ("Walk_R", 250)], 0),
-    "turn": ("Turn, pause, rear, turn",
-             "The most reliable chain found: lands from almost 9 in 10 start poses.",
-             [("Turn_R", 250), ("Immobile", 250), ("Rear_R", 250), ("Turn_R", 250)], 1),
-    "walk": ("Turn, rear, pause, walk",
-             "Uses an Immobile pause to get from a rear into a walk. Lands from about "
-             "2 in 3 start poses.",
-             [("Turn_R", 250), ("Rear_R", 250), ("Immobile", 250), ("Walk_R", 250)], 0),
+    "tour": ("A short tour", ["Immobile", "Rear_R", "Rear_L", "Turn_R", "Walk_L"]),
+    "rears_walk": ("Rears, then a walk", ["Rear_R", "Rear_L", "Rear_R", "Walk_R", "Walk_L"]),
+    "zigzag": ("Rears, then zigzag", ["Rear_R", "Rear_L", "Walk_R", "Walk_L", "Walk_R"]),
+    "rears": ("Alternating rears", ["Rear_L", "Rear_R", "Rear_L", "Rear_R", "Rear_L"]),
 }
 
 
@@ -230,24 +221,48 @@ def export_meta() -> None:
             "behavior_recall": round(float(r["behavior_recall"]), 3),
             "symbol_recall": round(float(r["category_recall"]), 3),
         })
-    as_json = lambda presets: {
-        k: {"title": t, "blurb": b, "blocks": [[s, h] for s, h in seq],
-            **({"start": rest[0]} if rest else {})}
-        for k, (t, b, seq, *rest) in presets.items()}
+    as_json = lambda presets: {k: {"title": t, "blurb": b, "blocks": [[s, h] for s, h in seq]}
+                               for k, (t, b, seq) in presets.items()}
     (OUT / "symbols.json").write_text(json.dumps({
         "symbols": symbols,
         "palette": PALETTE,
-        "presets": as_json(DEMO_PRESETS),
+        **demo_sequences(),
         "website_presets": as_json(PRESETS),
         "source": "outputs/ic_contraction/code_roundtrip/mlb/roundtrip_summary.json"}))
+
+
+def demo_sequences() -> dict:
+    """The ``presets`` and ``graph`` entries of symbols.json. ``graph.chains[i]``
+    lists the chains verified from start pose ``graph.starts[i]``."""
+    verified = json.loads(VERIFIED_CHAINS.read_text())
+    hold, trees = int(verified["hold"]), verified["chains"]
+    for title, seq in DEMO_PRESETS.values():
+        n = sum(">".join(seq) in t for t in trees.values())
+        assert n, f"preset {title!r} is not verified from any start pose"
+    return {
+        "presets": {k: {"title": t, "blocks": [[s, hold] for s in seq]}
+                    for k, (t, seq) in DEMO_PRESETS.items()},
+        "graph": {"chains": [trees[str(c)] for c in verified["clips"]],
+                  "starts": verified["clips"], "hold": hold,
+                  "max_blocks": int(verified["max_blocks"]),
+                  "runs": len(verified["runs"]), "held": len(verified.get("held", [])),
+                  "held_fails": verified.get("held_fails")},
+    }
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--golden-bodies", type=int, default=4)
     ap.add_argument("--golden-steps", type=int, default=600)
+    ap.add_argument("--sequences-only", action="store_true",
+                    help="only refresh presets + verified chains in an existing symbols.json")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", force=True)
+    if args.sequences_only:
+        meta = json.loads((OUT / "symbols.json").read_text())
+        meta.update(demo_sequences())
+        (OUT / "symbols.json").write_text(json.dumps(meta))
+        return
     OUT.mkdir(parents=True, exist_ok=True)
 
     cfg, norm_state, policy_params, nets = load_moseq_checkpoint(str(ROOT / CKPT))
