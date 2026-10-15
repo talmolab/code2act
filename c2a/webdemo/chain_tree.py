@@ -22,17 +22,28 @@ then ``tail`` + ``main`` of each later block, then ``term``: keys
 
 ``c2a.webdemo.chain_select`` labels and selects from these.
 
+``--search`` instead grows one tree per start pose directly: each clip is a
+batch of ``--replicas`` bodies (replica 0 clean, the rest with action noise
+seeded by clip, chain and segment, so a prefix always replays identically).
+A chain is kept if no replica loses control (``chain_select.physical_failure``)
+and is only extended then, over the switches not in
+``chain_select.WRONG_BEHAVIOR``. It writes ``success.json`` for the chains it
+tried, for ``chain_select verify-clip``.
+
 Usage::
 
     .venv-webdemo/bin/python -m c2a.webdemo.chain_tree RUN [--noise-seed 1] [--clips 1,10,...]
         [--phys] [--all-switches] [--hold 400] [--palette Walk_L,Rear_L,...]
+    .venv-webdemo/bin/python -m c2a.webdemo.chain_tree RUN --search --hold 400 --depth 8 --clips ...
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from concurrent.futures import ProcessPoolExecutor
+import random
+import zlib
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import mujoco
 import numpy as np
@@ -81,6 +92,7 @@ class Sim:
         self.bodies = [Body(self.m, idx, q) for q in starts]
         self.hidden = self.ctrl.zeros(len(self.bodies))
         self.rng = np.random.RandomState(noise_seed) if noise_seed else None
+        self.mask = None  # [B, 1] noise scale per body (None: all bodies)
 
     def snapshot(self):
         state = []
@@ -110,7 +122,8 @@ class Sim:
             proprio = np.stack([b.obs() for b in self.bodies])
             a, self.hidden, _ = self.ctrl(codes, proprio, self.hidden)
             if self.rng is not None:
-                a = a + self.rng.normal(0, NOISE_STD, a.shape).astype(np.float32)
+                noise = self.rng.normal(0, NOISE_STD, a.shape).astype(np.float32)
+                a = a + (noise if self.mask is None else noise * self.mask)
             for k, b in enumerate(self.bodies):
                 if not self.phys:
                     q[k, t] = b.d.qpos
@@ -190,6 +203,83 @@ def _subtree_phys(sim: Sim, first: str, second: str | None, depth: int, run: str
     return f"{tag}: {len(out) // 3} nodes"
 
 
+def search(job: tuple) -> dict[str, bool]:
+    """Simulate ``prefix`` from one clip with ``reps`` replicas, then grow its
+    subtree up to ``depth`` symbols while no replica loses control. Returns
+    chain -> passed for every chain tried (prefix nodes included)."""
+    from c2a.webdemo.chain_select import physical_failure
+
+    clip, prefix, depth, hold, palette, edges, reps = job
+    _configure(hold, palette)
+    sim, out = Sim([clip] * reps, noise_seed=1, phys=True), {}
+    sim.mask = np.ones((reps, 1), np.float32)
+    sim.mask[0] = 0
+
+    def seg(key: str, name: str, windows: list) -> np.ndarray:
+        sim.rng = np.random.RandomState(zlib.crc32(f"{clip}|{key}|{name}".encode()))
+        return sim.run(windows)
+
+    def block(chain: list[str], nxt: str) -> np.ndarray:  # tail of chain[-1], then nxt's main
+        key = ">".join(chain + [nxt])
+        return np.concatenate([seg(key, "tail", [window(chain[-1], nxt, t) for t in range(BRANCH, HOLD)]),
+                               seg(key, "main", [window(nxt, None, t) for t in range(BRANCH)])], 1)
+
+    def passed(chain: list[str], body: np.ndarray) -> bool:  # the sequence ending here
+        key, here = ">".join(chain), sim.snapshot()
+        term = seg(key, "term", [window(chain[-1], None, t) for t in range(BRANCH, HOLD)])
+        sim.restore(here)
+        out[key] = bool((physical_failure(np.concatenate([body, term], 1)) == 0).all())
+        return out[key]
+
+    chain, body = [prefix[0]], seg(prefix[0], "main", [window(prefix[0], None, t) for t in range(BRANCH)])
+    if not passed(chain, body):
+        return out
+    for nxt in prefix[1:]:
+        body = np.concatenate([body, block(chain, nxt)], 1)
+        chain = chain + [nxt]
+        if not passed(chain, body):
+            return out
+
+    def expand(chain: list[str], body: np.ndarray) -> None:
+        if len(chain) >= depth:
+            return
+        here = sim.snapshot()
+        for nxt in (b for b in PALETTE if (chain[-1], b) in edges):
+            sim.restore(here)
+            b = np.concatenate([body, block(chain, nxt)], 1)
+            if passed(chain + [nxt], b):
+                expand(chain + [nxt], b)
+
+    expand(chain, body)
+    return out
+
+
+def run_search(args, clips: list[int]) -> None:
+    from c2a.webdemo.chain_select import WRONG_BEHAVIOR
+
+    edges = ALL_EDGES - WRONG_BEHAVIOR
+    rdir = TREE_DIR / args.run
+    (rdir / "config.json").write_text(json.dumps(
+        {"search": True, "depth": args.depth, "clips": clips, "replicas": args.replicas,
+         "noise_std": NOISE_STD, "edges": sorted(edges), "hold": HOLD, "palette": PALETTE}))
+    prefixes = [(a, b, c) for a in PALETTE for b in PALETTE for c in PALETTE
+                if (a, b) in edges and (b, c) in edges]
+    jobs = [(k, p, args.depth, HOLD, PALETTE, edges, args.replicas) for k in clips for p in prefixes]
+    random.Random(0).shuffle(jobs)  # spread the deep subtrees over the workers
+    succ: dict[str, dict[str, bool]] = {}
+    with ProcessPoolExecutor(min(len(jobs), args.workers)) as ex:
+        futs = {ex.submit(search, j): j for j in jobs}
+        for n, f in enumerate(as_completed(futs), 1):
+            clip = str(futs[f][0])
+            for chain, ok in f.result().items():
+                prev = succ.setdefault(chain, {}).setdefault(clip, ok)
+                assert prev == ok, f"{chain} from clip {clip} replayed differently"
+            if n % 50 == 0 or n == len(jobs):
+                print(f"{n}/{len(jobs)} jobs, {sum(len(v) for v in succ.values())} chain x clip tried",
+                      flush=True)
+    (rdir / "success.json").write_text(json.dumps(succ))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("run", help="output name under outputs/webdemo/chain_tree/")
@@ -199,6 +289,8 @@ def main() -> None:
     ap.add_argument("--phys", action="store_true", help="save per-step body signals instead of qpos")
     ap.add_argument("--all-switches", action="store_true", help="also search the FRAGILE switches")
     ap.add_argument("--workers", type=int, default=64)
+    ap.add_argument("--search", action="store_true", help="grow per-clip trees with replicas")
+    ap.add_argument("--replicas", type=int, default=17, help="--search: bodies per clip (1 clean)")
     ap.add_argument("--hold", type=int, default=HOLD, help="control steps per block")
     ap.add_argument("--palette", default="", help="comma-separated symbols (default: PALETTE); "
                     "implies all switches")
@@ -211,6 +303,8 @@ def main() -> None:
     n_starts = len(json.loads((OUT / "starts.json").read_text())["qpos"])
     clips = [int(c) for c in args.clips.split(",")] if args.clips else list(range(n_starts))
     (TREE_DIR / args.run).mkdir(parents=True, exist_ok=True)
+    if args.search:
+        return run_search(args, clips)
     (TREE_DIR / args.run / "config.json").write_text(json.dumps(
         {"depth": args.depth, "noise_seed": args.noise_seed, "clips": clips,
          "edges": sorted(edges), "phys": args.phys, "hold": HOLD, "palette": PALETTE}))

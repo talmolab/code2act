@@ -89,6 +89,13 @@ def label(run: str) -> None:
 #: Physical failure: the body "goes crazy" or collapses. Calibrated on rendered
 #: examples from the settled windows of 10,260 chain x clip runs (2026-10-14).
 CRAZY_SPEED = 2.5  # m/s root speed over one control step (normal motion < ~1)
+#: Switches whose commanded behavior shows up in < 50% of runs (TopoMimic
+#: behavior label of the last 2.45 s of a 4 s block after the switch, MuJoCo C,
+#: 48 start poses, run beh9; 2026-10-14). Walking rarely stops for a rear, turn
+#: or stop: Rear needs the rat nearly still (< 0.1 m/s) at the switch.
+WRONG_BEHAVIOR = {("Walk_L", "Rear_L"), ("Walk_L", "Rear_R"), ("Walk_L", "Turn_R"),
+                  ("Walk_L", "Immobile"), ("Walk_R", "Rear_L"), ("Walk_R", "Rear_R"),
+                  ("Walk_R", "Turn_R"), ("Rear_L", "Immobile"), ("Turn_R", "Rear_L")}
 SINK_Z = -0.010  # m root height, mean over SINK_STEPS (normal still: > -0.005)
 STILL_JOINT = 0.1  # rad/s mean joint speed, mean over SINK_STEPS
 SINK_STEPS = 100  # 1 s
@@ -175,9 +182,9 @@ def _label_ts_file(path: str) -> list[tuple[str, int, bool]]:
 
     meta = json.loads(Path(path).read_text())
     q = np.fromfile(path.replace(".json", ".bin"), np.float32).reshape(-1, meta["nq"])
-    out = []
+    out, w = [], meta.get("hold", 250) - meta.get("settle", 150)  # dumped steps per block
     for r in meta["index"]:
-        ok = all(label_rollout_body(q[r["offset"] + 100 * i:r["offset"] + 100 * (i + 1)],
+        ok = all(label_rollout_body(q[r["offset"] + w * i:r["offset"] + w * (i + 1)],
                                     src_fps=100.0).behavior == _behavior(s)
                  for i, s in enumerate(r["chain"].split(">")))
         out.append((r["chain"], r["clip"], ok))
@@ -267,20 +274,29 @@ def verify(runs: list[str], k: int) -> None:
     print(f"{len(final)} of {len(keep)} chains verified on {len(runs)} runs -> {VERIFIED.name}")
 
 
-def verify_clip(runs: list[str], held: list[str], k: int, clips: list[int] | None = None) -> None:
+def verify_clip(runs: list[str], held: list[str], k: int, clips: list[int] | None = None,
+                ban: set | None = None) -> None:
     """Per start pose: a clip offers a chain when the chain (with all prefixes)
     passed every run from that clip. ``held``: runs only used to estimate the
     failure rate. A chain missing from a selection run (e.g. a TS replay of a
     subset) counts as failed; a held run is scored on the pairs it covers."""
     clips = clips or json.loads((TREE_DIR / f"pick_{k}.json").read_text())["clips"]
-    hold = json.loads((TREE_DIR / runs[0] / "config.json").read_text()).get("hold", 250)
+    cfg = json.loads((TREE_DIR / runs[0] / "config.json").read_text())
+    hold, depth = cfg.get("hold", 250), cfg.get("depth", MAX_DEPTH)
+    # a --search run holds all its replicas; otherwise one run per replica
+    replicas = sum(json.loads((TREE_DIR / r / "config.json").read_text()).get("replicas", 1)
+                   for r in runs)
     succ = {r: json.loads((TREE_DIR / r / "success.json").read_text()) for r in runs + held}
     chains = sorted(succ[runs[0]], key=lambda c: (c.count(">"), c))
 
     def passed(r: str, c: str, clip: int) -> bool:
         return succ[r].get(c, {}).get(str(clip), False)
 
+    if ban:  # drop chains containing a banned switch
+        chains = [c for c in chains if not any(e in ban for e in zip(c.split(">"), c.split(">")[1:]))]
+
     trees, fails, total = {}, 0, 0
+    by_len = np.zeros((depth + 1, 2), int)  # held-out [failed, tried] by chain length
     for clip in clips:
         ok: list[str] = []
         for c in chains:
@@ -291,15 +307,18 @@ def verify_clip(runs: list[str], held: list[str], k: int, clips: list[int] | Non
         # a held run may cover a sample of the pairs (e.g. a TS replay): count what it has
         tried = [(r, c) for r in held for c in ok if str(clip) in succ[r].get(c, {})]
         f = sum(not passed(r, c, clip) for r, c in tried)
+        for r, c in tried:
+            by_len[c.count(">") + 1] += (not passed(r, c, clip), 1)
         fails, total = fails + f, total + len(tried)
         print(f"clip {clip}: {len(ok)} chains, by depth "
-              f"{np.bincount([c.count('>') + 1 for c in ok], minlength=MAX_DEPTH + 1)[1:].tolist()}"
+              f"{np.bincount([c.count('>') + 1 for c in ok], minlength=depth + 1)[1:].tolist()}"
               + (f", held-out fails {f}/{len(tried)}" if held else ""))
     if held:
         print(f"held-out: {fails}/{total} chain x clip runs failed ({fails / max(total, 1):.2%})")
     VERIFIED.write_text(json.dumps({"clips": clips, "chains": trees, "runs": runs, "held": held,
-                                    "held_fails": [fails, total], "hold": hold,
-                                    "max_blocks": MAX_DEPTH}, indent=1) + "\n")
+                                    "held_fails": [fails, total],
+                                    "held_by_length": by_len[1:].tolist(), "hold": hold,
+                                    "replicas": replicas, "max_blocks": depth}, indent=1) + "\n")
 
 
 def main() -> None:
@@ -319,6 +338,7 @@ def main() -> None:
     p.add_argument("--held", nargs="*", default=[])
     p.add_argument("--k", type=int, default=10)
     p.add_argument("--clips", default="", help="comma-separated start poses (default: pick_K.json)")
+    p.add_argument("--ban-wrong", action="store_true", help="drop WRONG_BEHAVIOR switches")
     args = ap.parse_args()
     if args.cmd == "label":
         label(args.run)
@@ -331,7 +351,8 @@ def main() -> None:
     elif args.cmd == "pick":
         pick(args.runs, args.k, [int(c) for c in args.exclude.split(",") if c])
     elif args.cmd == "verify-clip":
-        verify_clip(args.runs, args.held, args.k, [int(c) for c in args.clips.split(",") if c])
+        verify_clip(args.runs, args.held, args.k, [int(c) for c in args.clips.split(",") if c],
+                    WRONG_BEHAVIOR if args.ban_wrong else None)
     else:
         verify(args.runs, args.k)
 

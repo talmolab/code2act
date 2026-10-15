@@ -31,16 +31,12 @@ C2A_ROOT=$PWD python -m c2a.webdemo.score_sim_gap --set demo
 .venv-webdemo/bin/python -m c2a.webdemo.chain_tree scr9_$s --noise-seed $s --phys --hold 400 \
     --depth 3 --palette Walk_L,Walk_R,Walk_S,Rear_L,Rear_R,Rear_S,Turn_L,Turn_R,Immobile
 CL=20,4,44,24,18,7,30,41,25,17   # the 10 clips with the most passing 3-symbol trees
-for s in 0 101 102 ... 116; do   # 0 = clean (run h400_clean)
-  .venv-webdemo/bin/python -m c2a.webdemo.chain_tree h400_n$s --noise-seed $s \
-      --clips $CL --phys --all-switches --hold 400 --workers 32
-  C2A_ROOT=$PWD python -m c2a.webdemo.chain_select phys h400_n$s
-done
+# Per-clip trees: 17 replicas per clip, pruned, allowed switches only (~50 min on 64 cores).
+.venv-webdemo/bin/python -m c2a.webdemo.chain_tree srch8 --search --hold 400 --depth 8 --clips $CL
 #   + held-out TS replay of 3,000 offered pairs ({"hold": 400, "pairs": ...} job):
-#   PHYS=1 VERIFY_JOB=.../ts_h400/job.json SHARD=i NSHARD=24 OUT=... npx vitest run tests/verify_chains.test.ts
-C2A_ROOT=$PWD python -m c2a.webdemo.chain_select phys-ts ts_h400
-C2A_ROOT=$PWD python -m c2a.webdemo.chain_select verify-clip h400_clean h400_n101 ... h400_n116 \
-    --clips $CL --held ts_h400
+#   PHYS=1 VERIFY_JOB=.../ts_srch8/job.json SHARD=i NSHARD=48 OUT=... npx vitest run tests/verify_chains.test.ts
+C2A_ROOT=$PWD python -m c2a.webdemo.chain_select phys-ts ts_srch8
+C2A_ROOT=$PWD python -m c2a.webdemo.chain_select verify-clip srch8 --clips $CL --held ts_srch8
 C2A_ROOT=$PWD python -m c2a.webdemo.export_assets --sequences-only     # presets + verified chains -> symbols.json
 
 # 3. Copy into the web app.
@@ -59,36 +55,56 @@ cd code2act-control-website && node scripts/sync_assets.mjs ../outputs/webdemo
 ## Demo palette and presets
 
 The demo offers 6 of the 9 MLB symbols (`PALETTE` in `export_assets.py`):
-Walk L, Walk R, Rear L, Rear R, Turn R and Immobile. The other three are left
-out based on the round-trip summary:
-- Walk S and Rear S are read as Walk L and Rear R (exact recall 0.00 and 0.07).
-- Turn L is almost never performed (0.02); 59 of 60 are read as Walk L.
+Walk L, Walk R, Rear L, Rear R, Turn R and Immobile. A symbol can fail by
+losing control or by producing a different behavior. Per symbol, 4 s holds,
+alone or after any other symbol, 48 clips, MuJoCo C (runs `scr9_*` for
+control, `beh9` + TopoMimic behavior labels for behavior):
 
-A 20 s single-symbol hold from all 48 clips (`long20`, MuJoCo C) found no
-physical reason to change this: Rear R never lost control (0/48), Rear S and
-Immobile 8, Rear L 13, the others 16–36 (mostly walking and turning after
-12 s). Rear S rears (53 of 60) but leans left or right at random, so it would
-mostly duplicate Rear L/R.
+| Symbol | Loses control | Commanded behavior |
+|---|---|---|
+| Walk L / R / S | 2.3 / 2.3 / 1.6% | 82 / 90 / 84% |
+| Rear L / R / S | 2.6 / 2.1 / 3.0% | 49 / 64 / 59% |
+| Turn L / R | 2.8 / 2.8% | **6%** (walks left 88%) / 54% |
+| Immobile | 3.9% | 51% (walks 44%) |
 
-## Verified sequences (2026-10-14, 4 s holds)
+- Turn L is left out: it is performed as Walk L. Walk S and Rear S would
+  duplicate Walk L/R and Rear L/R (the labeler cannot separate rear direction).
+- Physically the symbols are alike; held alone for 20 s (`long20`), Rear R
+  never lost control (0/48).
+- **Most wrong behaviors come from the switch.** Held alone, rears rear 85–90%
+  and Turn R turns 100%; right after a walk, 20–29% and 22%. Rear needs the rat
+  nearly still at the switch: 83–89% below 0.1 m/s, 8–13% above 0.2 m/s
+  (after a walk: 67% if slow, 11% if moving). An Immobile in between does not
+  fix it: Walk → Immobile → Rear rears 31–46% (Immobile itself often keeps
+  walking), and it hurts where Rear already works.
+
+`DEMO_PRESETS` are 4 five-symbol chains, each with the start pose it plays
+from. Each is verified from that pose and was picked because every block showed
+the commanded behavior in 17 fresh MuJoCo C replicas (15/17 for "Rears, then
+zigzag") and in a replay through the TS runner. The tour was chosen from 360
+candidates that use all four behaviors. Longer examples were tried: no
+8-symbol chain had every block right in more than 9 of 17 replicas, and
+Walk → Immobile → Rear chains reared in 12–29%.
+
+## Verified sequences (2026-10-15, 4 s holds, up to 8 symbols)
 
 The demo only lets users build sequences that were checked, **separately for
 each start pose**. The palette lights a symbol only if the sequence so far plus
-that symbol is in `verified_chains.json` for the chosen clip. The check depends
-on the whole prefix and on the start pose.
+that symbol is in `verified_chains.json` for the chosen clip.
 
-**Pass criterion: the body never loses control.** Whether the rat performs the
-commanded behavior is deliberately *not* checked (the demo shows the
-controller's own response). A chain × clip run fails if, at any point of the
-whole chain (`physical_failure` in `chain_select.py`):
+**Switches.** The 9 switches in `chain_select.WRONG_BEHAVIOR` are never
+offered: the commanded behavior showed up in fewer than half of the runs
+(Walk L/R → Rear L/R, Walk L/R → Turn R, Walk L → Immobile, Rear L →
+Immobile, Turn R → Rear L; 6–44%). They are also physically riskier. Once
+the rat walks, only the other walk (or Walk R → Immobile) follows.
+
+**Control.** A chain × replica fails if, at any point of the whole chain
+(`physical_failure` in `chain_select.py`):
 - **crazy:** root speed over one control step exceeds 2.5 m/s, or the state
   is not finite. Normal motion stays under ~1 m/s. Rendered examples above
   5 m/s were the body flying or tumbling; 1.5–2 m/s were the rat toppling out
   of a tall rear, which is not counted (if it then lies frozen, sinking
-  catches it). A 1.5 m/s cutoff made Rear look like the weakest symbol: 58% of
-  the failures between 1.5 and 2.5 m/s follow a Rear, and with it the chance
-  that appending Rear L/R keeps a passing prefix passing was 57/58%, against
-  67/70% at 2.5 m/s (Walk L 58%, Immobile 73%);
+  catches it). A 1.5 m/s cutoff made Rear look like the weakest symbol;
 - **sinking:** over some 1 s window, mean root height < -1 cm and mean joint
   speed < 0.1 rad/s (a frozen, hunched crouch near the floor; 2% of ordinary
   still Immobile windows are that low);
@@ -98,46 +114,30 @@ whole chain (`physical_failure` in `chain_select.py`):
 **Switching, not holding, is what breaks control.** Per 2.5 s window, among
 runs still fine at its start, holding one symbol fails 0.3–2.1% for the first
 12.5 s, while switching every 2.5 s rises to 6.1% in 10–12.5 s (after 4
-switches); with 4 s blocks, 8–12 s gives 1.4% (hold) vs 5.8% (switching). The
-first one or two switches are harmless; the risk builds over the chain. This is
-why the demo holds each symbol 4 s (4 switches in 20 s instead of 7).
+switches). The risk builds over the chain; this is why each symbol is held 4 s.
 
-Earlier versions scored each phase with the TopoMimic labeler. That threw out
-many sequences where the body was fine but the labeler read a neighboring
-behavior (e.g. a nearly still rat read as Walk), and left 43 (all clips) or
-93–169 (per clip) chains with frequent dead ends.
+1. **Search** (`chain_tree.py --search`): per start pose (20, 4, 44, 24, 18, 7,
+   30, 41, 25, 17: most passing 3-symbol trees in the 48-clip screen), a batch
+   of 17 replicas (clean + 16 with N(0, 1e-4) action noise, seeded by clip,
+   chain and segment, so a prefix replays identically in any job; checked).
+   A chain is kept if no replica loses control, and only then extended, over
+   the 21 allowed switches, up to 8 symbols (32 s). Prefixes are shared
+   through bit-exact state copies.
+2. **Per-clip trees** (`chain_select verify-clip`): the kept chains, prefix
+   closed. 219–645 chains per clip (4,283 pairs); all 6 first symbols and
+   20–21 of the 21 two-symbol chains on every clip; 3–123 eight-symbol chains
+   per clip. Rear after a walk is reachable only via Walk R → Immobile.
+3. **Held-out estimate:** the TS runner replayed 3,000 random offered pairs
+   (`ts_srch8`, not used for selection): 95 lost control, 3.2%, about 1 in 32.
+   By length: 0% up to 3 symbols, 1.9–3.1% at 4–6, 6.6–7.3% at 7–8.
+   Chains that just pass 17 replicas are selected for luck, so deep ones fail
+   more in fresh runs.
 
-1. **Exhaustive tree** (`chain_tree.py --phys --all-switches`): every chain of
-   1–5 palette symbols held 4 s each (400 steps), no self-switch, 4,686
-   chains, including the formerly excluded fragile switches. MuJoCo C, from
-   the 10 start poses 20, 4, 44, 24, 18, 7, 30, 41, 25, 17 (most passing
-   3-symbol trees in the 48-clip screen). Prefixes are shared through bit-exact state
-   copies (checked: the branched signals equal a straight rollout exactly). It
-   saves per-step root speed, root height, up-axis z and mean joint speed.
-2. **Per-clip trees** (`chain_select verify-clip`): a clip offers a chain when
-   the chain and all its prefixes passed in all 17 runs from that clip: clean
-   plus 16 replicas with N(0, 1e-4) action noise (seeds 101–116). The noise
-   stands in for the browser's float drift.
-   - 399–725 chains per clip (5,302 chain × clip pairs), 124–359 of them
-     five symbols long;
-   - all 6 first symbols and 28–30 of the 30 two-symbol chains on every clip;
-     dead ends per clip: 0–4 after 2 symbols, 26–49 after 3, 76–121 after 4.
-   - The 2.5 s version (runs `phys_*`) offered 2,320–2,866 chains per clip
-     with 1.4% held-out failure, but switched symbols too fast to watch.
-3. **Held-out estimate:** the web app's own TS runner replayed 3,000 random
-   offered pairs (`ts_h400`, not used for selection): 94 lost control, 3.1%,
-   about 1 run in 32 (73 crazy, 21 sinking). Expect roughly this rate in the
-   browser.
-
-Per run, `success.json`, `reasons.json` (0 ok, 1 crazy, 2 sinking, 3 flipped)
-and `vmax.json` (peak root speed) are in `outputs/webdemo/chain_tree/h400_*`
-(2.5 s holds: `phys_*`).
-The labeler-based runs (`clean`, `noise*`, `ts_check*`, `ts_clip`) are kept
-there too.
-
-`DEMO_PRESETS` are 4 five-symbol chains; `export_assets` asserts that each is
-verified from at least one clip. Choosing an example in the app moves to a
-clip that has it.
+Earlier versions: the labeler-only criterion (2026-10-12) kept 93–169 chains
+per clip; physical-only at 2.5 s holds (`phys_*`) 2,320–2,866 chains, 1.4%
+held-out failure, too fast to watch; physical-only at 4 s with all switches
+(`h400_*`, 17 separate runs) 399–725 chains, 3.1%. Runs are in
+`outputs/webdemo/chain_tree/`.
 
 ## Fragile switches (2026-10-10, MuJoCo C, 48 start poses)
 

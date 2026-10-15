@@ -67,16 +67,20 @@ PALETTE = ["Walk_L", "Walk_R", "Rear_L", "Rear_R", "Turn_R", "Immobile"]
 
 #: The demo only lets users build sequences listed in verified_chains.json
 #: (written by c2a.webdemo.chain_select): every listed chain, with every prefix,
-#: had each phase read as commanded from each listed start pose in every
-#: verification run. See c2a/webdemo/README.md.
+#: kept control in every simulated replica from its start pose and avoids the
+#: switches in chain_select.WRONG_BEHAVIOR. See c2a/webdemo/README.md.
 VERIFIED_CHAINS = Path(__file__).with_name("verified_chains.json")
 
-#: Example sequences (title, blocks); each must be verified from at least one start pose.
+#: Example sequences (title, symbols, start pose). Each is verified from its
+#: start pose and was picked because every block showed the commanded behavior
+#: (TopoMimic label of its settled window) in fresh MuJoCo C rollouts: 17/17
+#: replicas (tour, rears_walk, rears), 15/17 (zigzag; 2 read the last walk as
+#: something else). The app plays an example from its own start pose.
 DEMO_PRESETS = {
-    "tour": ("A short tour", ["Immobile", "Rear_R", "Rear_L", "Turn_R", "Walk_L"]),
-    "rears_walk": ("Rears, then a walk", ["Rear_R", "Rear_L", "Rear_R", "Walk_R", "Walk_L"]),
-    "zigzag": ("Rears, then zigzag", ["Rear_R", "Rear_L", "Walk_R", "Walk_L", "Walk_R"]),
-    "rears": ("Alternating rears", ["Rear_L", "Rear_R", "Rear_L", "Rear_R", "Rear_L"]),
+    "tour": ("A short tour", ["Turn_R", "Rear_R", "Immobile", "Walk_R", "Walk_L"], 44),
+    "rears_walk": ("Rears, then a walk", ["Rear_R", "Rear_L", "Rear_R", "Walk_R", "Walk_L"], 4),
+    "zigzag": ("Rears, then zigzag", ["Rear_R", "Rear_L", "Walk_R", "Walk_L", "Walk_R"], 7),
+    "rears": ("Alternating rears", ["Rear_L", "Rear_R", "Rear_L", "Rear_R", "Rear_L"], 20),
 }
 
 
@@ -236,17 +240,19 @@ def demo_sequences() -> dict:
     lists the chains verified from start pose ``graph.starts[i]``."""
     verified = json.loads(VERIFIED_CHAINS.read_text())
     hold, trees = int(verified["hold"]), verified["chains"]
-    for title, seq in DEMO_PRESETS.values():
-        n = sum(">".join(seq) in t for t in trees.values())
-        assert n, f"preset {title!r} is not verified from any start pose"
+    for title, seq, start in DEMO_PRESETS.values():
+        assert ">".join(seq) in trees[str(start)], f"preset {title!r} is not verified from {start}"
     return {
-        "presets": {k: {"title": t, "blocks": [[s, hold] for s in seq]}
-                    for k, (t, seq) in DEMO_PRESETS.items()},
+        "presets": {k: {"title": t, "blocks": [[s, hold] for s in seq],
+                        "clip": verified["clips"].index(start)}
+                    for k, (t, seq, start) in DEMO_PRESETS.items()},
         "graph": {"chains": [trees[str(c)] for c in verified["clips"]],
                   "starts": verified["clips"], "hold": hold,
                   "max_blocks": int(verified["max_blocks"]),
-                  "runs": len(verified["runs"]), "held": len(verified.get("held", [])),
-                  "held_fails": verified.get("held_fails")},
+                  "runs": verified.get("replicas", len(verified["runs"])),
+                  "held": len(verified.get("held", [])),
+                  "held_fails": verified.get("held_fails"),
+                  "held_by_length": verified.get("held_by_length")},
     }
 
 
