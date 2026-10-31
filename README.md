@@ -33,36 +33,41 @@ NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo), oral
 </div>
 
 <p align="center">
-  <img src="docs/assets/pipeline.png" width="90%" alt="The Code2Act pipeline">
+  <img src="docs/assets/pipeline_stages.png" width="90%" alt="The Code2Act pipeline">
 </p>
 
 <p align="center"><em>
-<b>The Code2Act pipeline.</b> A steering strategy assigns each reference frame a
-discrete code. A GRU reads the code context and proprioception, and a
-distillation head maps its state to a motor intention, which the pretrained
-MIMIC-MJX inverse-dynamics decoder turns into torques. The reference goal
-reaches only the frozen Stage-1 encoder, which supplies a stop-gradient KL
-target and never enters the action path.
+<b>Code2Act maps an external vocabulary into a pretrained imitation model.</b>
+<b>(1)</b> MIMIC-MJX trains an imitation VAE whose encoder maps goal and
+proprioception to a latent intention and whose decoder maps the intention and
+proprioception to torques. <b>(2)</b> A vocabulary, defined outside Code2Act and
+then frozen, assigns each reference frame a symbol. <b>(3)</b> A GRU reads the
+next five symbols and proprioception; its head predicts an intention that is
+regressed onto the frozen encoder by a stop-gradient KL and decoded to torques
+by the Stage-1 decoder, which is fine-tuned. The goal reaches only the encoder,
+never the action path.
 </em></p>
 
 ## Abstract
 
-Embodied symbolic systems depend on a discrete vocabulary that compresses
-continuous motion into named actions, which make planning and annotation
-tractable. Many such vocabularies exist, from unsupervised segmentation to hand
-annotation, but they only describe motion, and making a body perform one of
-their symbols requires a hand-engineered controller or a policy trained for that
-symbol. We present **Code2Act**, which turns any discrete vocabulary into motor
-commands for a 38 actuator biomechanical rat. One recurrent controller reads
-only the symbol stream and proprioception, predicts the motor latent that a
-frozen pretrained imitation model would supply, and decodes through that model's
-inverse-dynamics module. A single training run then covers an entire vocabulary
-with no per-symbol reward and no per-symbol training. We drove one controller
-from three vocabularies of different provenance and size. An independent
-labeler can recover each steering symbol from the motion it produced, across
-arbitrary initial poses and external velocity impulses. Symbols are executed by
-the body and realized as distinct motion, and novel combinations of symbol pairs
-can produce within-distribution motion patterns.
+Neuro-symbolic embodied agents need a layer that turns discrete symbols into
+physical action, and those symbols should belong to the system that does the
+reasoning, whether a planner, a language model, or a human annotation scheme.
+Physics-based imitation now produces realistic motion, and some controllers do
+so through a discrete bottleneck. However, their codes are learned by the
+controller to reconstruct motion, so any system issuing symbols to them must
+adopt the controller's vocabulary rather than use its own. Here, we present
+**Code2Act**, which executes any externally defined vocabulary on a
+biomechanical virtual rat by mapping each symbol into the latent space of a
+frozen, pretrained imitation model. The vocabulary is fixed before training and
+never shaped by the controller. Behavioral neuroscience supplies vocabularies of
+different origin, and we use three of them with the same architecture: an
+unsupervised segmentation, a learned latent codebook, and a hand-specified set
+of behaviors. Commanded symbols produce realistic motion, are recognized as the
+commanded behavior from diverse starting states, recover from physical
+perturbation, and combine into sequences never seen in the data. Executing a
+vocabulary also reveals how many of its symbols the body realizes as distinct
+behaviors.
 
 ## Method
 
@@ -73,20 +78,21 @@ Code2Act is built in three stages, each run as a separate process.
    proprioception to a 16-d latent intention; its decoder is an
    inverse-dynamics module that maps the intention and proprioception to the
    38 actuator torques of the rat.
-2. **Steering strategy (Stage 2).** Any map that assigns each reference frame a
-   discrete code. It is fit or written before training and frozen; the
-   controller sees only the integer stream.
+2. **External vocabulary (Stage 2).** Any map that assigns each reference frame
+   a discrete symbol, regardless of where it came from. It is fit or written
+   before training and frozen: no gradient reaches it, and the controller sees
+   only the integer stream.
 3. **Symbol-to-action interface (Stage 3).** A 4-layer GRU reads the
    embeddings of the next *N* = 5 codes together with proprioception. A head
    predicts a Gaussian over the intention, which is regressed onto the frozen
    encoder by a per-step KL, sampled, and decoded to torques by the Stage-1
-   decoder. Training is PPO on the MIMIC-MJX motion-tracking reward plus the
-   distillation KL.
+   decoder, which is initialized from Stage 1 and fine-tuned. Training is PPO on
+   the MIMIC-MJX motion-tracking reward plus the distillation KL.
 
-We drive the same interface with three steering strategies that differ in
-provenance and vocabulary size:
+We drive the same interface with three vocabularies that differ in origin and
+size:
 
-| Strategy | Source | *K* |
+| Vocabulary | Source | *K* |
 |---|---|---|
 | **KPMS** | Unsupervised Keypoint-MoSeq syllables (AR-HMM) | 100 |
 | **KVAE** | Kinematics VAE latents clustered with *K*-means | 25 |
@@ -124,6 +130,18 @@ uniformly random codes.
 - **Unseen symbol pairs stay within the distribution of rat motion.** The 30 MLB
   pairs that never occur in the corpus reach a KID of 0.418 ± 0.045, against
   0.204 ± 0.023 for corpus sequences and 0.735 ± 0.083 for random codes.
+
+<p align="center">
+  <img src="docs/assets/label_recovery_perturbation.png" width="95%" alt="Label recovery and perturbation recovery for MLB">
+</p>
+<p align="center"><em><b>Symbols keep their meaning across starting states and under perturbation</b>
+(MLB, paper Fig. 2). <b>(a)</b> Each symbol held from 60 initial poses and
+relabeled by the kinematic labeler: read as the commanded symbol (solid), the
+same behavior in another direction (pale), or a different behavior (grey), with
+each symbol's most frequent misreading on the right. <b>(b)</b> Share of the
+impulse-induced displacement that has decayed 5 s after a velocity impulse of
+scale <i>a</i>. <b>(c)</b> Pose deviation from unperturbed rollouts, against the
+unperturbed floor (dotted) and the distance between different symbols (dashed).</em></p>
 
 See the paper for the full analyses (DSA code dynamics, round-trip
 decompositions, perturbation protocol, kinematic signatures, and code atlases).
