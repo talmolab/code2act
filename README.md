@@ -23,12 +23,12 @@ Code for *Discrete Actions for Naturalistic Behavior in Embodied Biomechanical
 Animal Models*<br>
 NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo), oral
 
+[![OpenReview](https://img.shields.io/badge/Paper-OpenReview-8c1b13)](https://openreview.net/forum?id=FBEAYXac4j)
 [![Project Page](https://img.shields.io/badge/Project-Page-2b7bb9)](https://kbian.org/Code2Act-website/)
 ![Venue](https://img.shields.io/badge/NEmo%202026-Oral-6f42c1)
 [![MIMIC-MJX](https://img.shields.io/badge/built%20on-MIMIC--MJX-orange)](https://mimic-mjx.talmolab.org/)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-green.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-<!-- Add a Paper badge (OpenReview / arXiv) and link the Venue badge to the workshop site once public. -->
 
 </div>
 
@@ -277,7 +277,8 @@ The full tree, and where every output and checkpoint is written, is in
                Leonardis, Eric J. and Richards, Blake A. and {\"O}lveczky, Bence P. and
                Pereira, Talmo D.},
   booktitle = {NeurIPS 2026 Workshop on Neuro-Symbolic Embodied Intelligence (NEmo)},
-  year      = {2026}
+  year      = {2026},
+  url       = {https://openreview.net/forum?id=FBEAYXac4j}
 }
 ```
 
